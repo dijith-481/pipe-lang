@@ -1,5 +1,10 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
+/// Standard library for pipe-lang.
+///
+/// Provides built-in functions that the runtime can execute.
+/// These are implemented in pure Rust and exposed to the language
+/// via the `BuiltinFunction` trait.
+pub fn version() -> &'static str {
+    "0.1.0"
 }
 
 #[cfg(test)]
@@ -7,8 +12,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
+    fn stdlib_version_is_set() {
+        assert!(!version().is_empty());
     }
 }
