@@ -3,7 +3,7 @@
 A working, interesting functional language with basic JIT, type inference, and clean separation of pure/effectful code.
 
 - A Fun learning project
-- syntax inspired by Rust,TypeScript.
+- syntax inspired by Rust, TypeScript.
 - pure functional language
 - a working prototype in 1 month time
 
@@ -44,26 +44,44 @@ type Option<T> =
   | Some(T)
   | None
 
--- Functions are arrow-first, no `fn` keyword
--- name : Type -> Type -> ReturnType
+-- Functions use `let` binding with arrow syntax
+-- name(params):ReturnType => body
 let add = (a:i32, b:i32):i64 => a + b
 
--- Currying is automatic
+-- Currying via application
+let addFive = add(5)
 
-let addFive=> add(5)
-
--- Pipeline operator is central
+-- Dot operator for method chaining and field access
 let processUsers = (users:Array<User>):Array<Email> =>
   users
     .iter()
-    .filter((u) => u.age >= 18)
-  . map((u) => u.email)
-  . distinct()
+    .filter(|u| u.age >= 18)
+    .map(|u| u.email)
+    .distinct()
+
+-- Inline closures use `|params|` syntax
+let doubled = items.map(|x| x * 2)
+let adults = users.filter(|u| u.age >= 18)
+
+-- Block closures for multi-step logic
+let result = items.filter(|item| {
+    let score = item.calculate()
+    score > 100
+})
 
 -- Pattern matching
-describe = (opt:Option<i32>):String => match opt {
-  Some(x) => `Got:   ${x.toString()}`
+let describe = (opt:Option<i32>):String => match opt {
+  Some(x) => `Got: ${x.toString()}`
   None    => "Nothing"
+}
+
+-- Type signature on separate line (no let keyword)
+let transition : AppState -> Event -> Effect<AppState>
+let transition = (state, event) => match (state, event) {
+  (Idle,        Login(creds))  => authenticate(creds).map(Ready)
+  (Ready(user), Logout)        => Effect.pure(Idle)
+  (Loading(id), Timeout)       => Effect.pure(Failed(TimeoutError))
+  _                            => Effect.pure(state)
 }
 ```
 
@@ -71,17 +89,17 @@ describe = (opt:Option<i32>):String => match opt {
 
 ```typescript
 -- Pure computation, no marker needed, it's the default
-factorial = (n:i32):i32 => match n {
+let factorial = (n:i32):i32 => match n {
   0 => 1
   n => n * factorial(n - 1)
 }
 
 -- IO must be marked, returns an Effect type
 -- Effect<T> is your IO wrapper
-readUser : Effect<Option<User>>
+let readUser : Effect<Option<User>>
 let readUser = do {
   line <- IO.readLine()
-  id   <- Str.parsei32(line) |> Option.fromResult()
+  id   <- Str.parsei32(line).map(Option.fromResult())
   DB.findUser(id)              -- also returns Effect<Option<User>>
 }
 
@@ -93,9 +111,9 @@ type AppState =
   | Ready(User)
   | Failed(Error)
 
-transition : AppState -> Event -> Effect<AppState>
-transition = (state, event) => match (state, event) {
-  (Idle,        Login(creds))  => authenticate(creds) |> map(Ready)
+let transition : AppState -> Event -> Effect<AppState>
+let transition = (state, event) => match (state, event) {
+  (Idle,        Login(creds))  => authenticate(creds).map(Ready)
   (Ready(user), Logout)        => Effect.pure(Idle)
   (Loading(id), Timeout)       => Effect.pure(Failed(TimeoutError))
   _                            => Effect.pure(state)
@@ -108,13 +126,13 @@ transition = (state, event) => match (state, event) {
 -- Hindley-Milner base with explicit annotations optional
 -- Generic types with constraints
 
--- Typeclass-style triats (traits)
-triat Functor<F> {
-  map : <A, B>(F<A>, (A) => B) => F<B>
+-- Typeclass-style traits
+trait Functor<F> {
+  map : <A, B>(F<A>, |A| B) => F<B>
 }
 
-triat Foldable<F> {
-  fold : <A, B>(F<A>, B, (B, A) => B) => B
+trait Foldable<F> {
+  fold : <A, B>(F<A>, B, |B, A| B) => B
 }
 
 -- Built-in implementations for Array, Option, Result
@@ -123,14 +141,14 @@ triat Foldable<F> {
 -- No implicit coercion, ever
 -- i32 and f64 are distinct
 -- Explicit conversions
-x : i32 = 5
-y : f64 = f64::from(x)  -- explicit, not x + 0 + 0  
+let x : i32 = 5
+let y : f64 = f64::from(x)  -- explicit, not x + 0 + 0
 
 -- Union types for flexibility (TS-inspired)
 type StringOri32 = String | i32
 
 -- Intersection for composition
-type Named     = { name : Str }
+type Named     = { name : str }
 type Aged      = { age  : i32 }
 type Person    = Named & Aged
 ```
@@ -191,17 +209,20 @@ Source Code
 lang/
 ├── Cargo.toml          (workspace)
 ├── crates/
+│   ├── ast/            -- Shared AST types (Day 1)
+│   │   ├── src/
+│   │   │   ├── span.rs
+│   │   │   └── ast.rs
+│   │
 │   ├── lexer/          -- Person 1
 │   │   ├── src/
-│   │   │   ├── token.rs
-│   │   │   ├── lexer.rs
-│   │   │   └── span.rs
+│   │   │   ├── error.rs
+│   │   │   └── lexer.rs
 │   │
 │   ├── parser/         -- Person 2
 │   │   ├── src/
-│   │   │   ├── ast.rs
-│   │   │   ├── parser.rs
-│   │   │   └── cst.rs
+│   │   │   ├── error.rs
+│   │   │   └── parser.rs
 │   │
 │   ├── typechecker/    -- Person 3
 │   │   ├── src/
@@ -229,9 +250,13 @@ lang/
 │   │   │   ├── result.rs
 │   │   │   └── io.rs
 │   │
+│   ├── diagnostics/    -- Error aggregation
+│   │   └── src/
+│   │       └── errors.rs
+│   │
 │   └── cli/            -- You
-│       ├── src/
-│       │   └── main.rs
+│       └── src/
+│           └── main.rs
 │
 ├── lsp/                -- Separate crate
 │   └── src/
@@ -323,10 +348,10 @@ Cranelift:
 
 ```toml
 [dependencies]
-cranelift-codegen  = "0.109"
-cranelift-frontend = "0.109"
-cranelift-jit      = "0.109"
-cranelift-module   = "0.109"
+cranelift-codegen  = "0.132"
+cranelift-frontend = "0.132"
+cranelift-jit      = "0.132"
+cranelift-module   = "0.132"
 ```
 
 ### JIT Compilation Flow
@@ -383,10 +408,10 @@ Skip for now:
 ```
 Day 1 (You):
   - Create repo, workspace Cargo.toml
-  - Define shared AST types in a `lang-ast` crate
-  - Define IR types in `lang-ir` crate
-  - Define error types in `lang-error` crate
-  - Write triat contracts (traits) for each module
+  - Define shared AST types in crates/ast
+  - Define IR types in crates/ir
+  - Define error types in crates/diagnostics
+  - Write trait contracts for each module
   - Document the token set, operator precedence table
   - Everyone pulls and starts
 
@@ -489,50 +514,50 @@ Day 21:
 
 ```typescript
 -- Array operations
-Array.map      : <A, B>(Array<A>, (A) => B) => Array<B>
-Array.filter   : <A>(Array<A>, (A) => Bool) => Array<A>
-Array.flatMap  : <A, B>(Array<A>, (A) => Array<B>) => Array<B>
-Array.fold     : <A, B>(Array<A>, B, (B, A) => B) => B
-Array.reduce   : <A>(Array<A>, (A, A) => A) => Option<A>
-Array.find     : <A>(Array<A>, (A) => Bool) => Option<A>
+Array.map      : <A, B>(Array<A>, |A| B) => Array<B>
+Array.filter   : <A>(Array<A>, |A| bool) => Array<A>
+Array.flatMap  : <A, B>(Array<A>, |A| Array<B>) => Array<B>
+Array.fold     : <A, B>(Array<A>, B, |B, A| B) => B
+Array.reduce   : <A>(Array<A>, |A, A| A) => Option<A>
+Array.find     : <A>(Array<A>, |A| bool) => Option<A>
 Array.zip      : <A, B>(Array<A>, Array<B>) => Array<(A, B)>
 Array.take     : <A>(Array<A>, i32) => Array<A>
 Array.drop     : <A>(Array<A>, i32) => Array<A>
 Array.head     : <A>(Array<A>) => Option<A>
 Array.tail     : <A>(Array<A>) => Array<A>
 Array.len      : <A>(Array<A>) => i32
-Array.isEmpty  : <A>(Array<A>) => Bool
+Array.isEmpty  : <A>(Array<A>) => bool
 Array.distinct : <A: Eq>(Array<A>) => Array<A>
 Array.sort     : <A: Ord>(Array<A>) => Array<A>
-Array.sortBy   : <A, B: Ord>(Array<A>, (A) => B) => Array<A>
-Array.groupBy  : <A, B: Eq>(Array<A>, (A) => B) => Map<B, Array<A>>
+Array.sortBy   : <A, B: Ord>(Array<A>, |A| B) => Array<A>
+Array.groupBy  : <A, B: Eq>(Array<A>, |A| B) => Map<B, Array<A>>
 
 -- Option
-Option.map     : <A, B>(Option<A>, (A) => B) => Option<B>
-Option.flatMap : <A, B>(Option<A>, (A) => Option<B>) => Option<B>
+Option.map     : <A, B>(Option<A>, |A| B) => Option<B>
+Option.flatMap : <A, B>(Option<A>, |A| Option<B>) => Option<B>
 Option.orElse  : <A>(Option<A>, Option<A>) => Option<A>
 Option.unwrap  : <A>(Option<A>, A) => A  -- with default
-Option.isSome  : <A>(Option<A>) => Bool
+Option.isSome  : <A>(Option<A>) => bool
 
 -- Result
-Result.map      : <T, E, U>(Result<T,E>, (T) => U) => Result<U,E>
-Result.flatMap  : <T, E, U>(Result<T,E>, (T) => Result<U,E>) => Result<U,E>
-Result.mapErr   : <T, E, F>(Result<T,E>, (E) => F) => Result<T,F>
-Result.recover  : <T, E>(Result<T,E>, (E) => T) => T
+Result.map      : <T, E, U>(Result<T,E>, |T| U) => Result<U,E>
+Result.flatMap  : <T, E, U>(Result<T,E>, |T| Result<U,E>) => Result<U,E>
+Result.mapErr   : <T, E, F>(Result<T,E>, |E| F) => Result<T,F>
+Result.recover  : <T, E>(Result<T,E>, |E| T) => T
 
 -- IO / Effect
-IO.print    : (Str) => Effect<Unit>
-IO.println  : (Str) => Effect<Unit>
-IO.readLine : () => Effect<Str>
-IO.readFile : (Path) => Effect<Result<Str, IOError>>
-IO.writeFile: (Path, Str) => Effect<Result<Unit, IOError>>
+IO.print    : (str) => Effect<Unit>
+IO.println  : (str) => Effect<Unit>
+IO.readLine : () => Effect<str>
+IO.readFile : (Path) => Effect<Result<str, IOError>>
+IO.writeFile: (Path, str) => Effect<Result<Unit, IOError>>
 
 -- Function combinators
-compose : <A, B, C>((B) => C, (A) => B) => (A) => C
-pipe    : <A, B, C>((A) => B, (B) => C) => (A) => C
+compose : <A, B, C>(|B| C, |A| B) => |A| C
+pipe    : <A, B, C>(|A| B, |B| C) => |A| C
 id      : <A>(A) => A
-const   : <A, B>(A) => (B) => A
-flip    : <A, B, C>((A) => (B) => C) => (B) => (A) => C
+const   : <A, B>(A) => |B| A
+flip    : <A, B, C>(|A| |B| C) => |B| |A| C
 ```
 
 ---
@@ -543,31 +568,37 @@ flip    : <A, B, C>((A) => (B) => C) => (B) => (A) => C
 // grammar.js - the key rules
 
 module.exports = grammar({
-  name: "yourlang",
+  name: "pipe_lang",
 
   rules: {
     source_file: ($) => repeat($._top_level),
 
-    _top_level: ($) => choice($.type_def, $.function_def, $.triat_def),
+    _top_level: ($) => choice($.type_def, $.let_def, $.trait_def),
 
-    // type User = { id: i32, name: Str }
+    // type User = { id: i32, name: str }
     type_def: ($) =>
       seq("type", $.identifier, optional($.type_params), "=", $._type_expr),
 
-    // name : Type -> Type
-    // name = (args) => body
-    function_def: ($) =>
-      seq($.identifier, ":", $._type_expr, $.identifier, "=", $.arrow_fn),
+    // let name = (params):ReturnType => body
+    let_def: ($) =>
+      seq("let", $.identifier, optional(seq(":", $._type_expr)), "=", $._expr),
 
-    arrow_fn: ($) => seq("(", optional($.param_list), ")", "=>", $._expr),
+    // Lambda: |params| body or (params):ReturnType => body
+    lambda: ($) => choice(
+      seq("|", optional($.param_list), "|", $._expr),
+      seq("(", optional($.typed_param_list), ")", optional(seq(":", $._type_expr)), "=>", $._expr),
+    ),
 
     // match x { Pat => expr, ... }
     match_expr: ($) => seq("match", $._expr, "{", repeat($.match_arm), "}"),
 
     match_arm: ($) => seq($._pattern, "=>", $._expr),
 
-    // Pipeline: expr |> expr
-    pipeline: ($) => prec.left(1, seq($._expr, "|>", $._expr)),
+    // Method call: expr.method(args)
+    method_call: ($) => seq($._expr, ".", $.identifier, "(", optional($.arg_list), ")"),
+
+    // Field access: expr.field
+    field_access: ($) => prec.left(1, seq($._expr, ".", $.identifier)),
 
     // do { x <- effect; ... }
     do_block: ($) => seq("do", "{", repeat($.do_stmt), "}"),
@@ -649,7 +680,9 @@ impl LanguageServer for Backend {
 | Parsing     | Hand-written recursive descent | Full error control, no grammar conflicts   |
 | Strings     | Arc<str> interned              | Shared, immutable, cheap clone             |
 | Collections | Persistent via Arc<[]>         | Immutable FP style without GC              |
-| Syntax      | Arrow functions, no loops      | Consistent with FP philosophy              |
+| Syntax      | Dot operator, no pipeline      | Rust/TS style, easier to type              |
+| Closures    | `\|params\|` for inline        | Distinguishes from function definitions    |
+| Functions   | `let name = (params) => body`  | `let` required for all bindings            |
 
 ---
 
@@ -683,16 +716,17 @@ Risk 5: 21 days isn't enough
 
 ```bash
 # 1. Create workspace
-cargo new --name langname lang
-cd lang
+cargo init --lib --name pipe-lang
+cd pipe-lang
 
 # 2. Create all crates
+cargo new --lib crates/ast
 cargo new --lib crates/lexer
 cargo new --lib crates/parser
-cargo new --lib crates/typechecker
 cargo new --lib crates/ir
 cargo new --lib crates/runtime
 cargo new --lib crates/stdlib
+cargo new --lib crates/diagnostics
 cargo new crates/cli
 
 # 3. Workspace Cargo.toml
@@ -700,16 +734,11 @@ cargo new crates/cli
 members = ["crates/*"]
 resolver = "2"
 
-[workspace.dependencies]
-cranelift-codegen  = "0.109"
-cranelift-frontend = "0.109"
-cranelift-jit      = "0.109"
-
 # 4. Write these files before anyone else touches code:
-#    - crates/lexer/src/token.rs    (all token types)
-#    - crates/parser/src/ast.rs     (all AST nodes)
-#    - crates/ir/src/ir.rs          (all IR nodes)
-#    - A shared error type
+#    - crates/ast/src/span.rs      (Span struct)
+#    - crates/ast/src/ast.rs       (all AST nodes)
+#    - crates/ir/src/ir.rs         (all IR nodes)
+#    - crates/diagnostics/src/errors.rs (CompilerError enum)
 
 # 5. Write a test for each module that currently fails
 #    This defines done for each person

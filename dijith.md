@@ -2,23 +2,23 @@
 
 ## Phase 1: Repo Setup & Core Dependencies (Day 1)
 
-First, set up the repo and pull in the dependencies for _your_ crates. Do not write logic yet—just establish the skeleton and install packages.
+First, set up the repo and pull in the dependencies for _your_ crates. Do not write logic yet — just establish the skeleton and install packages.
 
 ```bash
 # 1. Initialize Workspace
-cargo new --name lang_core lang
-cd lang
-rm src/main.rs
+cargo init --lib --name pipe-lang
+cd pipe-lang
 
 # 2. Scaffold Your Crates (Plus shared AST)
 mkdir crates
-cd crates
-cargo new --lib ast
-cargo new --lib lexer
-cargo new --lib parser
-cargo new --lib ir
-cargo new --lib runtime
-cd ..
+cargo new --lib crates/ast
+cargo new --lib crates/lexer
+cargo new --lib crates/parser
+cargo new --lib crates/ir
+cargo new --lib crates/runtime
+cargo new --lib crates/stdlib
+cargo new --lib crates/diagnostics
+cargo new crates/cli
 
 # 3. Setup Workspace Cargo.toml
 cat <<EOT > Cargo.toml
@@ -32,12 +32,11 @@ EOT
 
 Run these from the root of the workspace.
 
-**For `ast` & `lexer` (Memory & Strings)**
+**For `ast` (Memory & Strings)**
 
 ```bash
-cargo add bumpalo -p ast      # Arena allocation for AST/IR
-cargo add smol_str -p ast     # String interning for fast cloning
-cargo add smol_str -p lexer
+cargo add bumpalo -p ast --features collections  # Arena allocation for AST
+cargo add smol_str -p ast                        # String interning for fast cloning
 ```
 
 _Intuition:_ ASTs involve thousands of small nodes and identifiers. Using `Box` and `String` fragments memory and slows down the compiler. `bumpalo` allows you to allocate the entire AST in one contiguous memory arena and drop it instantly. `smol_str` prevents heap allocations for identifiers under 22 bytes.
@@ -62,7 +61,7 @@ cargo add cranelift-module -p runtime
 
 ## Phase 2: Defining the Common Domain (Day 1)
 
-Before writing the Lexer, you must define the Types in `crates/ast/src/lib.rs`. This is the single source of truth for you and your team.
+Before writing the Lexer, you must define the Types in `crates/ast/`. This is the single source of truth for you and your team.
 
 ### 1. Spans (Source Mapping)
 
@@ -77,38 +76,51 @@ pub struct Span {
 }
 
 impl Span {
+    pub fn new(start: usize, end: usize) -> Self { Self { start, end } }
+    pub fn empty(pos: usize) -> Self { Self { start: pos, end: pos } }
     pub fn merge(self, other: Span) -> Span {
         Span {
             start: self.start.min(other.start),
             end: self.end.max(other.end),
         }
     }
+    pub fn len(self) -> usize { self.end - self.start }
+    pub fn source_text(self, source: &str) -> &str { &source[self.start..self.end] }
 }
 ```
 
 ### 2. The Token Architecture
 
-Design the Token as a lightweight struct. Do not put strings inside keywords; only use `SmolStr` for literals/identifiers.
+Design the Token as a lightweight struct. Do not put strings inside keywords; only use `&str` for literals/identifiers.
 
 ```rust
-// crates/lexer/src/token.rs
+// crates/lexer/src/lexer.rs
 use ast::span::Span;
-use smol_str::SmolStr;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
     // Keywords
-    Type, Match, Do,
+    Type, Let, In, If, Then, Else, Match, With, Do, Effect, Return, True, False,
     // Operators
     Arrow,          // =>
-    Pipe,           // |>
+    Pipe,           // |> (for method chaining, NOT a pipeline operator)
     Bind,           // <-
-    // Identifiers & Literals
-    Ident(SmolStr),
-    Int(i64),
-    String(SmolStr),
-    // Punctuation
+    Plus, Minus, Star, Slash, Percent,
+    Eq, Ne, Lt, Le, Gt, Ge,
+    And, Or, Not,
+    Assign,         // =
+    Dot,            // . (field access and method calls)
+    Comma, Colon, Semicolon, Underscore,
+    // Delimiters
     OpenParen, CloseParen, OpenBrace, CloseBrace,
+    OpenBracket, CloseBracket,
+    // Literals
+    Int(i64),
+    Float(f64),
+    Str(String),
+    // Identifier
+    Ident(String),
+    // Special
     Eof,
 }
 
@@ -128,11 +140,12 @@ Your lexer must be a hand-written, pull-based iterator over a `&str` or `&[u8]`.
 ### 1. The API Boundary
 
 ```rust
-// crates/lexer/src/lib.rs
+// crates/lexer/src/lexer.rs
 pub struct Lexer<'a> {
     source: &'a str,
     chars: std::iter::Peekable<std::str::CharIndices<'a>>,
     current_pos: usize,
+    done: bool,
 }
 
 impl<'a> Lexer<'a> {
@@ -142,6 +155,7 @@ impl<'a> Lexer<'a> {
 }
 
 // Implement Iterator so the Parser can just call `.next()`
+// Always yields at least one Eof token at the end
 impl<'a> Iterator for Lexer<'a> {
     type Item = Token;
     fn next(&mut self) -> Option<Self::Item> {
@@ -153,7 +167,7 @@ impl<'a> Iterator for Lexer<'a> {
 
 ### 2. Lexer Test Driven Development
 
-Write these tests _first_ in `crates/lexer/src/lib.rs`.
+Write these tests _first_ in `crates/lexer/src/lexer.rs`.
 
 ```rust
 #[cfg(test)]
@@ -162,16 +176,16 @@ mod tests {
 
     #[test]
     fn lex_basic_identifiers() {
-        let mut lexer = Lexer::new("add = (a, b) => a + b");
+        let mut lexer = Lexer::new("let add = (a, b) => a + b");
+        assert_eq!(lexer.next().unwrap().kind, TokenKind::Let);
         assert_eq!(lexer.next().unwrap().kind, TokenKind::Ident("add".into()));
-        assert_eq!(lexer.next().unwrap().kind, TokenKind::Assign);
         // ... test rest of tokens
     }
 
     #[test]
-    fn lex_pipeline_and_bind() {
-        let mut lexer = Lexer::new("x |> map \n y <- effect");
-        // Assert Pipe (|>) and Bind (<-) are recognized
+    fn lex_dot_and_bind() {
+        let mut lexer = Lexer::new("x.filter \n y <- effect");
+        // Assert Dot (.) and Bind (<-) are recognized
     }
 
     #[test]
@@ -179,6 +193,12 @@ mod tests {
         let source = "let α = 5"; // Unicode handling is critical
         let mut lexer = Lexer::new(source);
         // Test that spans are byte-accurate, not char-accurate
+    }
+
+    #[test]
+    fn lex_closure_syntax() {
+        let mut lexer = Lexer::new("|x| x + 1");
+        // Assert Pipe, Ident, Pipe, Ident, Plus, Int
     }
 }
 ```
@@ -198,44 +218,71 @@ Notice the use of `&'a` lifetimes. The AST lives in the arena.
 ```rust
 // crates/ast/src/ast.rs
 use bumpalo::Bump;
-use smol_str::SmolStr;
 use crate::span::Span;
 
 #[derive(Debug, Clone)]
 pub struct Program<'a> {
-    pub declarations: bumpalo::collections::Vec<'a, Decl<'a>>,
+    pub decls: bumpalo::collections::Vec<'a, Decl<'a>>,
 }
 
 #[derive(Debug, Clone)]
 pub enum Decl<'a> {
-    Function {
-        name: SmolStr,
-        params: bumpalo::collections::Vec<'a, SmolStr>,
-        body: &'a Expr<'a>,
+    /// let name = expr
+    Bind {
+        name: &'a str,
+        value: &'a Expr<'a>,
         span: Span,
     },
-    // Type aliases, etc.
+    /// let name : Type
+    TypeSig {
+        name: &'a str,
+        ty: &'a TypeExpr<'a>,
+        span: Span,
+    },
+    /// type Name = TypeExpr
+    TypeAlias {
+        name: &'a str,
+        params: bumpalo::collections::Vec<'a, &'a str>,
+        rhs: &'a TypeExpr<'a>,
+        span: Span,
+    },
 }
 
 #[derive(Debug, Clone)]
 pub enum Expr<'a> {
     Int(i64, Span),
-    Ident(SmolStr, Span),
+    Float(f64, Span),
+    Str(&'a str, Span),
+    Bool(bool, Span),
+    Ident(&'a str, Span),
     Application {
         func: &'a Expr<'a>,
         args: bumpalo::collections::Vec<'a, &'a Expr<'a>>,
         span: Span,
     },
-    Pipeline {
+    Lambda {
+        params: bumpalo::collections::Vec<'a, Param<'a>>,
+        return_type: Option<&'a TypeExpr<'a>>,
+        body: &'a Expr<'a>,
+        span: Span,
+    },
+    Binary {
+        op: BinOp,
         left: &'a Expr<'a>,
         right: &'a Expr<'a>,
+        span: Span,
+    },
+    FieldAccess {
+        object: &'a Expr<'a>,
+        field: &'a str,
         span: Span,
     },
     Match {
         subject: &'a Expr<'a>,
         arms: bumpalo::collections::Vec<'a, MatchArm<'a>>,
         span: Span,
-    }
+    },
+    // ... other variants
 }
 ```
 
@@ -273,13 +320,26 @@ mod tests {
     use bumpalo::Bump;
 
     #[test]
-    fn parse_pipeline_operator() {
+    fn parse_method_chaining() {
         let arena = Bump::new();
-        let mut parser = Parser::new(Lexer::new("users |> filter |> map"), &arena);
-        let ast = parser.parse_expression(Precedence::Lowest).unwrap();
+        let mut parser = Parser::new(
+            Lexer::new("users.filter(|x| x.age >= 18).map(|x| x.name)"),
+            &arena,
+        );
+        let ast = parser.parse_program().unwrap();
+        // Assert that method calls are desugared to function applications:
+        // map(filter(users, |x| x.age >= 18), |x| x.name)
+    }
 
-        // Assert that the AST formed is properly left-associative:
-        // Pipeline(Pipeline(users, filter), map)
+    #[test]
+    fn parse_let_binding() {
+        let arena = Bump::new();
+        let mut parser = Parser::new(
+            Lexer::new("let add = (a:i32, b:i32):i64 => a + b"),
+            &arena,
+        );
+        let ast = parser.parse_program().unwrap();
+        // Assert: Decl::Bind { name: "add", value: Lambda { ... } }
     }
 
     #[test]
@@ -302,7 +362,7 @@ The AST is a tree. IR must be flat, essentially a typed SSA (Static Single Assig
 
 ```rust
 // crates/ir/src/lib.rs
-use smol_str::SmolStr;
+use ast::SmolStr;
 
 // Typed, flat instructions
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -385,7 +445,7 @@ impl JitCompiler {
         }
     }
 
-    // Test case: Compile a simple `fn return_5() -> Int` to test the pipeline
+    // Test case: Compile a simple `let return_5 = () => 5` to test the pipeline
 }
 ```
 
@@ -396,7 +456,7 @@ impl JitCompiler {
 1. **Workspace & Build Pipeline:** Everything compiles with `cargo build`.
 2. **`ast` crate:** Spans, Token enums, and Arena-based AST node definitions are solid.
 3. **`lexer` crate:** All TDD tests pass. Converts strings to `Token` streams perfectly.
-4. **`parser` crate:** All TDD tests pass. Correctly handles associativity of `|>` and builds a `bumpalo` AST.
+4. **`parser` crate:** All TDD tests pass. Correctly handles dot operator and builds a `bumpalo` AST.
 5. **`ir` crate:** The SSA structures are defined.
 6. **`runtime` crate:** The Cranelift module can be instantiated without panicking.
 

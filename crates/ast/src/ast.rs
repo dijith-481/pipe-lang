@@ -12,11 +12,16 @@ pub struct Program<'a> {
 /// Top-level declarations.
 #[derive(Debug, Clone)]
 pub enum Decl<'a> {
-    /// A function definition: `name = (params) => body`
-    Function {
+    /// A value binding: `let name = expr`
+    Bind {
         name: &'a str,
-        params: Vec<'a, &'a str>,
-        body: &'a Expr<'a>,
+        value: &'a Expr<'a>,
+        span: Span,
+    },
+    /// A type signature: `let name : Type`
+    TypeSig {
+        name: &'a str,
+        ty: &'a TypeExpr<'a>,
         span: Span,
     },
     /// A type alias: `type Name = TypeExpr`
@@ -53,17 +58,11 @@ pub enum Expr<'a> {
         span: Span,
     },
 
-    /// Lambda expression: `(a, b) => a + b`
+    /// Lambda expression: `(a, b) => a + b` or `|x| x + 1`
     Lambda {
         params: Vec<'a, Param<'a>>,
+        return_type: Option<&'a TypeExpr<'a>>,
         body: &'a Expr<'a>,
-        span: Span,
-    },
-
-    /// Pipeline operator: `x |> f |> g`
-    Pipeline {
-        left: &'a Expr<'a>,
-        right: &'a Expr<'a>,
         span: Span,
     },
 
@@ -228,30 +227,30 @@ pub enum LiteralPattern<'a> {
 /// Type expressions in type annotations.
 #[derive(Debug, Clone)]
 pub enum TypeExpr<'a> {
-    /// Simple type name: `Int`, `Str`, `Bool`
+    /// Simple type name: `i32`, `f64`, `str`, `bool`
     Named(&'a str, Span),
 
-    /// Type application: `Array<Int>`, `Option<Str>`
+    /// Type application: `Array<i32>`, `Option<str>`
     Apply {
         func: &'a TypeExpr<'a>,
         arg: &'a TypeExpr<'a>,
         span: Span,
     },
 
-    /// Function type: `Int -> Str -> Bool`
+    /// Function type: `i32 -> str -> bool`
     Function {
         from: &'a TypeExpr<'a>,
         to: &'a TypeExpr<'a>,
         span: Span,
     },
 
-    /// Tuple type: `(Int, Str)`
+    /// Tuple type: `(i32, str)`
     Tuple {
         types: Vec<'a, TypeExpr<'a>>,
         span: Span,
     },
 
-    /// Record type: `{ name: Str, age: Int }`
+    /// Record type: `{ name: str, age: i32 }`
     Record {
         fields: Vec<'a, TypeField<'a>>,
         span: Span,
@@ -281,7 +280,6 @@ pub enum BinOp {
     Ge,
     And,
     Or,
-    PipeRight,
 }
 
 /// Unary operators.
@@ -332,14 +330,28 @@ impl<'a> Expr<'a> {
         })
     }
 
-    /// Create a pipeline expression.
-    pub fn pipeline(
-        left: &'a Expr<'a>,
-        right: &'a Expr<'a>,
+    /// Create a field access expression: `object.field`
+    pub fn field_access(
+        object: &'a Expr<'a>,
+        field: &'a str,
         span: Span,
         arena: &'a Bump,
     ) -> &'a Self {
-        arena.alloc(Expr::Pipeline { left, right, span })
+        arena.alloc(Expr::FieldAccess {
+            object,
+            field,
+            span,
+        })
+    }
+
+    /// Create a function application: `func(args...)`
+    pub fn app(
+        func: &'a Expr<'a>,
+        args: Vec<'a, &'a Expr<'a>>,
+        span: Span,
+        arena: &'a Bump,
+    ) -> &'a Self {
+        arena.alloc(Expr::Application { func, args, span })
     }
 }
 
@@ -356,48 +368,250 @@ mod tests {
     }
 
     #[test]
-    fn construct_function_declaration() {
+    fn construct_let_binding_with_lambda() {
+        // let add = (a:i32, b:i32):i64 => a + b
         let bump = Bump::new();
-        let params = Vec::from_iter_in(["a", "b"].into_iter(), &bump);
-        let lhs = Expr::ident("a", sp(15, 16), &bump);
-        let rhs = Expr::ident("b", sp(19, 20), &bump);
-        let body = Expr::binary(BinOp::Add, lhs, rhs, sp(15, 20), &bump);
-        let decl = Decl::Function {
-            name: "add",
+        let lhs = Expr::ident("a", sp(18, 19), &bump);
+        let rhs = Expr::ident("b", sp(22, 23), &bump);
+        let body = Expr::binary(BinOp::Add, lhs, rhs, sp(18, 23), &bump);
+
+        let ty_i32_1 = bump.alloc(TypeExpr::Named("i32", sp(12, 15)));
+        let ty_i32_2 = bump.alloc(TypeExpr::Named("i32", sp(17, 20)));
+        let ty_i64 = bump.alloc(TypeExpr::Named("i64", sp(25, 28)));
+
+        let params = Vec::from_iter_in(
+            [
+                Param {
+                    name: "a",
+                    ty: Some(ty_i32_1),
+                },
+                Param {
+                    name: "b",
+                    ty: Some(ty_i32_2),
+                },
+            ]
+            .into_iter(),
+            &bump,
+        );
+
+        let lambda = Expr::Lambda {
             params,
+            return_type: Some(ty_i64),
             body,
-            span: sp(0, 20),
+            span: sp(9, 33),
         };
+
+        let decl = Decl::Bind {
+            name: "add",
+            value: &lambda,
+            span: sp(0, 33),
+        };
+
         match decl {
-            Decl::Function {
-                name,
-                params,
-                body,
-                span,
-            } => {
+            Decl::Bind { name, value, span } => {
                 assert_eq!(name, "add");
-                assert_eq!(params.len(), 2);
-                assert!(matches!(body, Expr::Binary { op: BinOp::Add, .. }));
-                assert_eq!(span, sp(0, 20));
+                assert_eq!(span, sp(0, 33));
+                match value {
+                    Expr::Lambda {
+                        params,
+                        return_type,
+                        ..
+                    } => {
+                        assert_eq!(params.len(), 2);
+                        assert!(return_type.is_some());
+                        match return_type.unwrap() {
+                            TypeExpr::Named(n, _) => assert_eq!(*n, "i64"),
+                            _ => panic!("expected Named type"),
+                        }
+                    }
+                    _ => panic!("expected Lambda"),
+                }
             }
-            _ => panic!("expected Function declaration"),
+            _ => panic!("expected Bind"),
         }
     }
 
     #[test]
-    fn construct_pipeline_expression() {
+    fn construct_let_binding_with_value() {
+        // let x = 42
         let bump = Bump::new();
-        let x = Expr::ident("users", sp(0, 5), &bump);
-        let filter = Expr::ident("filter", sp(8, 14), &bump);
-        let step1 = Expr::pipeline(x, filter, sp(0, 14), &bump);
-        let map = Expr::ident("map", sp(17, 20), &bump);
-        let step2 = Expr::pipeline(step1, map, sp(0, 20), &bump);
-        match step2 {
-            Expr::Pipeline { left, right, .. } => {
-                assert!(matches!(left, Expr::Pipeline { .. }));
-                assert!(matches!(right, Expr::Ident("map", _)));
+        let val = Expr::int(42, sp(8, 10), &bump);
+        let decl = Decl::Bind {
+            name: "x",
+            value: val,
+            span: sp(0, 10),
+        };
+        match decl {
+            Decl::Bind { name, value, .. } => {
+                assert_eq!(name, "x");
+                assert!(matches!(value, Expr::Int(42, _)));
             }
-            _ => panic!("expected Pipeline"),
+            _ => panic!("expected Bind"),
+        }
+    }
+
+    #[test]
+    fn construct_type_signature() {
+        // let transition : i32 -> i32 -> str
+        let bump = Bump::new();
+        let from = bump.alloc(TypeExpr::Named("i32", sp(18, 21)));
+        let mid = bump.alloc(TypeExpr::Named("i32", sp(25, 28)));
+        let to = bump.alloc(TypeExpr::Named("str", sp(32, 35)));
+        let func1 = bump.alloc(TypeExpr::Function {
+            from: mid,
+            to,
+            span: sp(25, 35),
+        });
+        let func2 = TypeExpr::Function {
+            from,
+            to: func1,
+            span: sp(18, 35),
+        };
+        let decl = Decl::TypeSig {
+            name: "transition",
+            ty: &func2,
+            span: sp(0, 35),
+        };
+        match decl {
+            Decl::TypeSig { name, ty, .. } => {
+                assert_eq!(name, "transition");
+                assert!(matches!(ty, TypeExpr::Function { .. }));
+            }
+            _ => panic!("expected TypeSig"),
+        }
+    }
+
+    #[test]
+    fn construct_closure_single_expression() {
+        // |x| x.age >= 30
+        let bump = Bump::new();
+        let obj = Expr::ident("x", sp(4, 5), &bump);
+        let field = Expr::field_access(obj, "age", sp(4, 8), &bump);
+        let lit = Expr::int(30, sp(12, 14), &bump);
+        let body = Expr::binary(BinOp::Ge, field, lit, sp(4, 14), &bump);
+
+        let params = Vec::from_iter_in(
+            [Param {
+                name: "x",
+                ty: None,
+            }]
+            .into_iter(),
+            &bump,
+        );
+
+        let lambda = Expr::Lambda {
+            params,
+            return_type: None,
+            body,
+            span: sp(0, 14),
+        };
+
+        match lambda {
+            Expr::Lambda {
+                params,
+                return_type,
+                body,
+                ..
+            } => {
+                assert_eq!(params.len(), 1);
+                assert!(return_type.is_none());
+                assert!(matches!(body, Expr::Binary { op: BinOp::Ge, .. }));
+            }
+            _ => panic!("expected Lambda"),
+        }
+    }
+
+    #[test]
+    fn construct_closure_with_block() {
+        // |x| { let y = x.age; y >= 30 }
+        let bump = Bump::new();
+        let obj = Expr::ident("x", sp(6, 7), &bump);
+        let age = Expr::field_access(obj, "age", sp(6, 10), &bump);
+        let let_stmt = Stmt::Let {
+            name: "y",
+            value: age,
+        };
+        let stmts = Vec::from_iter_in([let_stmt].into_iter(), &bump);
+        let y = Expr::ident("y", sp(23, 24), &bump);
+        let lit = Expr::int(30, sp(28, 30), &bump);
+        let result = Expr::binary(BinOp::Ge, y, lit, sp(23, 30), &bump);
+
+        let body = Expr::Block {
+            stmts,
+            result,
+            span: sp(4, 32),
+        };
+
+        let params = Vec::from_iter_in(
+            [Param {
+                name: "x",
+                ty: None,
+            }]
+            .into_iter(),
+            &bump,
+        );
+
+        let lambda = Expr::Lambda {
+            params,
+            return_type: None,
+            body: &body,
+            span: sp(0, 32),
+        };
+
+        match lambda {
+            Expr::Lambda { params, body, .. } => {
+                assert_eq!(params.len(), 1);
+                match body {
+                    Expr::Block { stmts, result, .. } => {
+                        assert_eq!(stmts.len(), 1);
+                        assert!(matches!(result, Expr::Binary { op: BinOp::Ge, .. }));
+                    }
+                    _ => panic!("expected Block"),
+                }
+            }
+            _ => panic!("expected Lambda"),
+        }
+    }
+
+    #[test]
+    fn construct_method_call_as_application() {
+        // users.filter(|x| x.age >= 18) desugars to:
+        // filter(users, |x| x.age >= 18)
+        let bump = Bump::new();
+        let users = Expr::ident("users", sp(0, 5), &bump);
+        let filter = Expr::ident("filter", sp(6, 12), &bump);
+
+        let x = Expr::ident("x", sp(18, 19), &bump);
+        let age = Expr::field_access(x, "age", sp(18, 22), &bump);
+        let lit = Expr::int(18, sp(26, 28), &bump);
+        let cmp = Expr::binary(BinOp::Ge, age, lit, sp(18, 28), &bump);
+
+        let closure_params = Vec::from_iter_in(
+            [Param {
+                name: "x",
+                ty: None,
+            }]
+            .into_iter(),
+            &bump,
+        );
+        let closure = Expr::Lambda {
+            params: closure_params,
+            return_type: None,
+            body: cmp,
+            span: sp(13, 30),
+        };
+
+        let args = Vec::from_iter_in([users, &closure].into_iter(), &bump);
+        let app = Expr::app(filter, args, sp(0, 31), &bump);
+
+        match app {
+            Expr::Application { func, args, .. } => {
+                assert!(matches!(func, Expr::Ident("filter", _)));
+                assert_eq!(args.len(), 2);
+                assert!(matches!(args[0], Expr::Ident("users", _)));
+                assert!(matches!(args[1], Expr::Lambda { .. }));
+            }
+            _ => panic!("expected Application"),
         }
     }
 
@@ -433,32 +647,6 @@ mod tests {
     }
 
     #[test]
-    fn construct_lambda_expression() {
-        let bump = Bump::new();
-        let params = Vec::from_iter_in(
-            [Param {
-                name: "x",
-                ty: None,
-            }]
-            .into_iter(),
-            &bump,
-        );
-        let body = Expr::ident("x", sp(11, 12), &bump);
-        let lambda = Expr::Lambda {
-            params,
-            body,
-            span: sp(0, 12),
-        };
-        match lambda {
-            Expr::Lambda { params, .. } => {
-                assert_eq!(params.len(), 1);
-                assert_eq!(params[0].name, "x");
-            }
-            _ => panic!("expected Lambda"),
-        }
-    }
-
-    #[test]
     fn construct_let_expression() {
         let bump = Bump::new();
         let value = Expr::int(5, sp(8, 9), &bump);
@@ -480,11 +668,11 @@ mod tests {
     #[test]
     fn construct_type_alias() {
         let bump = Bump::new();
-        let rhs = TypeExpr::Named("Int", sp(18, 21));
+        let rhs = bump.alloc(TypeExpr::Named("i32", sp(18, 21)));
         let decl = Decl::TypeAlias {
             name: "UserId",
             params: Vec::new_in(&bump),
-            rhs: &rhs,
+            rhs,
             span: sp(0, 21),
         };
         match decl {
@@ -497,16 +685,37 @@ mod tests {
 
     #[test]
     fn type_expr_function_arrow() {
-        let from = TypeExpr::Named("Int", sp(0, 3));
-        let to = TypeExpr::Named("Str", sp(7, 10));
+        let bump = Bump::new();
+        let from = bump.alloc(TypeExpr::Named("i32", sp(0, 3)));
+        let to = bump.alloc(TypeExpr::Named("str", sp(7, 10)));
         let func_type = TypeExpr::Function {
-            from: &from,
-            to: &to,
+            from,
+            to,
             span: sp(0, 10),
         };
         match func_type {
             TypeExpr::Function { .. } => {}
             _ => panic!("expected Function type"),
+        }
+    }
+
+    #[test]
+    fn type_expr_generic_apply() {
+        // Option<i32>
+        let bump = Bump::new();
+        let base = bump.alloc(TypeExpr::Named("Option", sp(0, 6)));
+        let arg = bump.alloc(TypeExpr::Named("i32", sp(7, 10)));
+        let applied = TypeExpr::Apply {
+            func: base,
+            arg,
+            span: sp(0, 11),
+        };
+        match applied {
+            TypeExpr::Apply { func, arg, .. } => {
+                assert!(matches!(func, TypeExpr::Named("Option", _)));
+                assert!(matches!(arg, TypeExpr::Named("i32", _)));
+            }
+            _ => panic!("expected Apply"),
         }
     }
 
