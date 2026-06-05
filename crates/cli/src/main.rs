@@ -1,5 +1,9 @@
 use clap::{Parser, Subcommand};
 
+pub mod session;
+
+use session::{CompilerSession, SessionConfig};
+
 /// The pipe-lang compiler and runtime.
 #[derive(Parser)]
 #[command(
@@ -39,19 +43,47 @@ pub enum Commands {
 
 fn main() {
     let cli = Cli::parse();
-    match cli.command {
+    let exit_code = match cli.command {
         Commands::Compile {
             file,
             emit_ir,
             opt_level,
         } => {
-            println!("Compiling {file} (emit_ir={emit_ir}, opt_level={opt_level})");
+            let config = SessionConfig::new(std::path::PathBuf::from(&file))
+                .with_emit_ir(emit_ir)
+                .with_opt_level(opt_level);
+            run_session(config)
         }
         Commands::Run { file } => {
-            println!("Running {file}");
+            let config = SessionConfig::new(std::path::PathBuf::from(&file));
+            run_session(config)
         }
         Commands::Check { file } => {
-            println!("Checking {file}");
+            let config = SessionConfig::new(std::path::PathBuf::from(&file));
+            run_session(config)
+        }
+    };
+    std::process::exit(exit_code);
+}
+
+fn run_session(config: SessionConfig) -> i32 {
+    let mut session = CompilerSession::new(config);
+    if let Err(e) = session.load_source() {
+        eprintln!("{e}");
+        return 1;
+    }
+    match session.run_pipeline() {
+        Ok(result) => {
+            if result.success {
+                0
+            } else {
+                result.eprint_to_stderr();
+                1
+            }
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            1
         }
     }
 }

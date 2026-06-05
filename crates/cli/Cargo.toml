@@ -7,4 +7,6 @@ edition = "2024"
 ast = { version = "0.1.0", path = "../ast" }
 clap = { version = "4.6.1", features = ["derive"] }
 diagnostics = { version = "0.1.0", path = "../diagnostics" }
+lexer = { version = "0.1.0", path = "../lexer" }
 runtime = { version = "0.1.0", path = "../runtime" }
+typechecker = { version = "0.1.0", path = "../typechecker" }
