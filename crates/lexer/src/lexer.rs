@@ -14,6 +14,10 @@ pub struct Token {
 /// Numeric and string literals store their raw source text as `String`.
 /// The parser is responsible for interpreting the value (e.g. parsing
 /// suffixes like `i32`, `u8`, `f64` on numeric literals).
+///
+/// Whitespace, comments, and newlines are emitted as tokens so that
+/// formatters, LSPs, and tree-sitter can access the original source
+/// structure. The parser skips trivial tokens explicitly.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
     // Keywords
@@ -71,6 +75,11 @@ pub enum TokenKind {
     // Identifier
     Ident(String),
 
+    // Trivial tokens (preserved for tooling, skipped by parser)
+    Whitespace(String), // spaces and tabs
+    Comment(String),    // // line comment or -- line comment
+    Newline,            // \n or \r\n
+
     // Special
     Eof,
 }
@@ -94,6 +103,16 @@ impl TokenKind {
                 | TokenKind::Return
                 | TokenKind::True
                 | TokenKind::False
+        )
+    }
+
+    /// Returns true if this token is trivial (whitespace, comment, newline).
+    /// The parser should skip these during parsing.
+    #[must_use]
+    pub fn is_trivial(&self) -> bool {
+        matches!(
+            self,
+            TokenKind::Whitespace(_) | TokenKind::Comment(_) | TokenKind::Newline
         )
     }
 }
@@ -136,38 +155,6 @@ impl<'a> Lexer<'a> {
         Token {
             kind,
             span: Span::new(start, self.current_pos),
-        }
-    }
-
-    fn skip_whitespace_and_comments(&mut self) {
-        loop {
-            match self.peek() {
-                Some(ch) if ch.is_whitespace() => {
-                    self.advance();
-                }
-                Some('/') => {
-                    // Check for // line comment
-                    let saved_pos = self.current_pos;
-                    let saved_chars = self.chars.clone();
-                    self.advance();
-                    if self.peek() == Some('/') {
-                        // Skip until newline or EOF
-                        while let Some(ch) = self.peek() {
-                            if ch == '\n' {
-                                self.advance();
-                                break;
-                            }
-                            self.advance();
-                        }
-                    } else {
-                        // Not a comment -- restore iterator and position
-                        self.chars = saved_chars;
-                        self.current_pos = saved_pos;
-                        break;
-                    }
-                }
-                _ => break,
-            }
         }
     }
 
@@ -291,14 +278,37 @@ impl<'a> Lexer<'a> {
             _ => TokenKind::Ident(ident),
         }
     }
+
+    fn read_comment(&mut self, prefix: &mut String) -> TokenKind {
+        while let Some(ch) = self.peek() {
+            if ch == '\n' {
+                break;
+            }
+            prefix.push(ch);
+            self.advance();
+        }
+        TokenKind::Comment(std::mem::take(prefix))
+    }
+
+    fn read_whitespace(&mut self, first: char) -> TokenKind {
+        let mut ws = String::new();
+        ws.push(first);
+        while let Some(ch) = self.peek() {
+            if ch == ' ' || ch == '\t' || ch == '\r' {
+                ws.push(ch);
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        TokenKind::Whitespace(ws)
+    }
 }
 
 impl<'a> Iterator for Lexer<'a> {
     type Item = Token;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.skip_whitespace_and_comments();
-
         let (start, ch) = self.advance().or_else(|| {
             if self.done {
                 return None;
@@ -315,6 +325,26 @@ impl<'a> Iterator for Lexer<'a> {
         }
 
         let kind = match ch {
+            // Newline
+            '\n' => TokenKind::Newline,
+
+            // \r\n or \r
+            '\r' => {
+                if self.peek() == Some('\n') {
+                    self.advance();
+                }
+                TokenKind::Newline
+            }
+
+            // Whitespace (spaces and tabs)
+            ' ' | '\t' => {
+                let kind = self.read_whitespace(ch);
+                return Some(Token {
+                    kind,
+                    span: Span::new(start, self.current_pos),
+                });
+            }
+
             // Delimiters
             '(' => TokenKind::OpenParen,
             ')' => TokenKind::CloseParen,
@@ -335,18 +365,16 @@ impl<'a> Iterator for Lexer<'a> {
             '*' => TokenKind::Star,
             '%' => TokenKind::Percent,
 
-            // Division or line comment start
+            // Division or // line comment
             '/' => {
                 if self.peek() == Some('/') {
-                    // Line comment -- skip until newline or EOF
-                    while let Some(ch) = self.peek() {
-                        if ch == '\n' {
-                            self.advance();
-                            break;
-                        }
-                        self.advance();
-                    }
-                    return self.next();
+                    let mut comment = String::from("//");
+                    self.advance(); // consume second /
+                    let kind = self.read_comment(&mut comment);
+                    return Some(Token {
+                        kind,
+                        span: Span::new(start, self.current_pos),
+                    });
                 }
                 TokenKind::Slash
             }
@@ -397,18 +425,16 @@ impl<'a> Iterator for Lexer<'a> {
                 }
             }
 
-            // - or -- comment
+            // - or -- line comment
             '-' => {
                 if self.peek() == Some('-') {
-                    // Line comment -- skip until newline or EOF
-                    while let Some(ch) = self.peek() {
-                        if ch == '\n' {
-                            self.advance();
-                            break;
-                        }
-                        self.advance();
-                    }
-                    return self.next();
+                    let mut comment = String::from("--");
+                    self.advance(); // consume second -
+                    let kind = self.read_comment(&mut comment);
+                    return Some(Token {
+                        kind,
+                        span: Span::new(start, self.current_pos),
+                    });
                 }
                 TokenKind::Minus
             }
@@ -465,8 +491,10 @@ mod tests {
     fn lex_keywords_and_identifiers() {
         let tokens: Vec<Token> = Lexer::new("type let in").collect();
         assert_eq!(tokens[0].kind, TokenKind::Type);
-        assert_eq!(tokens[1].kind, TokenKind::Let);
-        assert_eq!(tokens[2].kind, TokenKind::In);
+        assert_eq!(tokens[1].kind, TokenKind::Whitespace(" ".into()));
+        assert_eq!(tokens[2].kind, TokenKind::Let);
+        assert_eq!(tokens[3].kind, TokenKind::Whitespace(" ".into()));
+        assert_eq!(tokens[4].kind, TokenKind::In);
     }
 
     #[test]
@@ -518,18 +546,20 @@ mod tests {
     fn lex_operators() {
         let tokens: Vec<Token> = Lexer::new("=> <-").collect();
         assert_eq!(tokens[0].kind, TokenKind::Arrow);
-        assert_eq!(tokens[1].kind, TokenKind::Bind);
+        assert_eq!(tokens[1].kind, TokenKind::Whitespace(" ".into()));
+        assert_eq!(tokens[2].kind, TokenKind::Bind);
     }
 
     #[test]
     fn lex_comparison_operators() {
         let tokens: Vec<Token> = Lexer::new("== != < <= > >=").collect();
-        assert_eq!(tokens[0].kind, TokenKind::Eq);
-        assert_eq!(tokens[1].kind, TokenKind::Ne);
-        assert_eq!(tokens[2].kind, TokenKind::Lt);
-        assert_eq!(tokens[3].kind, TokenKind::Le);
-        assert_eq!(tokens[4].kind, TokenKind::Gt);
-        assert_eq!(tokens[5].kind, TokenKind::Ge);
+        let significant: Vec<_> = tokens.iter().filter(|t| !t.kind.is_trivial()).collect();
+        assert_eq!(significant[0].kind, TokenKind::Eq);
+        assert_eq!(significant[1].kind, TokenKind::Ne);
+        assert_eq!(significant[2].kind, TokenKind::Lt);
+        assert_eq!(significant[3].kind, TokenKind::Le);
+        assert_eq!(significant[4].kind, TokenKind::Gt);
+        assert_eq!(significant[5].kind, TokenKind::Ge);
     }
 
     #[test]
@@ -547,22 +577,50 @@ mod tests {
     fn lex_slash_comments() {
         let tokens: Vec<Token> = Lexer::new("a // comment\nb").collect();
         assert_eq!(tokens[0].kind, TokenKind::Ident("a".into()));
-        assert_eq!(tokens[1].kind, TokenKind::Ident("b".into()));
+        assert_eq!(tokens[1].kind, TokenKind::Whitespace(" ".into()));
+        assert_eq!(tokens[2].kind, TokenKind::Comment("// comment".into()));
+        assert_eq!(tokens[3].kind, TokenKind::Newline);
+        assert_eq!(tokens[4].kind, TokenKind::Ident("b".into()));
     }
 
     #[test]
     fn lex_dash_comments() {
         let tokens: Vec<Token> = Lexer::new("a -- comment\nb").collect();
         assert_eq!(tokens[0].kind, TokenKind::Ident("a".into()));
-        assert_eq!(tokens[1].kind, TokenKind::Ident("b".into()));
+        assert_eq!(tokens[1].kind, TokenKind::Whitespace(" ".into()));
+        assert_eq!(tokens[2].kind, TokenKind::Comment("-- comment".into()));
+        assert_eq!(tokens[3].kind, TokenKind::Newline);
+        assert_eq!(tokens[4].kind, TokenKind::Ident("b".into()));
     }
 
     #[test]
-    fn lex_skips_whitespace() {
+    fn lex_whitespace_preserved() {
         let tokens: Vec<Token> = Lexer::new("  x  +  y  ").collect();
-        assert_eq!(tokens[0].kind, TokenKind::Ident("x".into()));
-        assert_eq!(tokens[1].kind, TokenKind::Plus);
-        assert_eq!(tokens[2].kind, TokenKind::Ident("y".into()));
+        assert_eq!(tokens[0].kind, TokenKind::Whitespace("  ".into()));
+        assert_eq!(tokens[1].kind, TokenKind::Ident("x".into()));
+        assert_eq!(tokens[2].kind, TokenKind::Whitespace("  ".into()));
+        assert_eq!(tokens[3].kind, TokenKind::Plus);
+        assert_eq!(tokens[4].kind, TokenKind::Whitespace("  ".into()));
+        assert_eq!(tokens[5].kind, TokenKind::Ident("y".into()));
+        assert_eq!(tokens[6].kind, TokenKind::Whitespace("  ".into()));
+    }
+
+    #[test]
+    fn lex_newlines() {
+        let tokens: Vec<Token> = Lexer::new("a\nb\nc").collect();
+        assert_eq!(tokens[0].kind, TokenKind::Ident("a".into()));
+        assert_eq!(tokens[1].kind, TokenKind::Newline);
+        assert_eq!(tokens[2].kind, TokenKind::Ident("b".into()));
+        assert_eq!(tokens[3].kind, TokenKind::Newline);
+        assert_eq!(tokens[4].kind, TokenKind::Ident("c".into()));
+    }
+
+    #[test]
+    fn lex_carriage_return_newline() {
+        let tokens: Vec<Token> = Lexer::new("a\r\nb").collect();
+        assert_eq!(tokens[0].kind, TokenKind::Ident("a".into()));
+        assert_eq!(tokens[1].kind, TokenKind::Newline);
+        assert_eq!(tokens[2].kind, TokenKind::Ident("b".into()));
     }
 
     #[test]
@@ -570,31 +628,34 @@ mod tests {
         let tokens: Vec<Token> = Lexer::new("abc + 123").collect();
         assert_eq!(tokens[0].span.start, 0);
         assert_eq!(tokens[0].span.end, 3);
-        assert_eq!(tokens[2].span.start, 6);
-        assert_eq!(tokens[2].span.end, 9);
+        // "abc" + " " + "+" + " " + "123"
+        assert_eq!(tokens[4].span.start, 6);
+        assert_eq!(tokens[4].span.end, 9);
     }
 
     #[test]
     fn lex_function_syntax() {
         let tokens: Vec<Token> = Lexer::new("add = (a, b) => a + b").collect();
-        assert_eq!(tokens[0].kind, TokenKind::Ident("add".into()));
-        assert_eq!(tokens[1].kind, TokenKind::Assign);
-        assert_eq!(tokens[2].kind, TokenKind::OpenParen);
-        assert_eq!(tokens[3].kind, TokenKind::Ident("a".into()));
-        assert_eq!(tokens[4].kind, TokenKind::Comma);
-        assert_eq!(tokens[5].kind, TokenKind::Ident("b".into()));
-        assert_eq!(tokens[6].kind, TokenKind::CloseParen);
-        assert_eq!(tokens[7].kind, TokenKind::Arrow);
-        assert_eq!(tokens[8].kind, TokenKind::Ident("a".into()));
-        assert_eq!(tokens[9].kind, TokenKind::Plus);
-        assert_eq!(tokens[10].kind, TokenKind::Ident("b".into()));
+        let significant: Vec<_> = tokens.iter().filter(|t| !t.kind.is_trivial()).collect();
+        assert_eq!(significant[0].kind, TokenKind::Ident("add".into()));
+        assert_eq!(significant[1].kind, TokenKind::Assign);
+        assert_eq!(significant[2].kind, TokenKind::OpenParen);
+        assert_eq!(significant[3].kind, TokenKind::Ident("a".into()));
+        assert_eq!(significant[4].kind, TokenKind::Comma);
+        assert_eq!(significant[5].kind, TokenKind::Ident("b".into()));
+        assert_eq!(significant[6].kind, TokenKind::CloseParen);
+        assert_eq!(significant[7].kind, TokenKind::Arrow);
+        assert_eq!(significant[8].kind, TokenKind::Ident("a".into()));
+        assert_eq!(significant[9].kind, TokenKind::Plus);
+        assert_eq!(significant[10].kind, TokenKind::Ident("b".into()));
     }
 
     #[test]
     fn lex_true_false_keywords() {
         let tokens: Vec<Token> = Lexer::new("true false").collect();
         assert_eq!(tokens[0].kind, TokenKind::True);
-        assert_eq!(tokens[1].kind, TokenKind::False);
+        assert_eq!(tokens[1].kind, TokenKind::Whitespace(" ".into()));
+        assert_eq!(tokens[2].kind, TokenKind::False);
     }
 
     #[test]
@@ -607,6 +668,16 @@ mod tests {
     }
 
     #[test]
+    fn is_trivial_classification() {
+        assert!(TokenKind::Whitespace(" ".into()).is_trivial());
+        assert!(TokenKind::Comment("// hi".into()).is_trivial());
+        assert!(TokenKind::Newline.is_trivial());
+        assert!(!TokenKind::Ident("x".into()).is_trivial());
+        assert!(!TokenKind::Int("1".into()).is_trivial());
+        assert!(!TokenKind::Plus.is_trivial());
+    }
+
+    #[test]
     fn lex_dot_field_access() {
         let tokens: Vec<Token> = Lexer::new("user.name").collect();
         assert_eq!(tokens[0].kind, TokenKind::Ident("user".into()));
@@ -616,14 +687,12 @@ mod tests {
 
     #[test]
     fn lex_float_not_field_access() {
-        // 1.0 should be a float, not Int(1) + Dot + Int(0)
         let tokens: Vec<Token> = Lexer::new("1.0").collect();
         assert_eq!(tokens[0].kind, TokenKind::Float("1.0".into()));
     }
 
     #[test]
     fn lex_integer_then_dot() {
-        // 1.name should be Int(1) + Dot + Ident(name)
         let tokens: Vec<Token> = Lexer::new("1.name").collect();
         assert_eq!(tokens[0].kind, TokenKind::Int("1".into()));
         assert_eq!(tokens[1].kind, TokenKind::Dot);
@@ -632,9 +701,27 @@ mod tests {
 
     #[test]
     fn lex_negative_number() {
-        // -42 is Minus + Int(42), not a negative literal
         let tokens: Vec<Token> = Lexer::new("-42").collect();
         assert_eq!(tokens[0].kind, TokenKind::Minus);
         assert_eq!(tokens[1].kind, TokenKind::Int("42".into()));
+    }
+
+    #[test]
+    fn filter_trivial_tokens() {
+        let tokens: Vec<Token> = Lexer::new("let x = 42 // value").collect();
+        let significant: Vec<_> = tokens
+            .iter()
+            .filter(|t| !t.kind.is_trivial() && !matches!(t.kind, TokenKind::Eof))
+            .map(|t| t.kind.clone())
+            .collect();
+        assert_eq!(
+            significant,
+            vec![
+                TokenKind::Let,
+                TokenKind::Ident("x".into()),
+                TokenKind::Assign,
+                TokenKind::Int("42".into()),
+            ]
+        );
     }
 }

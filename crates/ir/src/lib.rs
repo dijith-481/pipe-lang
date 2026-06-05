@@ -15,20 +15,75 @@ pub struct BlockId(pub u32);
 /// A single SSA instruction.
 #[derive(Debug, Clone)]
 pub enum Instruction {
-    /// Load a constant integer.
-    ConstInt(i64),
-    /// Load a constant float.
-    ConstFloat(f64),
+    // -- Signed integer constants --
+    /// Load a constant i8.
+    ConstI8(i8),
+    /// Load a constant i16.
+    ConstI16(i16),
+    /// Load a constant i32.
+    ConstI32(i32),
+    /// Load a constant i64.
+    ConstI64(i64),
+
+    // -- Unsigned integer constants --
+    /// Load a constant u8.
+    ConstU8(u8),
+    /// Load a constant u16.
+    ConstU16(u16),
+    /// Load a constant u32.
+    ConstU32(u32),
+    /// Load a constant u64.
+    ConstU64(u64),
+    /// Load a constant usize.
+    ConstUsize(usize),
+
+    // -- Float constants --
+    /// Load a constant f32.
+    ConstF32(f32),
+    /// Load a constant f64.
+    ConstF64(f64),
+
+    // -- Other constants --
     /// Load a constant boolean.
     ConstBool(bool),
-    /// Integer addition.
+    /// Load a constant string.
+    ConstStr(SmolStr),
+
+    // -- Arithmetic (generic over numeric types, resolved during codegen) --
+    /// Addition.
     Add(ValueId, ValueId),
-    /// Integer subtraction.
+    /// Subtraction.
     Sub(ValueId, ValueId),
-    /// Integer multiplication.
+    /// Multiplication.
     Mul(ValueId, ValueId),
-    /// Integer division.
+    /// Division.
     Div(ValueId, ValueId),
+    /// Modulo.
+    Rem(ValueId, ValueId),
+
+    // -- Comparison --
+    /// Equal.
+    Eq(ValueId, ValueId),
+    /// Not equal.
+    Ne(ValueId, ValueId),
+    /// Less than.
+    Lt(ValueId, ValueId),
+    /// Less than or equal.
+    Le(ValueId, ValueId),
+    /// Greater than.
+    Gt(ValueId, ValueId),
+    /// Greater than or equal.
+    Ge(ValueId, ValueId),
+
+    // -- Logical --
+    /// Logical AND.
+    And(ValueId, ValueId),
+    /// Logical OR.
+    Or(ValueId, ValueId),
+    /// Logical NOT.
+    Not(ValueId),
+
+    // -- Control flow --
     /// Call a function by name with arguments.
     Call(SmolStr, Vec<ValueId>),
     /// Return a value from the function.
