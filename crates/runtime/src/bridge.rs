@@ -45,9 +45,9 @@ mod tests {
 
         fn execute(&self, args: &[Value]) -> Result<Value, RuntimeError> {
             match (&args[0], &args[1]) {
-                (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a + b)),
+                (Value::I32(a), Value::I32(b)) => Ok(Value::I32(a + b)),
                 _ => Err(RuntimeError::TypeMismatch {
-                    expected: "Int".into(),
+                    expected: "I32".into(),
                     got: format!("{:?}", &args[0]),
                 }),
             }
@@ -78,15 +78,15 @@ mod tests {
     #[test]
     fn builtin_execute_returns_value() {
         let builtin = AddBuiltin;
-        let args = vec![Value::Int(3), Value::Int(4)];
+        let args = vec![Value::I32(3), Value::I32(4)];
         let result = builtin.execute(&args).expect("should succeed");
-        assert_eq!(result.as_int(), Some(7));
+        assert_eq!(result.as_i32(), Some(7));
     }
 
     #[test]
     fn builtin_wrong_type_errors() {
         let builtin = AddBuiltin;
-        let args = vec![Value::Int(1), Value::Str(SmolStr::new("two"))];
+        let args = vec![Value::I32(1), Value::Str(SmolStr::new("two"))];
         let err = builtin.execute(&args).unwrap_err();
         assert!(matches!(err, RuntimeError::TypeMismatch { .. }));
     }

@@ -12,14 +12,41 @@ use crate::bridge::BuiltinFunction;
 /// deterministic cleanup.
 #[derive(Clone)]
 pub enum Value {
+    // -- Signed integers --
+    /// 8-bit signed integer.
+    I8(i8),
+    /// 16-bit signed integer.
+    I16(i16),
+    /// 32-bit signed integer.
+    I32(i32),
     /// 64-bit signed integer.
-    Int(i64),
+    I64(i64),
+
+    // -- Unsigned integers --
+    /// 8-bit unsigned integer.
+    U8(u8),
+    /// 16-bit unsigned integer.
+    U16(u16),
+    /// 32-bit unsigned integer.
+    U32(u32),
+    /// 64-bit unsigned integer.
+    U64(u64),
+    /// Platform-dependent unsigned integer (used for indexing/sizes).
+    Usize(usize),
+
+    // -- Floats --
+    /// 32-bit IEEE 754 float.
+    F32(f32),
     /// 64-bit IEEE 754 float.
-    Float(f64),
+    F64(f64),
+
+    // -- Other primitives --
     /// Boolean value.
     Bool(bool),
     /// Immutable string, reference-counted for cheap cloning.
     Str(SmolStr),
+
+    // -- Compound --
     /// Immutable array, reference-counted.
     Array(Arc<[Value]>),
     /// Record with named fields.
@@ -65,12 +92,25 @@ impl Value {
     }
 
     /// Returns true if this value is truthy (for boolean contexts).
+    ///
+    /// Numeric types are truthy if non-zero. Strings are truthy if non-empty.
+    /// Arrays are truthy if non-empty. Unit is falsy. Closures, tags, and
+    /// effects are always truthy.
     #[must_use]
     pub fn is_truthy(&self) -> bool {
         match self {
             Value::Bool(b) => *b,
-            Value::Int(n) => *n != 0,
-            Value::Float(f) => *f != 0.0,
+            Value::I8(n) => *n != 0,
+            Value::I16(n) => *n != 0,
+            Value::I32(n) => *n != 0,
+            Value::I64(n) => *n != 0,
+            Value::U8(n) => *n != 0,
+            Value::U16(n) => *n != 0,
+            Value::U32(n) => *n != 0,
+            Value::U64(n) => *n != 0,
+            Value::Usize(n) => *n != 0,
+            Value::F32(f) => *f != 0.0,
+            Value::F64(f) => *f != 0.0,
             Value::Str(s) => !s.is_empty(),
             Value::Array(a) => !a.is_empty(),
             Value::Unit => false,
@@ -78,20 +118,29 @@ impl Value {
         }
     }
 
-    /// Attempt to extract an integer value.
+    /// Attempt to extract a 32-bit signed integer value.
     #[must_use]
-    pub fn as_int(&self) -> Option<i64> {
+    pub fn as_i32(&self) -> Option<i32> {
         match self {
-            Value::Int(n) => Some(*n),
+            Value::I32(n) => Some(*n),
             _ => None,
         }
     }
 
-    /// Attempt to extract a float value.
+    /// Attempt to extract a 64-bit signed integer value.
     #[must_use]
-    pub fn as_float(&self) -> Option<f64> {
+    pub fn as_i64(&self) -> Option<i64> {
         match self {
-            Value::Float(f) => Some(*f),
+            Value::I64(n) => Some(*n),
+            _ => None,
+        }
+    }
+
+    /// Attempt to extract a 64-bit float value.
+    #[must_use]
+    pub fn as_f64(&self) -> Option<f64> {
+        match self {
+            Value::F64(f) => Some(*f),
             _ => None,
         }
     }
@@ -132,6 +181,25 @@ impl Value {
         }
     }
 
+    /// Returns true if this value is a numeric type of any width.
+    #[must_use]
+    pub fn is_numeric(&self) -> bool {
+        matches!(
+            self,
+            Value::I8(_)
+                | Value::I16(_)
+                | Value::I32(_)
+                | Value::I64(_)
+                | Value::U8(_)
+                | Value::U16(_)
+                | Value::U32(_)
+                | Value::U64(_)
+                | Value::Usize(_)
+                | Value::F32(_)
+                | Value::F64(_)
+        )
+    }
+
     /// Create an array value from a vector.
     pub fn array(values: Vec<Value>) -> Self {
         Value::Array(Arc::from(values))
@@ -154,8 +222,17 @@ impl Value {
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Value::Int(a), Value::Int(b)) => a == b,
-            (Value::Float(a), Value::Float(b)) => a == b,
+            (Value::I8(a), Value::I8(b)) => a == b,
+            (Value::I16(a), Value::I16(b)) => a == b,
+            (Value::I32(a), Value::I32(b)) => a == b,
+            (Value::I64(a), Value::I64(b)) => a == b,
+            (Value::U8(a), Value::U8(b)) => a == b,
+            (Value::U16(a), Value::U16(b)) => a == b,
+            (Value::U32(a), Value::U32(b)) => a == b,
+            (Value::U64(a), Value::U64(b)) => a == b,
+            (Value::Usize(a), Value::Usize(b)) => a == b,
+            (Value::F32(a), Value::F32(b)) => a == b,
+            (Value::F64(a), Value::F64(b)) => a == b,
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Str(a), Value::Str(b)) => a == b,
             (Value::Array(a), Value::Array(b)) => a == b,
@@ -179,8 +256,17 @@ impl PartialEq for Value {
 impl fmt::Debug for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Value::Int(n) => write!(f, "{n}"),
-            Value::Float(n) => write!(f, "{n}"),
+            Value::I8(n) => write!(f, "{n}i8"),
+            Value::I16(n) => write!(f, "{n}i16"),
+            Value::I32(n) => write!(f, "{n}"),
+            Value::I64(n) => write!(f, "{n}i64"),
+            Value::U8(n) => write!(f, "{n}u8"),
+            Value::U16(n) => write!(f, "{n}u16"),
+            Value::U32(n) => write!(f, "{n}u32"),
+            Value::U64(n) => write!(f, "{n}u64"),
+            Value::Usize(n) => write!(f, "{n}usize"),
+            Value::F32(n) => write!(f, "{n}f32"),
+            Value::F64(n) => write!(f, "{n}"),
             Value::Bool(b) => write!(f, "{b}"),
             Value::Str(s) => write!(f, "\"{s}\""),
             Value::Array(arr) => {
@@ -237,17 +323,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn int_value_roundtrip() {
-        let v = Value::Int(42);
-        assert_eq!(v.as_int(), Some(42));
-        assert_eq!(v.as_float(), None);
+    fn i32_value_roundtrip() {
+        let v = Value::I32(42);
+        assert_eq!(v.as_i32(), Some(42));
+        assert_eq!(v.as_f64(), None);
     }
 
     #[test]
-    fn float_value_roundtrip() {
-        let v = Value::Float(3.14);
-        assert_eq!(v.as_float(), Some(3.14));
-        assert_eq!(v.as_int(), None);
+    fn i64_value_roundtrip() {
+        let v = Value::I64(42);
+        assert_eq!(v.as_i64(), Some(42));
+    }
+
+    #[test]
+    fn f64_value_roundtrip() {
+        let v = Value::F64(3.14);
+        assert_eq!(v.as_f64(), Some(3.14));
+        assert_eq!(v.as_i32(), None);
+    }
+
+    #[test]
+    fn f32_value_roundtrip() {
+        let v = Value::F32(2.71);
+        match v {
+            Value::F32(f) => assert!((f - 2.71).abs() < f32::EPSILON),
+            _ => panic!("expected F32"),
+        }
     }
 
     #[test]
@@ -276,7 +377,7 @@ mod tests {
 
     #[test]
     fn array_value_operations() {
-        let v = Value::array(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+        let v = Value::array(vec![Value::I32(1), Value::I32(2), Value::I32(3)]);
         assert_eq!(v.as_array().unwrap().len(), 3);
         assert!(v.is_truthy());
     }
@@ -296,17 +397,17 @@ mod tests {
 
     #[test]
     fn tag_value_roundtrip() {
-        let v = Value::tag(0, vec![Value::Int(42)]);
+        let v = Value::tag(0, vec![Value::I32(42)]);
         let (tag, payload) = v.as_tag().unwrap();
         assert_eq!(tag, 0);
-        assert_eq!(payload[0].as_int(), Some(42));
+        assert_eq!(payload[0].as_i32(), Some(42));
     }
 
     #[test]
     fn record_value_fields() {
         let v = Value::record(vec![
             (SmolStr::new("name"), Value::Str(SmolStr::new("Alice"))),
-            (SmolStr::new("age"), Value::Int(30)),
+            (SmolStr::new("age"), Value::I32(30)),
         ]);
         match v {
             Value::Record(r) => {
@@ -318,15 +419,17 @@ mod tests {
     }
 
     #[test]
-    fn value_equality_int() {
-        assert_eq!(Value::Int(5), Value::Int(5));
-        assert_ne!(Value::Int(5), Value::Int(6));
+    fn value_equality_i32() {
+        assert_eq!(Value::I32(5), Value::I32(5));
+        assert_ne!(Value::I32(5), Value::I32(6));
     }
 
     #[test]
     fn value_equality_cross_type() {
-        assert_ne!(Value::Int(5), Value::Float(5.0));
-        assert_ne!(Value::Int(0), Value::Bool(false));
+        // Different numeric types are not equal
+        assert_ne!(Value::I32(5), Value::F64(5.0));
+        assert_ne!(Value::I32(0), Value::Bool(false));
+        assert_ne!(Value::I32(5), Value::I64(5));
     }
 
     #[test]
@@ -343,26 +446,59 @@ mod tests {
     }
 
     #[test]
-    fn value_debug_int() {
-        let v = Value::Int(42);
+    fn value_debug_i32() {
+        let v = Value::I32(42);
         assert_eq!(format!("{v:?}"), "42");
     }
 
     #[test]
+    fn value_debug_i64() {
+        let v = Value::I64(42);
+        assert_eq!(format!("{v:?}"), "42i64");
+    }
+
+    #[test]
+    fn value_debug_u8() {
+        let v = Value::U8(255);
+        assert_eq!(format!("{v:?}"), "255u8");
+    }
+
+    #[test]
+    fn value_debug_f32() {
+        let v = Value::F32(1.5);
+        assert_eq!(format!("{v:?}"), "1.5f32");
+    }
+
+    #[test]
     fn value_debug_array() {
-        let v = Value::array(vec![Value::Int(1), Value::Int(2)]);
+        let v = Value::array(vec![Value::I32(1), Value::I32(2)]);
         assert_eq!(format!("{v:?}"), "[1, 2]");
     }
 
     #[test]
-    fn zero_int_is_falsy() {
-        let v = Value::Int(0);
+    fn zero_i32_is_falsy() {
+        let v = Value::I32(0);
         assert!(!v.is_truthy());
     }
 
     #[test]
-    fn nonzero_int_is_truthy() {
-        let v = Value::Int(1);
+    fn nonzero_i32_is_truthy() {
+        let v = Value::I32(1);
         assert!(v.is_truthy());
+    }
+
+    #[test]
+    fn is_numeric_true() {
+        assert!(Value::I32(0).is_numeric());
+        assert!(Value::F64(0.0).is_numeric());
+        assert!(Value::U8(0).is_numeric());
+        assert!(Value::Usize(0).is_numeric());
+    }
+
+    #[test]
+    fn is_numeric_false() {
+        assert!(!Value::Bool(true).is_numeric());
+        assert!(!Value::Str(SmolStr::new("hi")).is_numeric());
+        assert!(!Value::Unit.is_numeric());
     }
 }
