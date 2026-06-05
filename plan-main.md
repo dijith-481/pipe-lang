@@ -24,18 +24,18 @@ JIT optimizable                       |  Controlled execution
 ### Syntax Direction (TS + Rust Feel)
 
 ```typescript
--- Type definitions (clean, no noise)
+// Type definitions (clean, no noise)
 type UserId = i32
 type Email  = str
 
--- Record types (product types)
+// Record types (product types)
 type User = {
   id    : UserId
   email : Email
   age   : u8
 }
 
--- Sum types (tagged unions)
+// Sum types (tagged unions)
 type Result<T, E> =
   | Ok(T)
   | Err(E)
@@ -44,38 +44,38 @@ type Option<T> =
   | Some(T)
   | None
 
--- Functions use `let` binding with arrow syntax
--- name(params):ReturnType => body
+// Functions use `let` binding with arrow syntax
+// name(params):ReturnType => body
 let add = (a:i32, b:i32):i64 => a + b
 
--- Currying via application
+// Currying via application
 let addFive = add(5)
 
--- Dot operator for method chaining and field access
+// Dot operator for method chaining and field access
 let processUsers = (users:Array<User>):Array<Email> =>
   users
     .iter()
-    .filter(|u| u.age >= 18)
-    .map(|u| u.email)
+    .filter((u) => u.age >= 18)
+    .map((u) => u.email)
     .distinct()
 
--- Inline closures use `|params|` syntax
-let doubled = items.map(|x| x * 2)
-let adults = users.filter(|u| u.age >= 18)
+// Inline closures use `(params) => expr` syntax
+let doubled = items.map((x) => x * 2)
+let adults = users.filter((u) => u.age >= 18)
 
--- Block closures for multi-step logic
-let result = items.filter(|item| {
+// Block closures for multi-step logic
+let result = items.filter((item) => {
     let score = item.calculate()
     score > 100
 })
 
--- Pattern matching
+// Pattern matching
 let describe = (opt:Option<i32>):String => match opt {
   Some(x) => `Got: ${x.toString()}`
   None    => "Nothing"
 }
 
--- Type signature on separate line (no let keyword)
+// Type signature on separate line (no let keyword)
 let transition : AppState -> Event -> Effect<AppState>
 let transition = (state, event) => match (state, event) {
   (Idle,        Login(creds))  => authenticate(creds).map(Ready)
@@ -88,23 +88,23 @@ let transition = (state, event) => match (state, event) {
 ### Effect System (Pure vs IO Separation)
 
 ```typescript
--- Pure computation, no marker needed, it's the default
+// Pure computation, no marker needed, it's the default
 let factorial = (n:i32):i32 => match n {
   0 => 1
   n => n * factorial(n - 1)
 }
 
--- IO must be marked, returns an Effect type
--- Effect<T> is your IO wrapper
+// IO must be marked, returns an Effect type
+// Effect<T> is your IO wrapper
 let readUser : Effect<Option<User>>
 let readUser = do {
   line <- IO.readLine()
   id   <- Str.parsei32(line).map(Option.fromResult())
-  DB.findUser(id)              -- also returns Effect<Option<User>>
+  DB.findUser(id)              // also returns Effect<Option<User>>
 }
 
--- State machine for IO handling
--- States are explicit, transitions are typed
+// State machine for IO handling
+// States are explicit, transitions are typed
 type AppState =
   | Idle
   | Loading(RequestId)
@@ -123,10 +123,10 @@ let transition = (state, event) => match (state, event) {
 ### Type System Design
 
 ```typescript
--- Hindley-Milner base with explicit annotations optional
--- Generic types with constraints
+// Hindley-Milner base with explicit annotations optional
+// Generic types with constraints
 
--- Typeclass-style traits
+// Typeclass-style traits
 trait Functor<F> {
   map : <A, B>(F<A>, |A| B) => F<B>
 }
@@ -135,19 +135,19 @@ trait Foldable<F> {
   fold : <A, B>(F<A>, B, |B, A| B) => B
 }
 
--- Built-in implementations for Array, Option, Result
--- Your language ships these
+// Built-in implementations for Array, Option, Result
+// Your language ships these
 
--- No implicit coercion, ever
--- i32 and f64 are distinct
--- Explicit conversions
+// No implicit coercion, ever
+// i32 and f64 are distinct
+// Explicit conversions
 let x : i32 = 5
-let y : f64 = f64::from(x)  -- explicit, not x + 0 + 0
+let y : f64 = f64::from(x)  // explicit, not x + 0 + 0
 
--- Union types for flexibility (TS-inspired)
+// Union types for flexibility (TS-inspired)
 type StringOri32 = String | i32
 
--- Intersection for composition
+// Intersection for composition
 type Named     = { name : str }
 type Aged      = { age  : i32 }
 type Person    = Named & Aged
@@ -209,60 +209,60 @@ Source Code
 lang/
 ├── Cargo.toml          (workspace)
 ├── crates/
-│   ├── ast/            -- Shared AST types (Day 1)
+│   ├── ast/            // Shared AST types (Day 1)
 │   │   ├── src/
 │   │   │   ├── span.rs
 │   │   │   └── ast.rs
 │   │
-│   ├── lexer/          -- Person 1
+│   ├── lexer/          // Person 1
 │   │   ├── src/
 │   │   │   ├── error.rs
 │   │   │   └── lexer.rs
 │   │
-│   ├── parser/         -- Person 2
+│   ├── parser/         // Person 2
 │   │   ├── src/
 │   │   │   ├── error.rs
 │   │   │   └── parser.rs
 │   │
-│   ├── typechecker/    -- Person 3
+│   ├── typechecker/    // Person 3
 │   │   ├── src/
 │   │   │   ├── types.rs
 │   │   │   ├── infer.rs
 │   │   │   ├── unify.rs
 │   │   │   └── env.rs
 │   │
-│   ├── ir/             -- Person 4
+│   ├── ir/             // Person 4
 │   │   ├── src/
 │   │   │   ├── ir.rs
 │   │   │   ├── lower.rs
 │   │   │   └── opt.rs
 │   │
-│   ├── runtime/        -- You wire this
+│   ├── runtime/        // You wire this
 │   │   ├── src/
 │   │   │   ├── jit.rs      (Cranelift)
 │   │   │   ├── builtins.rs
 │   │   │   └── effect.rs
 │   │
-│   ├── stdlib/         -- Shared effort
+│   ├── stdlib/         // Shared effort
 │   │   ├── src/
 │   │   │   ├── list.rs
 │   │   │   ├── option.rs
 │   │   │   ├── result.rs
 │   │   │   └── io.rs
 │   │
-│   ├── diagnostics/    -- Error aggregation
+│   ├── diagnostics/    // Error aggregation
 │   │   └── src/
 │   │       └── errors.rs
 │   │
-│   └── cli/            -- You
+│   └── cli/            // You
 │       └── src/
 │           └── main.rs
 │
-├── lsp/                -- Separate crate
+├── lsp/                // Separate crate
 │   └── src/
 │       └── main.rs     (tower-lsp)
 │
-└── tree-sitter-lang/   -- Separate repo
+└── tree-sitter-lang/   // Separate repo
     ├── grammar.js
     └── queries/
 ```
@@ -513,7 +513,7 @@ Day 21:
 ### What to Ship Day 1
 
 ```typescript
--- Array operations
+// Array operations
 Array.map      : <A, B>(Array<A>, |A| B) => Array<B>
 Array.filter   : <A>(Array<A>, |A| bool) => Array<A>
 Array.flatMap  : <A, B>(Array<A>, |A| Array<B>) => Array<B>
@@ -532,27 +532,27 @@ Array.sort     : <A: Ord>(Array<A>) => Array<A>
 Array.sortBy   : <A, B: Ord>(Array<A>, |A| B) => Array<A>
 Array.groupBy  : <A, B: Eq>(Array<A>, |A| B) => Map<B, Array<A>>
 
--- Option
+// Option
 Option.map     : <A, B>(Option<A>, |A| B) => Option<B>
 Option.flatMap : <A, B>(Option<A>, |A| Option<B>) => Option<B>
 Option.orElse  : <A>(Option<A>, Option<A>) => Option<A>
-Option.unwrap  : <A>(Option<A>, A) => A  -- with default
+Option.unwrap  : <A>(Option<A>, A) => A  // with default
 Option.isSome  : <A>(Option<A>) => bool
 
--- Result
+// Result
 Result.map      : <T, E, U>(Result<T,E>, |T| U) => Result<U,E>
 Result.flatMap  : <T, E, U>(Result<T,E>, |T| Result<U,E>) => Result<U,E>
 Result.mapErr   : <T, E, F>(Result<T,E>, |E| F) => Result<T,F>
 Result.recover  : <T, E>(Result<T,E>, |E| T) => T
 
--- IO / Effect
+// IO / Effect
 IO.print    : (str) => Effect<Unit>
 IO.println  : (str) => Effect<Unit>
 IO.readLine : () => Effect<str>
 IO.readFile : (Path) => Effect<Result<str, IOError>>
 IO.writeFile: (Path, str) => Effect<Result<Unit, IOError>>
 
--- Function combinators
+// Function combinators
 compose : <A, B, C>(|B| C, |A| B) => |A| C
 pipe    : <A, B, C>(|A| B, |B| C) => |A| C
 id      : <A>(A) => A
@@ -583,10 +583,11 @@ module.exports = grammar({
     let_def: ($) =>
       seq("let", $.identifier, optional(seq(":", $._type_expr)), "=", $._expr),
 
-    // Lambda: |params| body or (params):ReturnType => body
-    lambda: ($) => choice(
-      seq("|", optional($.param_list), "|", $._expr),
-      seq("(", optional($.typed_param_list), ")", optional(seq(":", $._type_expr)), "=>", $._expr),
+    // Lambda: (params) => body
+    lambda: ($) => seq(
+      "(", optional($.typed_param_list), ")",
+      optional(seq(":", $._type_expr)),
+      "=>", $._expr,
     ),
 
     // match x { Pat => expr, ... }

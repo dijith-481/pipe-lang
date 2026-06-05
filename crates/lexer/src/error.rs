@@ -20,6 +20,19 @@ pub enum LexError {
     UnexpectedEof { span: Span },
 }
 
+impl LexError {
+    /// Returns the source span for this error.
+    #[must_use]
+    pub fn span(&self) -> Span {
+        match self {
+            LexError::UnexpectedChar { span, .. } => *span,
+            LexError::UnterminatedString { span } => *span,
+            LexError::InvalidNumber { span } => *span,
+            LexError::UnexpectedEof { span } => *span,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

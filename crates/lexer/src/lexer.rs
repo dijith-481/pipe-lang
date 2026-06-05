@@ -1,5 +1,7 @@
 use ast::span::Span;
 
+use crate::error::LexError;
+
 /// A single token produced by the lexer.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Token {
@@ -8,6 +10,10 @@ pub struct Token {
 }
 
 /// The type of a token.
+///
+/// Numeric and string literals store their raw source text as `String`.
+/// The parser is responsible for interpreting the value (e.g. parsing
+/// suffixes like `i32`, `u8`, `f64` on numeric literals).
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
     // Keywords
@@ -26,30 +32,28 @@ pub enum TokenKind {
     False,
 
     // Operators
-    Arrow,    // =>
-    FatArrow, // =>
-    Pipe,     // |>
-    Bind,     // <-
-    Plus,
-    Minus,
-    Star,
-    Slash,
-    Percent,
-    Eq,
-    Ne,
-    Lt,
-    Le,
-    Gt,
-    Ge,
-    And,
-    Or,
-    Not,
-    Assign, // =
-    Dot,
-    Comma,
-    Colon,
-    Semicolon,
-    Underscore,
+    Arrow,      // =>
+    Bind,       // <-
+    Plus,       // +
+    Minus,      // -
+    Star,       // *
+    Slash,      // /
+    Percent,    // %
+    Eq,         // ==
+    Ne,         // !=
+    Lt,         // <
+    Le,         // <=
+    Gt,         // >
+    Ge,         // >=
+    And,        // &&
+    Or,         // ||
+    Not,        // !
+    Assign,     // =
+    Dot,        // .
+    Comma,      // ,
+    Colon,      // :
+    Semicolon,  // ;
+    Underscore, // _
 
     // Delimiters
     OpenParen,    // (
@@ -59,10 +63,10 @@ pub enum TokenKind {
     OpenBracket,  // [
     CloseBracket, // ]
 
-    // Literals
-    Int(i64),
-    Float(f64),
-    Str(String),
+    // Literals (raw source text -- parser handles type interpretation)
+    Int(String),   // 42, 42i32, 255u8, 100usize
+    Float(String), // 3.14, 3.14f64, 2.71f32
+    Str(String),   // "hello"
 
     // Identifier
     Ident(String),
@@ -96,8 +100,6 @@ impl TokenKind {
 
 /// The lexer converts source code into a stream of tokens.
 pub struct Lexer<'a> {
-    #[allow(dead_code)]
-    source: &'a str,
     chars: std::iter::Peekable<std::str::CharIndices<'a>>,
     current_pos: usize,
     done: bool,
@@ -108,7 +110,6 @@ impl<'a> Lexer<'a> {
     #[must_use]
     pub fn new(source: &'a str) -> Self {
         Self {
-            source,
             chars: source.char_indices().peekable(),
             current_pos: 0,
             done: false,
@@ -144,12 +145,13 @@ impl<'a> Lexer<'a> {
                 Some(ch) if ch.is_whitespace() => {
                     self.advance();
                 }
-                Some('-') => {
-                    // Check for -- line comment
-                    let saved = self.current_pos;
+                Some('/') => {
+                    // Check for // line comment
+                    let saved_pos = self.current_pos;
+                    let saved_chars = self.chars.clone();
                     self.advance();
-                    if self.peek() == Some('-') {
-                        // Skip until newline
+                    if self.peek() == Some('/') {
+                        // Skip until newline or EOF
                         while let Some(ch) = self.peek() {
                             if ch == '\n' {
                                 self.advance();
@@ -158,13 +160,135 @@ impl<'a> Lexer<'a> {
                             self.advance();
                         }
                     } else {
-                        // Not a comment, restore position
-                        self.current_pos = saved;
+                        // Not a comment -- restore iterator and position
+                        self.chars = saved_chars;
+                        self.current_pos = saved_pos;
                         break;
                     }
                 }
                 _ => break,
             }
+        }
+    }
+
+    fn read_string(&mut self, start: usize) -> Result<TokenKind, LexError> {
+        let mut s = String::new();
+        loop {
+            match self.peek() {
+                Some('"') => {
+                    self.advance();
+                    return Ok(TokenKind::Str(s));
+                }
+                Some('\\') => {
+                    self.advance();
+                    match self.peek() {
+                        Some('n') => {
+                            s.push('\n');
+                            self.advance();
+                        }
+                        Some('t') => {
+                            s.push('\t');
+                            self.advance();
+                        }
+                        Some('\\') => {
+                            s.push('\\');
+                            self.advance();
+                        }
+                        Some('"') => {
+                            s.push('"');
+                            self.advance();
+                        }
+                        Some(ch) => {
+                            return Err(LexError::UnexpectedChar {
+                                ch,
+                                span: Span::new(self.current_pos, self.current_pos + ch.len_utf8()),
+                            });
+                        }
+                        None => {
+                            return Err(LexError::UnterminatedString {
+                                span: Span::new(start, self.current_pos),
+                            });
+                        }
+                    }
+                }
+                Some(ch) => {
+                    s.push(ch);
+                    self.advance();
+                }
+                None => {
+                    return Err(LexError::UnterminatedString {
+                        span: Span::new(start, self.current_pos),
+                    });
+                }
+            }
+        }
+    }
+
+    fn read_number(&mut self, first: char) -> TokenKind {
+        let mut num = String::new();
+        num.push(first);
+        let mut is_float = false;
+        while let Some(next) = self.peek() {
+            if next.is_ascii_digit() {
+                num.push(next);
+                self.advance();
+            } else if next == '.' && !is_float {
+                // Check if next char after '.' is a digit (not field access like `1.abc`)
+                let mut clone = self.chars.clone();
+                clone.next(); // skip '.'
+                if clone.next().is_some_and(|(_, c)| c.is_ascii_digit()) {
+                    is_float = true;
+                    num.push(next);
+                    self.advance();
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        // Collect optional type suffix (alphanumeric + underscore)
+        while let Some(next) = self.peek() {
+            if next.is_alphanumeric() || next == '_' {
+                num.push(next);
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        if is_float {
+            TokenKind::Float(num)
+        } else {
+            TokenKind::Int(num)
+        }
+    }
+
+    fn read_identifier(&mut self, first: char) -> TokenKind {
+        let mut ident = String::new();
+        ident.push(first);
+        while let Some(next) = self.peek() {
+            if next.is_alphanumeric() || next == '_' {
+                ident.push(next);
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        match ident.as_str() {
+            "type" => TokenKind::Type,
+            "let" => TokenKind::Let,
+            "in" => TokenKind::In,
+            "if" => TokenKind::If,
+            "then" => TokenKind::Then,
+            "else" => TokenKind::Else,
+            "match" => TokenKind::Match,
+            "with" => TokenKind::With,
+            "do" => TokenKind::Do,
+            "effect" => TokenKind::Effect,
+            "return" => TokenKind::Return,
+            "true" => TokenKind::True,
+            "false" => TokenKind::False,
+            _ => TokenKind::Ident(ident),
         }
     }
 }
@@ -191,21 +315,43 @@ impl<'a> Iterator for Lexer<'a> {
         }
 
         let kind = match ch {
+            // Delimiters
             '(' => TokenKind::OpenParen,
             ')' => TokenKind::CloseParen,
             '{' => TokenKind::OpenBrace,
             '}' => TokenKind::CloseBrace,
             '[' => TokenKind::OpenBracket,
             ']' => TokenKind::CloseBracket,
+
+            // Punctuation
             ',' => TokenKind::Comma,
             '.' => TokenKind::Dot,
             '_' => TokenKind::Underscore,
             ';' => TokenKind::Semicolon,
             ':' => TokenKind::Colon,
+
+            // Arithmetic
             '+' => TokenKind::Plus,
             '*' => TokenKind::Star,
-            '/' => TokenKind::Slash,
             '%' => TokenKind::Percent,
+
+            // Division or line comment start
+            '/' => {
+                if self.peek() == Some('/') {
+                    // Line comment -- skip until newline or EOF
+                    while let Some(ch) = self.peek() {
+                        if ch == '\n' {
+                            self.advance();
+                            break;
+                        }
+                        self.advance();
+                    }
+                    return self.next();
+                }
+                TokenKind::Slash
+            }
+
+            // = or == or =>
             '=' => {
                 if self.peek() == Some('=') {
                     self.advance();
@@ -217,6 +363,8 @@ impl<'a> Iterator for Lexer<'a> {
                     TokenKind::Assign
                 }
             }
+
+            // ! or !=
             '!' => {
                 if self.peek() == Some('=') {
                     self.advance();
@@ -225,6 +373,8 @@ impl<'a> Iterator for Lexer<'a> {
                     TokenKind::Not
                 }
             }
+
+            // < or <= or <-
             '<' => {
                 if self.peek() == Some('-') {
                     self.advance();
@@ -236,6 +386,8 @@ impl<'a> Iterator for Lexer<'a> {
                     TokenKind::Lt
                 }
             }
+
+            // > or >=
             '>' => {
                 if self.peek() == Some('=') {
                     self.advance();
@@ -244,17 +396,11 @@ impl<'a> Iterator for Lexer<'a> {
                     TokenKind::Gt
                 }
             }
-            '|' => {
-                if self.peek() == Some('>') {
-                    self.advance();
-                    TokenKind::Pipe
-                } else {
-                    TokenKind::Pipe
-                }
-            }
+
+            // - or -- comment
             '-' => {
                 if self.peek() == Some('-') {
-                    // Line comment, skip
+                    // Line comment -- skip until newline or EOF
                     while let Some(ch) = self.peek() {
                         if ch == '\n' {
                             self.advance();
@@ -266,104 +412,37 @@ impl<'a> Iterator for Lexer<'a> {
                 }
                 TokenKind::Minus
             }
-            '"' => {
-                // String literal
-                let mut s = String::new();
-                loop {
-                    match self.peek() {
-                        Some('"') => {
-                            self.advance();
-                            break;
-                        }
-                        Some('\\') => {
-                            self.advance();
-                            match self.peek() {
-                                Some('n') => {
-                                    s.push('\n');
-                                    self.advance();
-                                }
-                                Some('t') => {
-                                    s.push('\t');
-                                    self.advance();
-                                }
-                                Some('\\') => {
-                                    s.push('\\');
-                                    self.advance();
-                                }
-                                Some('"') => {
-                                    s.push('"');
-                                    self.advance();
-                                }
-                                _ => {}
-                            }
-                        }
-                        Some(ch) => {
-                            s.push(ch);
-                            self.advance();
-                        }
-                        None => {
-                            return Some(self.make_token(TokenKind::Str(s), start));
-                        }
-                    }
+
+            // String literal
+            '"' => match self.read_string(start) {
+                Ok(kind) => kind,
+                Err(err) => {
+                    return Some(Token {
+                        kind: TokenKind::Eof,
+                        span: err.span(),
+                    });
                 }
-                TokenKind::Str(s)
+            },
+
+            // Numeric literal
+            ch if ch.is_ascii_digit() => self.read_number(ch),
+
+            // Identifier or keyword
+            ch if ch.is_alphabetic() || ch == '_' => self.read_identifier(ch),
+
+            // Unexpected character
+            _ => {
+                return Some(self.make_token(TokenKind::Ident(String::new()), start));
             }
-            ch if ch.is_ascii_digit() => {
-                let mut num = String::new();
-                num.push(ch);
-                let mut is_float = false;
-                while let Some(next) = self.peek() {
-                    if next.is_ascii_digit() {
-                        num.push(next);
-                        self.advance();
-                    } else if next == '.' && !is_float {
-                        is_float = true;
-                        num.push(next);
-                        self.advance();
-                    } else {
-                        break;
-                    }
-                }
-                if is_float {
-                    TokenKind::Float(num.parse().expect("valid float"))
-                } else {
-                    TokenKind::Int(num.parse().expect("valid int"))
-                }
-            }
-            ch if ch.is_alphabetic() || ch == '_' => {
-                let mut ident = String::new();
-                ident.push(ch);
-                while let Some(next) = self.peek() {
-                    if next.is_alphanumeric() || next == '_' {
-                        ident.push(next);
-                        self.advance();
-                    } else {
-                        break;
-                    }
-                }
-                match ident.as_str() {
-                    "type" => TokenKind::Type,
-                    "let" => TokenKind::Let,
-                    "in" => TokenKind::In,
-                    "if" => TokenKind::If,
-                    "then" => TokenKind::Then,
-                    "else" => TokenKind::Else,
-                    "match" => TokenKind::Match,
-                    "with" => TokenKind::With,
-                    "do" => TokenKind::Do,
-                    "effect" => TokenKind::Effect,
-                    "return" => TokenKind::Return,
-                    "true" => TokenKind::True,
-                    "false" => TokenKind::False,
-                    _ => TokenKind::Ident(ident),
-                }
-            }
-            _ => return Some(self.make_token(TokenKind::Ident(String::new()), start)),
         };
 
         Some(self.make_token(kind, start))
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -393,27 +472,53 @@ mod tests {
     #[test]
     fn lex_integer_literal() {
         let tokens: Vec<Token> = Lexer::new("42").collect();
-        assert_eq!(tokens[0].kind, TokenKind::Int(42));
+        assert_eq!(tokens[0].kind, TokenKind::Int("42".into()));
+    }
+
+    #[test]
+    fn lex_integer_with_suffix() {
+        let tokens: Vec<Token> = Lexer::new("42i32").collect();
+        assert_eq!(tokens[0].kind, TokenKind::Int("42i32".into()));
+
+        let tokens: Vec<Token> = Lexer::new("255u8").collect();
+        assert_eq!(tokens[0].kind, TokenKind::Int("255u8".into()));
+
+        let tokens: Vec<Token> = Lexer::new("100usize").collect();
+        assert_eq!(tokens[0].kind, TokenKind::Int("100usize".into()));
     }
 
     #[test]
     fn lex_float_literal() {
         let tokens: Vec<Token> = Lexer::new("3.14").collect();
-        assert_eq!(tokens[0].kind, TokenKind::Float(3.14));
+        assert_eq!(tokens[0].kind, TokenKind::Float("3.14".into()));
+    }
+
+    #[test]
+    fn lex_float_with_suffix() {
+        let tokens: Vec<Token> = Lexer::new("3.14f64").collect();
+        assert_eq!(tokens[0].kind, TokenKind::Float("3.14f64".into()));
+
+        let tokens: Vec<Token> = Lexer::new("2.71f32").collect();
+        assert_eq!(tokens[0].kind, TokenKind::Float("2.71f32".into()));
     }
 
     #[test]
     fn lex_string_literal() {
-        let tokens: Vec<Token> = Lexer::new("\"hello\"").collect();
+        let tokens: Vec<Token> = Lexer::new(r#""hello""#).collect();
         assert_eq!(tokens[0].kind, TokenKind::Str("hello".into()));
     }
 
     #[test]
+    fn lex_string_with_escapes() {
+        let tokens: Vec<Token> = Lexer::new(r#""line\n\t\\""#).collect();
+        assert_eq!(tokens[0].kind, TokenKind::Str("line\n\t\\".into()));
+    }
+
+    #[test]
     fn lex_operators() {
-        let tokens: Vec<Token> = Lexer::new("|> => <-").collect();
-        assert_eq!(tokens[0].kind, TokenKind::Pipe);
-        assert_eq!(tokens[1].kind, TokenKind::Arrow);
-        assert_eq!(tokens[2].kind, TokenKind::Bind);
+        let tokens: Vec<Token> = Lexer::new("=> <-").collect();
+        assert_eq!(tokens[0].kind, TokenKind::Arrow);
+        assert_eq!(tokens[1].kind, TokenKind::Bind);
     }
 
     #[test]
@@ -439,7 +544,14 @@ mod tests {
     }
 
     #[test]
-    fn lex_skips_line_comments() {
+    fn lex_slash_comments() {
+        let tokens: Vec<Token> = Lexer::new("a // comment\nb").collect();
+        assert_eq!(tokens[0].kind, TokenKind::Ident("a".into()));
+        assert_eq!(tokens[1].kind, TokenKind::Ident("b".into()));
+    }
+
+    #[test]
+    fn lex_dash_comments() {
         let tokens: Vec<Token> = Lexer::new("a -- comment\nb").collect();
         assert_eq!(tokens[0].kind, TokenKind::Ident("a".into()));
         assert_eq!(tokens[1].kind, TokenKind::Ident("b".into()));
@@ -492,5 +604,37 @@ mod tests {
         assert!(TokenKind::Match.is_keyword());
         assert!(!TokenKind::Ident("foo".into()).is_keyword());
         assert!(!TokenKind::Plus.is_keyword());
+    }
+
+    #[test]
+    fn lex_dot_field_access() {
+        let tokens: Vec<Token> = Lexer::new("user.name").collect();
+        assert_eq!(tokens[0].kind, TokenKind::Ident("user".into()));
+        assert_eq!(tokens[1].kind, TokenKind::Dot);
+        assert_eq!(tokens[2].kind, TokenKind::Ident("name".into()));
+    }
+
+    #[test]
+    fn lex_float_not_field_access() {
+        // 1.0 should be a float, not Int(1) + Dot + Int(0)
+        let tokens: Vec<Token> = Lexer::new("1.0").collect();
+        assert_eq!(tokens[0].kind, TokenKind::Float("1.0".into()));
+    }
+
+    #[test]
+    fn lex_integer_then_dot() {
+        // 1.name should be Int(1) + Dot + Ident(name)
+        let tokens: Vec<Token> = Lexer::new("1.name").collect();
+        assert_eq!(tokens[0].kind, TokenKind::Int("1".into()));
+        assert_eq!(tokens[1].kind, TokenKind::Dot);
+        assert_eq!(tokens[2].kind, TokenKind::Ident("name".into()));
+    }
+
+    #[test]
+    fn lex_negative_number() {
+        // -42 is Minus + Int(42), not a negative literal
+        let tokens: Vec<Token> = Lexer::new("-42").collect();
+        assert_eq!(tokens[0].kind, TokenKind::Minus);
+        assert_eq!(tokens[1].kind, TokenKind::Int("42".into()));
     }
 }

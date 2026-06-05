@@ -85,7 +85,7 @@ pub enum Expr<'a> {
         span: Span,
     },
 
-    /// Lambda expression: `(a:i32, b:i32):i64 => a + b` or `|x| x + 1`
+    /// Lambda expression: `(a:i32, b:i32):i64 => a + b` or `(x) => x + 1`
     Lambda {
         params: Vec<'a, Param<'a>>,
         return_type: Option<&'a TypeExpr<'a>>,
@@ -650,7 +650,7 @@ mod tests {
 
     #[test]
     fn construct_closure_single_expression() {
-        // |x| x.age >= 30i32
+        // (x) => x.age >= 30i32
         let bump = Bump::new();
         let obj = Expr::ident("x", sp(4, 5), &bump);
         let field = Expr::field_access(obj, "age", sp(4, 8), &bump);
@@ -690,7 +690,7 @@ mod tests {
 
     #[test]
     fn construct_closure_with_block() {
-        // |x| { let y = x.age; y >= 30i32 }
+        // (x) => { let y = x.age; y >= 30i32 }
         let bump = Bump::new();
         let obj = Expr::ident("x", sp(6, 7), &bump);
         let age = Expr::field_access(obj, "age", sp(6, 10), &bump);
@@ -742,8 +742,8 @@ mod tests {
 
     #[test]
     fn construct_method_call_as_application() {
-        // users.filter(|x| x.age >= 18i32) desugars to:
-        // filter(users, |x| x.age >= 18i32)
+        // users.filter((x) => x.age >= 18i32) desugars to:
+        // filter(users, (x) => x.age >= 18i32)
         let bump = Bump::new();
         let users = Expr::ident("users", sp(0, 5), &bump);
         let filter = Expr::ident("filter", sp(6, 12), &bump);
