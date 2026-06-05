@@ -32,6 +32,7 @@ pub enum TokenKind {
     Do,
     Effect,
     Return,
+    Use,
     True,
     False,
 
@@ -101,6 +102,7 @@ impl TokenKind {
                 | TokenKind::Do
                 | TokenKind::Effect
                 | TokenKind::Return
+                | TokenKind::Use
                 | TokenKind::True
                 | TokenKind::False
         )
@@ -273,6 +275,7 @@ impl<'a> Lexer<'a> {
             "do" => TokenKind::Do,
             "effect" => TokenKind::Effect,
             "return" => TokenKind::Return,
+            "use" => TokenKind::Use,
             "true" => TokenKind::True,
             "false" => TokenKind::False,
             _ => TokenKind::Ident(ident),
@@ -495,6 +498,16 @@ mod tests {
         assert_eq!(tokens[2].kind, TokenKind::Let);
         assert_eq!(tokens[3].kind, TokenKind::Whitespace(" ".into()));
         assert_eq!(tokens[4].kind, TokenKind::In);
+    }
+
+    #[test]
+    fn lex_use_keyword() {
+        let tokens: Vec<Token> = Lexer::new("use stdlib.io").collect();
+        assert_eq!(tokens[0].kind, TokenKind::Use);
+        assert_eq!(tokens[1].kind, TokenKind::Whitespace(" ".into()));
+        assert_eq!(tokens[2].kind, TokenKind::Ident("stdlib".into()));
+        assert_eq!(tokens[3].kind, TokenKind::Dot);
+        assert_eq!(tokens[4].kind, TokenKind::Ident("io".into()));
     }
 
     #[test]

@@ -3,6 +3,8 @@
 /// Provides built-in functions that the runtime can execute.
 /// These are implemented in pure Rust and exposed to the language
 /// via the `BuiltinFunction` trait.
+pub mod prelude;
+
 pub fn version() -> &'static str {
     "0.1.0"
 }

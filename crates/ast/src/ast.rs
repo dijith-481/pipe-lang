@@ -31,6 +31,8 @@ pub enum Decl<'a> {
         rhs: &'a TypeExpr<'a>,
         span: Span,
     },
+    /// An import declaration: `use stdlib.io`
+    Import { path: &'a str, span: Span },
 }
 
 /// Expressions in the language.
@@ -847,6 +849,22 @@ mod tests {
                 assert_eq!(name, "UserId");
             }
             _ => panic!("expected TypeAlias"),
+        }
+    }
+
+    #[test]
+    fn construct_import_declaration() {
+        let bump = Bump::new();
+        let decl = Decl::Import {
+            path: "stdlib.io",
+            span: sp(0, 13),
+        };
+        match &decl {
+            Decl::Import { path, span } => {
+                assert_eq!(*path, "stdlib.io");
+                assert_eq!(*span, sp(0, 13));
+            }
+            _ => panic!("expected Import"),
         }
     }
 

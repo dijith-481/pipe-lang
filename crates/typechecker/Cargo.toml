@@ -10,3 +10,4 @@ thiserror = "2.0.18"
 
 [dev-dependencies]
 bumpalo = { version = "3.18.1", features = ["collections"] }
+lexer = { version = "0.1.0", path = "../lexer" }

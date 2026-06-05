@@ -86,13 +86,69 @@ pub fn infer_expr<'a>(_env: &mut TypeEnv, expr: &Expr<'a>) -> Result<MonoType, T
 /// # Errors
 ///
 /// Returns [`TypeError`] if the declaration cannot be typed.
-pub fn infer_decl<'a>(
-    _env: &mut TypeEnv,
-    _decl: &ast::ast::Decl<'a>,
-) -> Result<PolyType, TypeError> {
-    // TODO: Implement declaration inference
-    // This is a stub
-    Ok(PolyType::mono(MonoType::Unit))
+pub fn infer_decl<'a>(env: &mut TypeEnv, decl: &ast::ast::Decl<'a>) -> Result<PolyType, TypeError> {
+    match decl {
+        ast::ast::Decl::Bind {
+            name,
+            value,
+            span: _,
+        } => {
+            let ty = infer_expr(env, value)?;
+            let poly = PolyType::mono(ty);
+            env.insert(*name, poly.clone());
+            Ok(poly)
+        }
+        ast::ast::Decl::TypeSig {
+            name,
+            ty: _,
+            span: _,
+        } => {
+            // TODO: Parse type expression and insert signature
+            // For now, return unit
+            let poly = PolyType::mono(MonoType::Unit);
+            env.insert(*name, poly.clone());
+            Ok(poly)
+        }
+        ast::ast::Decl::TypeAlias {
+            name,
+            params: _,
+            rhs: _,
+            span: _,
+        } => {
+            // TODO: Register type alias
+            // For now, return unit
+            let poly = PolyType::mono(MonoType::Unit);
+            env.insert(*name, poly.clone());
+            Ok(poly)
+        }
+        ast::ast::Decl::Import { path, span: _ } => {
+            // Handle standard library imports
+            match *path {
+                "stdlib.io" => {
+                    // IO module types would be loaded here
+                    // For now, this is a no-op (IO builtins are registered at runtime)
+                    Ok(PolyType::mono(MonoType::Unit))
+                }
+                "stdlib.list" => {
+                    // List module types would be loaded here
+                    Ok(PolyType::mono(MonoType::Unit))
+                }
+                "stdlib.option" => {
+                    // Option module is already in prelude
+                    Ok(PolyType::mono(MonoType::Unit))
+                }
+                "stdlib.result" => {
+                    // Result module is already in prelude
+                    Ok(PolyType::mono(MonoType::Unit))
+                }
+                _ => {
+                    // Unknown module — for now, just return unit
+                    // In a full implementation, this would look up the module
+                    Ok(PolyType::mono(MonoType::Unit))
+                }
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -170,5 +226,59 @@ mod tests {
         let mut env = TypeEnv::new();
         let ty = infer_expr(&mut env, expr).unwrap();
         assert_eq!(ty, MonoType::Bool);
+    }
+
+    #[test]
+    fn infer_decl_bind_adds_to_env() {
+        let bump = Bump::new();
+        let val = Expr::i32(42, Span::new(8, 10), &bump);
+        let decl = ast::ast::Decl::Bind {
+            name: "x",
+            value: &val,
+            span: Span::new(0, 10),
+        };
+        let mut env = TypeEnv::new();
+        let ty = infer_decl(&mut env, &decl).unwrap();
+        assert_eq!(ty, PolyType::mono(MonoType::I32));
+        assert!(env.contains("x"));
+    }
+
+    #[test]
+    fn infer_decl_import_stdlib_io() {
+        let bump = Bump::new();
+        let decl = ast::ast::Decl::Import {
+            path: "stdlib.io",
+            span: Span::new(0, 13),
+        };
+        let mut env = TypeEnv::new();
+        let result = infer_decl(&mut env, &decl);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn infer_decl_import_unknown_module() {
+        let bump = Bump::new();
+        let decl = ast::ast::Decl::Import {
+            path: "stdlib.nonexistent",
+            span: Span::new(0, 20),
+        };
+        let mut env = TypeEnv::new();
+        let result = infer_decl(&mut env, &decl);
+        assert!(result.is_ok()); // Unknown modules return unit for now
+    }
+
+    #[test]
+    fn infer_prelude_id_function() {
+        let bump = Bump::new();
+        let mut env = TypeEnv::new();
+        env.load_prelude();
+
+        // id(42) should return i32
+        let func = Expr::ident("id", Span::new(0, 2), &bump);
+        let arg = Expr::i32(42, Span::new(3, 5), &bump);
+        let args = bumpalo::collections::Vec::from_iter_in([arg].into_iter(), &bump);
+        let expr = Expr::app(&func, args, Span::new(0, 6), &bump);
+        let ty = infer_expr(&mut env, expr).unwrap();
+        assert_eq!(ty, MonoType::I32);
     }
 }
