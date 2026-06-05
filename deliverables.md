@@ -11,7 +11,7 @@ _Goal: Provide the structs, enums, and traits so the team can write their isolat
 - **What you must push:**
   - `crates/ast/src/span.rs` (`Span` struct for tracking line/col).
   - `crates/ast/src/ast.rs` (The full `bumpalo` arena-allocated AST Enums: `Expr`, `Decl`, `Pattern`, etc.).
-- **Why it unblocks them:** Member 1 cannot write Typechecker tests without an AST to check. By providing this, Member 1 can manually construct `Expr::Int(5)` in their tests. Member 3 needs `Span` to build source code highlighters.
+- **Why it unblocks them:** Member 1 cannot write Typechecker tests without an AST to check. By providing this, Member 1 can manually construct `Expr::I32(5, span, &arena)` in their tests. Member 3 needs `Span` to build source code highlighters.
 
 ### Deliverable 2: The Runtime Value & Bridge API
 

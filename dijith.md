@@ -103,7 +103,6 @@ pub enum TokenKind {
     Type, Let, In, If, Then, Else, Match, With, Do, Effect, Return, True, False,
     // Operators
     Arrow,          // =>
-    Pipe,           // |> (for method chaining, NOT a pipeline operator)
     Bind,           // <-
     Plus, Minus, Star, Slash, Percent,
     Eq, Ne, Lt, Le, Gt, Ge,
@@ -114,12 +113,16 @@ pub enum TokenKind {
     // Delimiters
     OpenParen, CloseParen, OpenBrace, CloseBrace,
     OpenBracket, CloseBracket,
-    // Literals
-    Int(i64),
-    Float(f64),
+    // Literals (raw source text — parser handles type interpretation)
+    Int(String),     // 42, 42i32, 255u8
+    Float(String),   // 3.14, 3.14f64
     Str(String),
     // Identifier
     Ident(String),
+    // Trivial tokens (preserved for tooling, skipped by parser)
+    Whitespace(String),
+    Comment(String),
+    Newline,
     // Special
     Eof,
 }
@@ -197,8 +200,8 @@ mod tests {
 
     #[test]
     fn lex_closure_syntax() {
-        let mut lexer = Lexer::new("|x| x + 1");
-        // Assert Pipe, Ident, Pipe, Ident, Plus, Int
+        let mut lexer = Lexer::new("(x) => x + 1");
+        // Assert OpenParen, Ident, CloseParen, Arrow, Ident, Plus, Int
     }
 }
 ```
@@ -372,11 +375,29 @@ pub struct ValueId(pub u32);
 pub struct BlockId(pub u32);
 
 pub enum Instruction {
-    ConstInt(i64),
+    // Signed integer constants
+    ConstI8(i8), ConstI16(i16), ConstI32(i32), ConstI64(i64),
+    // Unsigned integer constants
+    ConstU8(u8), ConstU16(u16), ConstU32(u32), ConstU64(u64), ConstUsize(usize),
+    // Float constants
+    ConstF32(f32), ConstF64(f64),
+    // Other constants
+    ConstBool(bool), ConstStr(SmolStr),
+    // Arithmetic
     Add(ValueId, ValueId),
+    Sub(ValueId, ValueId),
+    Mul(ValueId, ValueId),
+    Div(ValueId, ValueId),
+    Rem(ValueId, ValueId),
+    // Comparison
+    Eq(ValueId, ValueId), Ne(ValueId, ValueId),
+    Lt(ValueId, ValueId), Le(ValueId, ValueId),
+    Gt(ValueId, ValueId), Ge(ValueId, ValueId),
+    // Logical
+    And(ValueId, ValueId), Or(ValueId, ValueId), Not(ValueId),
+    // Control flow
     Call(SmolStr, Vec<ValueId>),
-    Phi(ValueId, ValueId), // Crucial for pattern matching/branching
-    MakeEffect(ValueId),   // Wraps a pure value in an effect marker
+    Return(ValueId),
 }
 
 pub struct BasicBlock {

@@ -128,7 +128,7 @@ let transition = (state, event) => match (state, event) {
 
 // Typeclass-style traits
 trait Functor<F> {
-  map : <A, B>(F<A>, |A| B) => F<B>
+  map : <A, B>(F<A>, A -> B) => F<B>
 }
 
 trait Foldable<F> {
@@ -296,8 +296,13 @@ Collections (Array, etc):
 
 #[repr(C)]
 pub enum Value {
-    Int(i64),
-    f64(f64),
+    // Signed integers
+    I8(i8), I16(i16), I32(i32), I64(i64),
+    // Unsigned integers
+    U8(u8), U16(u16), U32(u32), U64(u64), Usize(usize),
+    // Floats
+    F32(f32), F64(f64),
+    // Other primitives
     Bool(bool),
     Str(Arc<str>),          // immutable, shared
     Array(Arc<[Value]>),     // immutable list, ref counted
@@ -514,12 +519,12 @@ Day 21:
 
 ```typescript
 // Array operations
-Array.map      : <A, B>(Array<A>, |A| B) => Array<B>
-Array.filter   : <A>(Array<A>, |A| bool) => Array<A>
-Array.flatMap  : <A, B>(Array<A>, |A| Array<B>) => Array<B>
-Array.fold     : <A, B>(Array<A>, B, |B, A| B) => B
-Array.reduce   : <A>(Array<A>, |A, A| A) => Option<A>
-Array.find     : <A>(Array<A>, |A| bool) => Option<A>
+Array.map      : <A, B>(Array<A>, A -> B) => Array<B>
+Array.filter   : <A>(Array<A>, A -> bool) => Array<A>
+Array.flatMap  : <A, B>(Array<A>, A -> Array<B>) => Array<B>
+Array.fold     : <A, B>(Array<A>, B, (B, A) -> B) => B
+Array.reduce   : <A>(Array<A>, (A, A) -> A) => Option<A>
+Array.find     : <A>(Array<A>, A -> bool) => Option<A>
 Array.zip      : <A, B>(Array<A>, Array<B>) => Array<(A, B)>
 Array.take     : <A>(Array<A>, i32) => Array<A>
 Array.drop     : <A>(Array<A>, i32) => Array<A>
@@ -529,21 +534,21 @@ Array.len      : <A>(Array<A>) => i32
 Array.isEmpty  : <A>(Array<A>) => bool
 Array.distinct : <A: Eq>(Array<A>) => Array<A>
 Array.sort     : <A: Ord>(Array<A>) => Array<A>
-Array.sortBy   : <A, B: Ord>(Array<A>, |A| B) => Array<A>
-Array.groupBy  : <A, B: Eq>(Array<A>, |A| B) => Map<B, Array<A>>
+Array.sortBy   : <A, B: Ord>(Array<A>, A -> B) => Array<A>
+Array.groupBy  : <A, B: Eq>(Array<A>, A -> B) => Map<B, Array<A>>
 
 // Option
-Option.map     : <A, B>(Option<A>, |A| B) => Option<B>
-Option.flatMap : <A, B>(Option<A>, |A| Option<B>) => Option<B>
+Option.map     : <A, B>(Option<A>, A -> B) => Option<B>
+Option.flatMap : <A, B>(Option<A>, A -> Option<B>) => Option<B>
 Option.orElse  : <A>(Option<A>, Option<A>) => Option<A>
 Option.unwrap  : <A>(Option<A>, A) => A  // with default
 Option.isSome  : <A>(Option<A>) => bool
 
 // Result
-Result.map      : <T, E, U>(Result<T,E>, |T| U) => Result<U,E>
-Result.flatMap  : <T, E, U>(Result<T,E>, |T| Result<U,E>) => Result<U,E>
-Result.mapErr   : <T, E, F>(Result<T,E>, |E| F) => Result<T,F>
-Result.recover  : <T, E>(Result<T,E>, |E| T) => T
+Result.map      : <T, E, U>(Result<T,E>, T -> U) => Result<U,E>
+Result.flatMap  : <T, E, U>(Result<T,E>, T -> Result<U,E>) => Result<U,E>
+Result.mapErr   : <T, E, F>(Result<T,E>, E -> F) => Result<T,F>
+Result.recover  : <T, E>(Result<T,E>, E -> T) => T
 
 // IO / Effect
 IO.print    : (str) => Effect<Unit>
@@ -553,11 +558,11 @@ IO.readFile : (Path) => Effect<Result<str, IOError>>
 IO.writeFile: (Path, str) => Effect<Result<Unit, IOError>>
 
 // Function combinators
-compose : <A, B, C>(|B| C, |A| B) => |A| C
-pipe    : <A, B, C>(|A| B, |B| C) => |A| C
+compose : <A, B, C>(B -> C, A -> B) => A -> C
+pipe    : <A, B, C>(A -> B, B -> C) => A -> C
 id      : <A>(A) => A
-const   : <A, B>(A) => |B| A
-flip    : <A, B, C>(|A| |B| C) => |B| |A| C
+const   : <A, B>(A) => B -> A
+flip    : <A, B, C>(A -> B -> C) => B -> A -> C
 ```
 
 ---

@@ -1,72 +1,42 @@
-use std::fmt;
-
 /// Errors that can occur during runtime execution.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum RuntimeError {
     /// A value was used where a different type was expected.
+    #[error("type mismatch: expected {expected}, got {got}")]
     TypeMismatch { expected: String, got: String },
 
     /// An argument count mismatch (wrong arity).
+    #[error("arity mismatch: expected {expected} arguments, got {got}")]
     ArityMismatch { expected: usize, got: usize },
 
     /// Division by zero.
+    #[error("division by zero")]
     DivisionByZero,
 
     /// Index out of bounds for an array.
+    #[error("index {index} out of bounds for array of length {len}")]
     IndexOutOfBounds { index: i64, len: usize },
 
     /// Field not found on a record.
+    #[error("field `{field}` not found")]
     FieldNotFound { field: String },
 
     /// Variable not found in scope.
+    #[error("unbound variable `{name}`")]
     UnboundVariable { name: String },
 
     /// Pattern match exhaustiveness failure.
+    #[error("non-exhaustive match: no arm handles {value}")]
     NonExhaustiveMatch { value: String },
 
     /// An effect could not be executed.
+    #[error("effect error: {msg}")]
     EffectError { msg: String },
 
     /// A user-thrown error from the language.
+    #[error("{msg}")]
     UserError { msg: String },
 }
-
-impl fmt::Display for RuntimeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            RuntimeError::TypeMismatch { expected, got } => {
-                write!(f, "type mismatch: expected {expected}, got {got}")
-            }
-            RuntimeError::ArityMismatch { expected, got } => {
-                write!(
-                    f,
-                    "arity mismatch: expected {expected} arguments, got {got}"
-                )
-            }
-            RuntimeError::DivisionByZero => write!(f, "division by zero"),
-            RuntimeError::IndexOutOfBounds { index, len } => {
-                write!(f, "index {index} out of bounds for array of length {len}")
-            }
-            RuntimeError::FieldNotFound { field } => {
-                write!(f, "field `{field}` not found")
-            }
-            RuntimeError::UnboundVariable { name } => {
-                write!(f, "unbound variable `{name}`")
-            }
-            RuntimeError::NonExhaustiveMatch { value } => {
-                write!(f, "non-exhaustive match: no arm handles {value}")
-            }
-            RuntimeError::EffectError { msg } => {
-                write!(f, "effect error: {msg}")
-            }
-            RuntimeError::UserError { msg } => {
-                write!(f, "{msg}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for RuntimeError {}
 
 #[cfg(test)]
 mod tests {
