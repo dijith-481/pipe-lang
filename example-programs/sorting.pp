@@ -1,6 +1,8 @@
 // Quicksort — classic functional algorithm
+// Recursive functions need explicit type signatures so HM can resolve
+// the self-reference; non-recursive helpers stay inferred.
 
-let quicksort = (arr) => match arr {
+let quicksort : (Array<i32>) -> Array<i32> = (arr) => match arr {
     []         => []
     [pivot]    => [pivot]
     arr        => {
@@ -8,7 +10,7 @@ let quicksort = (arr) => match arr {
         let rest = arr.drop(1)
         let less = rest.filter((x) => x <= pivot)
         let greater = rest.filter((x) => x > pivot)
-        quicksort(less) ++ [pivot] ++ quicksort(greater)
+        quicksort(less).concat([pivot]).concat(quicksort(greater))
     }
 }
 
@@ -18,17 +20,17 @@ let split = (arr) => {
     (arr.take(mid), arr.drop(mid))
 }
 
-let merge = (a, b) => match (a, b) {
+let merge : (Array<i32>, Array<i32>) -> Array<i32> = (a, b) => match (a, b) {
     ([], bs)         => bs
     (as_, [])        => as_
     (a:as_, b:bs)    => if a <= b {
-        [a] ++ merge(as_, b:bs)
+        [a].concat(merge(as_, b:bs))
     } else {
-        [b] ++ merge(a:as_, bs)
+        [b].concat(merge(a:as_, bs))
     }
 }
 
-let mergesort = (arr) => match arr {
+let mergesort : (Array<i32>) -> Array<i32> = (arr) => match arr {
     []      => []
     [x]     => [x]
     arr     => {
@@ -39,7 +41,7 @@ let mergesort = (arr) => match arr {
 
 let main : () -> Effect<()> = do {
     let data = [38, 27, 43, 3, 9, 82, 10, 55, 12, 1]
-    println("Original:  " ++ data.toString())
-    println("Quicksort: " ++ quicksort(data).toString())
-    println("Mergesort: " ++ mergesort(data).toString())
+    println(`Original:  ${data}`)
+    println(`Quicksort: ${quicksort(data)}`)
+    println(`Mergesort: ${mergesort(data)}`)
 }

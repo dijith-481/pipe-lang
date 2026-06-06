@@ -24,28 +24,28 @@ let transition : (AppState, Event) -> AppState = (state, event) => match (state,
 }
 
 let stateToString = (state) => match state {
-    Idle          => "Idle"
-    Loading       => "Loading..."
-    Ready(data)   => "Ready: " ++ data
-    Failed(msg)   => "Failed: " ++ msg
+    Idle          => `Idle`
+    Loading       => `Loading...`
+    Ready(data)   => `Ready: ${data}`
+    Failed(msg)   => `Failed: ${msg}`
 }
 
 let main : () -> Effect<()> = do {
     // Simulate a series of events
-    let events = [StartLoad, DataReceived("user data"), Reset, StartLoad, ErrorOccured("timeout"), Reset]
+    let events = [StartLoad, DataReceived(`user data`), Reset, StartLoad, ErrorOccured(`timeout`), Reset]
 
     // Fold events through the state machine
     let finalState = events.fold(Idle, (state, event) => transition(state, event))
 
-    println("Final state: " ++ stateToString(finalState))
+    println(`Final state: ${stateToString(finalState)}`)
 
     // Show each transition
-    println("")
-    println("Transitions:")
+    println(``)
+    println(`Transitions:`)
     let states = events.fold([Idle], (acc, event) => {
         let last = acc[acc.len() - 1]
         let next = transition(last, event)
-        acc ++ [next]
+        acc.concat([next])
     })
-    states.map((s) => println("  -> " ++ stateToString(s)))
+    states.map((s) => println(`  -> ${stateToString(s)}`))
 }

@@ -1,4 +1,4 @@
-// Fibonacci — recursive and iterative approaches
+// Fibonacci — recursive and tail-recursive
 
 // Recursive (naive)
 let fib : (i32) -> i64 = (n) => match n {
@@ -20,5 +20,5 @@ let fibFast : (i32) -> i64 = (n) => fibTail(n, 0i64, 1i64)
 let main : () -> Effect<()> = do {
     let nums = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
     let results = nums.map((n) => fibFast(n))
-    results.map((v) => println(v.toString()))
+    results.map((v) => println(`${v}`))
 }

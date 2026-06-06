@@ -6,9 +6,9 @@ type Person = {
     city : str
 }
 
-let alice : Person = { name: "Alice", age: 30, city: "Wonderland" }
+let alice : Person = { name: `Alice`, age: 30, city: `Wonderland` }
 
-let bob : Person = { name: "Bob", age: 25, city: "Builderland" }
+let bob : Person = { name: `Bob`, age: 25, city: `Builderland` }
 
 // Field access with dot operator
 let getName = (p) => p.name
@@ -24,13 +24,13 @@ let adults = (people) => people.filter(isAdult)
 let names = (people) => people.map(getName)
 
 let main : () -> Effect<()> = do {
-    println("Name: " ++ getName(alice))
-    println("Is adult: " ++ isAdult(alice).toString())
+    println(`Name: ${getName(alice)}`)
+    println(`Is adult: ${isAdult(alice)}`)
 
     let older = withAge(alice, 31)
-    println("Updated age: " ++ older.age.toString())
+    println(`Updated age: ${older.age}`)
 
     let people = [alice, bob]
-    println("Adults: " ++ adults(people).toString())
-    println("Names: " ++ names(people).toString())
+    println(`Adults: ${adults(people)}`)
+    println(`Names: ${names(people)}`)
 }

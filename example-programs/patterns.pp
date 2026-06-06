@@ -16,9 +16,9 @@ let area : (Shape) -> f64 = (shape) => match shape {
 }
 
 let describe = (shape) => match shape {
-    Circle(r)          => "Circle with radius " ++ r.toString()
-    Rectangle(w, h)    => "Rectangle " ++ w.toString() ++ "x" ++ h.toString()
-    Triangle(a, b, c)  => "Triangle with sides " ++ a.toString() ++ ", " ++ b.toString() ++ ", " ++ c.toString()
+    Circle(r)          => `Circle with radius ${r}`
+    Rectangle(w, h)    => `Rectangle ${w}x${h}`
+    Triangle(a, b, c)  => `Triangle with sides ${a}, ${b}, ${c}`
 }
 
 // Nested pattern matching
@@ -29,21 +29,21 @@ type Message =
   | Ping
 
 let handleMessage = (msg) => match msg {
-    Login(user, _)    => user ++ " logged in"
-    Logout            => "user logged out"
-    Chat(user, text)  => user ++ ": " ++ text
-    Ping              => "ping received"
+    Login(user, _)    => `${user} logged in`
+    Logout            => `user logged out`
+    Chat(user, text)  => `${user}: ${text}`
+    Ping              => `ping received`
 }
 
 let main : () -> Effect<()> = do {
     let shapes = [Circle(5.0), Rectangle(4.0, 6.0), Triangle(3.0, 4.0, 5.0)]
 
     shapes.map((s) => {
-        println(describe(s) ++ " has area " ++ area(s).toString())
+        println(`${describe(s)} has area ${area(s)}`)
     })
 
-    println("")
+    println(``)
 
-    let messages = [Login("alice", "secret"), Chat("bob", "hello"), Ping, Logout]
+    let messages = [Login(`alice`, `secret`), Chat(`bob`, `hello`), Ping, Logout]
     messages.map((m) => println(handleMessage(m)))
 }

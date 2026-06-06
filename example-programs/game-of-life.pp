@@ -39,12 +39,12 @@ let step : (Array<Array<Cell>>) -> Array<Array<Cell>> = (grid) => {
     })
 }
 
-let cellToString = (c) => if c { "#" } else { "." }
+let cellToString = (c) => if c { `#` } else { `.` }
 
 let gridToString = (grid) =>
     grid.map((row) =>
-        row.map(cellToString).fold("", (acc, s) => acc ++ s)
-    ).fold("", (acc, line) => acc ++ line ++ "\n")
+        row.map(cellToString).fold(``, (acc, s) => `${acc}${s}`)
+    ).fold(``, (acc, line) => `${acc}${line}\n`)
 
 let main : () -> Effect<()> = do {
     // Glider pattern
@@ -59,11 +59,11 @@ let main : () -> Effect<()> = do {
         [false, false, false, false, false, false, false, false],
     ]
 
-    println("Generation 0:")
+    println(`Generation 0:`)
     println(gridToString(grid))
 
     // Step a few times
     let g1 = step(grid)
-    println("Generation 1:")
+    println(`Generation 1:`)
     println(gridToString(g1))
 }

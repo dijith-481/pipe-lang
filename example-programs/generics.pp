@@ -1,6 +1,6 @@
 // Type signatures and generic functions
 
-// Polymorphic identity function
+// Polymorphic identity function (explicit for pedagogy)
 let id : (a) -> a = (x) => x
 
 // Constant function
@@ -32,23 +32,23 @@ let mapResult = (result, f) => match result {
 let main : () -> Effect<()> = do {
     // Using generic functions
     let x = id(42)
-    let s = id("hello")
-    println("id(42) = " ++ x.toString())
-    println("id(\"hello\") = " ++ s)
+    let s = id(`hello`)
+    println(`id(42) = ${x}`)
+    println(`id("hello") = ${s}`)
 
     // Compose
     let double = (n) => n * 2
     let increment = (n) => n + 1
     let doubleThenInc = compose(increment, double)
-    println("doubleThenInc(5) = " ++ doubleThenInc(5).toString())
+    println(`doubleThenInc(5) = ${doubleThenInc(5)}`)
 
     // Map over Option
     let opt = Some(10)
     let mapped = mapOption(opt, (n) => n * 3)
-    println("mapOption(Some(10), *3) = " ++ mapped.toString())
+    println(`mapOption(Some(10), *3) = ${mapped}`)
 
     // Map over Result
     let res = Ok(42)
     let mappedRes = mapResult(res, (n) => n - 10)
-    println("mapResult(Ok(42), -10) = " ++ mappedRes.toString())
+    println(`mapResult(Ok(42), -10) = ${mappedRes}`)
 }

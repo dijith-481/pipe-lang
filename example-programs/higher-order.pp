@@ -27,10 +27,10 @@ let sumOfSquaresOfEvens = (xs) =>
 
 let main : () -> Effect<()> = do {
     let data = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
-    println("Original: " ++ data.toString())
-    println("Doubled:  " ++ doubleAll(data).toString())
-    println("Evens:    " ++ evens(data).toString())
-    println("Sum:      " ++ sum(data).toString())
-    println("Max:      " ++ max(data).toString())
-    println("Sum of squares of evens: " ++ sumOfSquaresOfEvens(data).toString())
+    println(`Original: ${data}`)
+    println(`Doubled:  ${doubleAll(data)}`)
+    println(`Evens:    ${evens(data)}`)
+    println(`Sum:      ${sum(data)}`)
+    println(`Max:      ${max(data)}`)
+    println(`Sum of squares of evens: ${sumOfSquaresOfEvens(data)}`)
 }

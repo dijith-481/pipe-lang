@@ -15,8 +15,9 @@ pipe-lang is a **pure functional language** with Rust/TypeScript-inspired syntax
 | Principle | Description |
 |-----------|-------------|
 | **Purity by default** | All functions are pure — no side effects, no mutation |
-| **Explicit effects** | IO/side effects are wrapped in `Effect<T>` and tracked by the type system |
+| **Explicit effects** | Side effects are wrapped in `Effect<T>` and tracked by the type system. Effects only execute inside a `do { ... }` block. |
 | **No implicit coercion** | `i32` and `f64` are distinct types; conversions are explicit |
+| **No string concatenation operator** | Strings are built with template literals (`` `...${expr}...` ``); array concatenation uses `.concat()` |
 | **Let bindings only** | All bindings require `let` — no hidden assignments |
 | **Immutable data** | All values are immutable; sharing is safe via reference counting |
 
@@ -95,6 +96,60 @@ do       true     false
 "backslash\\"
 "quote\""
 ```
+
+Plain `"..."` strings are always allowed and are the natural
+choice when the string contains no interpolation. Backtick template
+literals (below) are only required when an embedded `${expr}` is
+needed; they have the same escape semantics.
+
+```pipe
+let greeting = "Hello, World!"          // plain — fine
+let greeting = `Hello, World!`          // equivalent — also fine
+let greeting = `Hello, ${name}!`        // template — required
+```
+
+#### Template Literals (String Interpolation)
+
+Template literals are delimited by backticks and embed expressions inside
+`${ ... }`. They replace string concatenation (`++`) as the only way to
+build strings from parts.
+
+```pipe
+`Hello, World!`
+`Hello, ${name}!`
+`${n}! = ${result}`
+`${a} + ${b} = ${a + b}`
+```
+
+**Semantics:**
+- The literal text outside `${}` is preserved verbatim
+- Inside `${}` is any expression; its value is converted to `str`
+- Built-in numeric and boolean primitives are auto-converted
+  (`i32`, `i64`, `f64`, `bool`, `char` — they have `toString()`)
+- `str` values are inserted as-is
+- Other types (records, arrays, options, results) require an explicit
+  `.toString()` call inside the hole
+- Template holes can span multiple lines and contain any expression,
+  including nested template literals
+- To embed a literal `${`, escape as `\${`; to embed a backtick, escape
+  as `` \` ``
+- Template literals are typed `str`
+
+```pipe
+// Multi-line template literal
+let banner = `
+=========================================
+ Welcome, ${user.name}!
+ You have ${count} new messages.
+=========================================
+`
+```
+
+**Note:** pipe-lang has no `++` operator and no separate string
+concatenation operator. Template literals are the canonical way to
+build strings. For accumulation in a `fold`, template literals are
+used directly (O(n²) cost; a `StringBuilder`-style helper is a 0.2
+optimization).
 
 #### Boolean Literals
 
@@ -234,17 +289,38 @@ type Array<T> = ...  // built-in
 
 Type application: `Option<i32>`, `Result<str, Error>`, `Array<User>`
 
-### 3.6 Type Signatures
+### 3.6 Type Annotations
 
-Type signatures are separate declarations (not inline):
+Type annotations are **inline** on the binding:
 
+```pipe
+let add : (i32, i32) -> i32 = (a, b) => a + b
+let main : () -> Effect<()> = do { ... }
+let transition : (AppState, Event) -> AppState = (state, event) => ...
 ```
-let add : (i32, i32) -> i32
-let add = (a, b) => a + b
 
-let transition : AppState -> Event -> Effect<AppState>
-let transition = (state, event) => ...
+Annotations are **optional** for non-recursive bindings; Hindley-Milner
+infers the type from the body. Recursive functions **require** an
+explicit annotation because HM cannot resolve the self-reference
+without it.
+
+```pipe
+// inferred: (i32) -> i32
+let double = (x) => x * 2
+
+// inferred: ((b) -> c, (a) -> b) -> (a) -> c
+let compose = (f, g) => (x) => f(g(x))
+
+// recursive — annotation required
+let factorial : (i32) -> i64 = (n) => match n {
+    0 => 1i64
+    1 => 1i64
+    n => n * factorial(n - 1)
+}
 ```
+
+The unit type is written `()`. `Effect<()>` is the canonical return
+type for `main`.
 
 ### 3.7 Effect Types
 
@@ -252,15 +328,28 @@ let transition = (state, event) => ...
 Effect<T>    -- an effectful computation producing T
 ```
 
-Effect values wrap builtin functions that perform IO:
+`Effect<T>` wraps a computation that may perform IO. Effect values
+are produced by the IO module and executed by the runtime. Pure
+functions cannot perform IO; only expressions inside a `do { ... }`
+block can run effects.
+
+The `io` module is accessed via `use stdlib::io`; the functions
+`println`, `print`, `eprint`, `eprintln` are in the prelude and do
+not require any import.
 
 ```
-IO.print("hello")      -- returns Effect<Unit>
-IO.println("hello")    -- returns Effect<Unit>
-IO.readLine()          -- returns Effect<str>
+use stdlib::io
+
+let main : () -> Effect<()> = do {
+    name <- io.readLine()
+    println(`Hello, ${name}!`)
+}
 ```
 
-Effects are executed by the runtime, not by pure evaluation.
+**Pure-by-default enforcement:** mutations, IO, and other side
+effects are rejected at compile time unless the call site is inside
+a `do` block. The type checker verifies that the body of every
+non-`do` function is referentially transparent.
 
 ---
 
@@ -427,14 +516,34 @@ match subject {
 
 ### 4.14 Do Blocks (Effect Sequencing)
 
-```
-do {
-    name <- IO.readLine()
-    IO.println("Hello, " ++ name)
+```pipe
+use stdlib::io
+
+let main : () -> Effect<()> = do {
+    name <- io.readLine()
+    println(`Hello, ${name}!`)
 }
 ```
 
-`do` blocks sequence effectful operations. Each `<-` binding extracts the value from an `Effect<T>`.
+`do` blocks sequence effectful operations. Each `<-` binding
+extracts the value from an `Effect<T>`. The final expression of the
+block determines the block's return type, which becomes the `T` in
+`Effect<T>`. Pure statements (non-effect expressions) interleaved
+with `<-` bindings are allowed and evaluated in order.
+
+```pipe
+let main : () -> Effect<()> = do {
+    println(`What is your name?`)
+    name <- io.readLine()
+    let greeting = `Hello, ${name}!`
+    println(greeting)
+}
+```
+
+A `do` block with no `<-` bindings desugars to a single effectful
+expression; it is required whenever any statement of `main`
+performs IO. The simplest program — `let main : () -> Effect<()> =
+println(`Hello`)` — is a single-expression `do` body.
 
 ---
 
@@ -550,6 +659,7 @@ Array.zip       : <A, B>(Array<A>, Array<B>) -> Array<(A, B)>
 Array.take      : <T>(Array<T>, usize) -> Array<T>
 Array.drop      : <T>(Array<T>, usize) -> Array<T>
 Array.isEmpty   : <T>(Array<T>) -> bool
+Array.concat    : <T>(Array<T>, Array<T>) -> Array<T>
 Array.distinct  : <T: Eq>(Array<T>) -> Array<T>
 Array.sort      : <T: Ord>(Array<T>) -> Array<T>
 Array.sortBy    : <A, B: Ord>(Array<A>, (A) -> B) -> Array<A>
@@ -576,12 +686,24 @@ Result.mapErr   : <T, E, F>(Result<T,E>, (E) -> F) -> Result<T,F>
 ### 7.4 IO / Effect
 
 ```
-IO.print       : (str) -> Effect<Unit>
-IO.println     : (str) -> Effect<Unit>
-IO.readLine    : () -> Effect<str>
-IO.readFile    : (str) -> Effect<Result<str, IOError>>
-IO.writeFile   : (str, str) -> Effect<Result<Unit, IOError>>
+// In the prelude — no import required
+print         : (str) -> Effect<()>
+println       : (str) -> Effect<()>
+eprint        : (str) -> Effect<()>
+eprintln      : (str) -> Effect<()>
+
+// In stdlib::io — import via `use stdlib::io`
+io.print      : (str) -> Effect<()>
+io.println    : (str) -> Effect<()>
+io.readLine   : () -> Effect<str>
+io.readFile   : (str) -> Effect<Result<str, IOError>>
+io.writeFile  : (str, str) -> Effect<Result<(), IOError>>
 ```
+
+`io` is the only module that needs an explicit import for 0.1;
+`println` and friends are in the prelude because every program
+prints. Methods like `io.readLine()` are accessed as field-style
+calls after `use stdlib::io`.
 
 ### 7.5 Function Combinators
 

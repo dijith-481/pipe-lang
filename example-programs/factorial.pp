@@ -1,4 +1,4 @@
-// Factorial — recursive and iterative
+// Factorial — recursive and tail-recursive
 
 // Recursive factorial
 let factorial : (i32) -> i64 = (n) => match n {
@@ -21,6 +21,6 @@ let main : () -> Effect<()> = do {
     let nums = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     nums.map((n) => {
         let result = factorialTail(n)
-        println(n.toString() ++ "! = " ++ result.toString())
+        println(`${n}! = ${result}`)
     })
 }
