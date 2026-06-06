@@ -1,484 +1,149 @@
-# The Lead Architect's Week 1 Execution Document
+# dijith — The Compiler Internals Owner
 
-## Phase 1: Repo Setup & Core Dependencies (Day 1)
+**Crate ownership:** `crates/lexer`, `crates/parser`, `crates/typechecker`, `crates/ir`, Cranelift wiring in `crates/runtime`
 
-First, set up the repo and pull in the dependencies for _your_ crates. Do not write logic yet — just establish the skeleton and install packages.
+**Mission:** Get 14 example `.pp` programs from source text to running native code via Cranelift JIT, end-to-end. Owns the full compiler pipeline from `&str` to function pointer.
 
-```bash
-# 1. Initialize Workspace
-cargo init --lib --name pipe-lang
-cd pipe-lang
+## Why this allocation
 
-# 2. Scaffold Your Crates (Plus shared AST)
-mkdir crates
-cargo new --lib crates/ast
-cargo new --lib crates/lexer
-cargo new --lib crates/parser
-cargo new --lib crates/ir
-cargo new --lib crates/runtime
-cargo new --lib crates/stdlib
-cargo new --lib crates/diagnostics
-cargo new crates/cli
+The 4 modules above form a single, sequential pipeline:
 
-# 3. Setup Workspace Cargo.toml
-cat <<EOT > Cargo.toml
-[workspace]
-members = ["crates/*"]
-resolver = "2"
-EOT
+```
+.pp → [lexer] → [parser] → [typechecker] → [ir] → [cranelift] → running program
 ```
 
-### Install Dependencies via CLI
+The output of each stage is the input to the next. Putting all 4 on one person means:
+- One person owns the AST shape and the IR shape
+- One person controls the contract with the Cranelift backend
+- One person is responsible for the type-driven optimizations (HM inference informs IR)
+- No cross-team coordination on compiler internals — the other 3 members consume the public API
 
-Run these from the root of the workspace.
+The other 3 team members do **easy, parallel** work that doesn't touch compiler internals: a tree-walking interpreter, CLI plumbing, and tooling. See `member1.md`, `member2.md`, `member3.md`.
 
-**For `ast` (Memory & Strings)**
+## What dijith delivers
 
-```bash
-cargo add bumpalo -p ast --features collections  # Arena allocation for AST
-cargo add smol_str -p ast                        # String interning for fast cloning
-```
+The day-by-day plan is in `deliverables.md`. Summary:
 
-_Intuition:_ ASTs involve thousands of small nodes and identifiers. Using `Box` and `String` fragments memory and slows down the compiler. `bumpalo` allows you to allocate the entire AST in one contiguous memory arena and drop it instantly. `smol_str` prevents heap allocations for identifiers under 22 bytes.
+| Phase | Days | Deliverable | Tests |
+|---|---|---|---|
+| 0 | 1 | AST, TokenKind, MonoType::Effect, Bind.ty contracts | — |
+| 1 | 1–2 | Lexer (hand-written, pull-based, template literals, `::` path sep) | 11 |
+| 2 | 2–4 | Parser (recursive descent, arena AST, error recovery) | 14 |
+| 3 | 4–8 | Typechecker (HM with let-polymorphism, Effect<T>, pattern typing) | 26 |
+| 4 | 8–10 | IR (flat SSA-lite, lowered from typed AST) | 7 |
+| 5 | 10–12 | Cranelift JIT (IR → Cranelift IR → native code, FFI for builtins) | 8 |
+| 6 | 12–14 | Integration polish, pre-commit gates green | — |
+| **Total** | **14 days** | **`pipe-lang run example-programs/hello.pp` prints `Hello, World!`** | **66 tests** |
 
-**For `parser` (Errors & Diagnostics)**
+## Public APIs dijith exposes to other team members
 
-```bash
-cargo add thiserror -p parser
-cargo add miette -p parser
-```
+These are the contracts other members will consume. They must be stable from the day listed.
 
-**For `runtime` & `ir` (JIT)**
-
-```bash
-cargo add cranelift-codegen -p runtime
-cargo add cranelift-frontend -p runtime
-cargo add cranelift-jit -p runtime
-cargo add cranelift-module -p runtime
-```
-
----
-
-## Phase 2: Defining the Common Domain (Day 1)
-
-Before writing the Lexer, you must define the Types in `crates/ast/`. This is the single source of truth for you and your team.
-
-### 1. Spans (Source Mapping)
-
-Every token and AST node must know where it came from for JIT debugging and LSP support.
-
+### Day 2: `crates/lexer`
 ```rust
-// crates/ast/src/span.rs
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Span {
-    pub start: usize,
-    pub end: usize,
-}
-
-impl Span {
-    pub fn new(start: usize, end: usize) -> Self { Self { start, end } }
-    pub fn empty(pos: usize) -> Self { Self { start: pos, end: pos } }
-    pub fn merge(self, other: Span) -> Span {
-        Span {
-            start: self.start.min(other.start),
-            end: self.end.max(other.end),
-        }
-    }
-    pub fn len(self) -> usize { self.end - self.start }
-    pub fn source_text(self, source: &str) -> &str { &source[self.start..self.end] }
-}
-```
-
-### 2. The Token Architecture
-
-Design the Token as a lightweight struct. Do not put strings inside keywords; only use `&str` for literals/identifiers.
-
-```rust
-// crates/lexer/src/lexer.rs
-use ast::span::Span;
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum TokenKind {
-    // Keywords
-    Type, Let, In, If, Then, Else, Match, With, Do, Effect, Return, True, False,
-    // Operators
-    Arrow,          // =>
-    Bind,           // <-
-    Plus, Minus, Star, Slash, Percent,
-    Eq, Ne, Lt, Le, Gt, Ge,
-    And, Or, Not,
-    Assign,         // =
-    Dot,            // . (field access and method calls)
-    Comma, Colon, Semicolon, Underscore,
-    // Delimiters
-    OpenParen, CloseParen, OpenBrace, CloseBrace,
-    OpenBracket, CloseBracket,
-    // Literals (raw source text — parser handles type interpretation)
-    Int(String),     // 42, 42i32, 255u8
-    Float(String),   // 3.14, 3.14f64
-    Str(String),
-    // Identifier
-    Ident(String),
-    // Trivial tokens (preserved for tooling, skipped by parser)
-    Whitespace(String),
-    Comment(String),
-    Newline,
-    // Special
-    Eof,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Token {
-    pub kind: TokenKind,
-    pub span: Span,
-}
-```
-
----
-
-## Phase 3: The Lexer TDD Plan (Days 1 - 2)
-
-Your lexer must be a hand-written, pull-based iterator over a `&str` or `&[u8]`. No regex.
-
-### 1. The API Boundary
-
-```rust
-// crates/lexer/src/lexer.rs
-pub struct Lexer<'a> {
-    source: &'a str,
-    chars: std::iter::Peekable<std::str::CharIndices<'a>>,
-    current_pos: usize,
-    done: bool,
-}
-
+pub struct Lexer<'a> { /* ... */ }
 impl<'a> Lexer<'a> {
-    pub fn new(source: &'a str) -> Self { ... }
-    fn advance(&mut self) -> Option<(usize, char)> { ... }
-    fn peek(&mut self) -> Option<char> { ... }
+    pub fn new(source: &'a str) -> Self;
+    // Implements Iterator<Item = Result<Token<'a>, LexError>>
 }
+pub struct Token<'a> { pub kind: TokenKind<'a>, pub span: Span }
+pub enum TokenKind<'a> { /* see deliverables.md Day 1 */ }
+```
 
-// Implement Iterator so the Parser can just call `.next()`
-// Always yields at least one Eof token at the end
-impl<'a> Iterator for Lexer<'a> {
-    type Item = Token;
-    fn next(&mut self) -> Option<Self::Item> {
-        // Skip whitespace/comments, match char, yield Token
-        todo!()
-    }
+### Day 4: `crates/parser`
+```rust
+pub fn parse<'a>(bump: &'a Bump, tokens: &[Token]) -> Result<&'a Program<'a>, Vec<ParseError>>;
+```
+
+### Day 8: `crates/typechecker`
+```rust
+pub fn infer_program<'a>(program: &'a Program<'a>) -> Result<TypedProgram<'a>, Vec<TypeError>>;
+pub struct TypedProgram<'a> {
+    pub ast: &'a Program<'a>,
+    pub env: TypeEnv,
+    pub type_for_span: HashMap<Span, MonoType>,
 }
 ```
 
-### 2. Lexer Test Driven Development
-
-Write these tests _first_ in `crates/lexer/src/lexer.rs`.
-
+### Day 10: `crates/ir`
 ```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn lex_basic_identifiers() {
-        let mut lexer = Lexer::new("let add = (a, b) => a + b");
-        assert_eq!(lexer.next().unwrap().kind, TokenKind::Let);
-        assert_eq!(lexer.next().unwrap().kind, TokenKind::Ident("add".into()));
-        // ... test rest of tokens
-    }
-
-    #[test]
-    fn lex_dot_and_bind() {
-        let mut lexer = Lexer::new("x.filter \n y <- effect");
-        // Assert Dot (.) and Bind (<-) are recognized
-    }
-
-    #[test]
-    fn lex_unicode_and_spans() {
-        let source = "let α = 5"; // Unicode handling is critical
-        let mut lexer = Lexer::new(source);
-        // Test that spans are byte-accurate, not char-accurate
-    }
-
-    #[test]
-    fn lex_closure_syntax() {
-        let mut lexer = Lexer::new("(x) => x + 1");
-        // Assert OpenParen, Ident, CloseParen, Arrow, Ident, Plus, Int
-    }
-}
+pub fn lower_program(typed: &TypedProgram) -> Result<IrModule, IrError>;
+pub struct IrModule { pub functions: Vec<IrFunction> }
 ```
 
-_Goal for Day 2:_ Make all Lexer tests pass.
-
----
-
-## Phase 4: The Parser TDD Plan (Days 3 - 4)
-
-Your parser takes the Lexer and an Arena (`bumpalo::Bump`) and outputs AST references.
-
-### 1. The AST Architecture
-
-Notice the use of `&'a` lifetimes. The AST lives in the arena.
-
+### Day 12: `crates/runtime::jit` (Cranelift)
 ```rust
-// crates/ast/src/ast.rs
-use bumpalo::Bump;
-use crate::span::Span;
-
-#[derive(Debug, Clone)]
-pub struct Program<'a> {
-    pub decls: bumpalo::collections::Vec<'a, Decl<'a>>,
-}
-
-#[derive(Debug, Clone)]
-pub enum Decl<'a> {
-    /// let name = expr
-    Bind {
-        name: &'a str,
-        value: &'a Expr<'a>,
-        span: Span,
-    },
-    /// let name : Type
-    TypeSig {
-        name: &'a str,
-        ty: &'a TypeExpr<'a>,
-        span: Span,
-    },
-    /// type Name = TypeExpr
-    TypeAlias {
-        name: &'a str,
-        params: bumpalo::collections::Vec<'a, &'a str>,
-        rhs: &'a TypeExpr<'a>,
-        span: Span,
-    },
-}
-
-#[derive(Debug, Clone)]
-pub enum Expr<'a> {
-    Int(i64, Span),
-    Float(f64, Span),
-    Str(&'a str, Span),
-    Bool(bool, Span),
-    Ident(&'a str, Span),
-    Application {
-        func: &'a Expr<'a>,
-        args: bumpalo::collections::Vec<'a, &'a Expr<'a>>,
-        span: Span,
-    },
-    Lambda {
-        params: bumpalo::collections::Vec<'a, Param<'a>>,
-        return_type: Option<&'a TypeExpr<'a>>,
-        body: &'a Expr<'a>,
-        span: Span,
-    },
-    Binary {
-        op: BinOp,
-        left: &'a Expr<'a>,
-        right: &'a Expr<'a>,
-        span: Span,
-    },
-    FieldAccess {
-        object: &'a Expr<'a>,
-        field: &'a str,
-        span: Span,
-    },
-    Match {
-        subject: &'a Expr<'a>,
-        arms: bumpalo::collections::Vec<'a, MatchArm<'a>>,
-        span: Span,
-    },
-    // ... other variants
-}
-```
-
-### 2. The Parser API
-
-```rust
-// crates/parser/src/lib.rs
-use ast::ast::{Program, Expr};
-use lexer::{Lexer, Token};
-use bumpalo::Bump;
-
-pub struct Parser<'a, 'source> {
-    lexer: Lexer<'source>,
-    arena: &'a Bump,
-    current: Token,
-    previous: Token,
-}
-
-impl<'a, 'source> Parser<'a, 'source> {
-    pub fn new(lexer: Lexer<'source>, arena: &'a Bump) -> Self { ... }
-
-    // Pratt parsing for expressions
-    fn parse_expression(&mut self, precedence: Precedence) -> Result<&'a Expr<'a>, ParseError> {
-        todo!()
-    }
-}
-```
-
-### 3. Parser Tests
-
-```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use bumpalo::Bump;
-
-    #[test]
-    fn parse_method_chaining() {
-        let arena = Bump::new();
-        let mut parser = Parser::new(
-            Lexer::new("users.filter(|x| x.age >= 18).map(|x| x.name)"),
-            &arena,
-        );
-        let ast = parser.parse_program().unwrap();
-        // Assert that method calls are desugared to function applications:
-        // map(filter(users, |x| x.age >= 18), |x| x.name)
-    }
-
-    #[test]
-    fn parse_let_binding() {
-        let arena = Bump::new();
-        let mut parser = Parser::new(
-            Lexer::new("let add = (a:i32, b:i32):i64 => a + b"),
-            &arena,
-        );
-        let ast = parser.parse_program().unwrap();
-        // Assert: Decl::Bind { name: "add", value: Lambda { ... } }
-    }
-
-    #[test]
-    fn parse_match_expression() {
-        let arena = Bump::new();
-        let source = "match opt { Some(x) => x, None => 0 }";
-        let mut parser = Parser::new(Lexer::new(source), &arena);
-        // Assert arms are parsed correctly
-    }
-}
-```
-
----
-
-## Phase 5: IR Design & Skeleton (Days 5 - 6)
-
-The AST is a tree. IR must be flat, essentially a typed SSA (Static Single Assignment) form, making it trivial to map to Cranelift.
-
-### 1. IR Architecture
-
-```rust
-// crates/ir/src/lib.rs
-use ast::SmolStr;
-
-// Typed, flat instructions
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ValueId(pub u32);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct BlockId(pub u32);
-
-pub enum Instruction {
-    // Signed integer constants
-    ConstI8(i8), ConstI16(i16), ConstI32(i32), ConstI64(i64),
-    // Unsigned integer constants
-    ConstU8(u8), ConstU16(u16), ConstU32(u32), ConstU64(u64), ConstUsize(usize),
-    // Float constants
-    ConstF32(f32), ConstF64(f64),
-    // Other constants
-    ConstBool(bool), ConstStr(SmolStr),
-    // Arithmetic
-    Add(ValueId, ValueId),
-    Sub(ValueId, ValueId),
-    Mul(ValueId, ValueId),
-    Div(ValueId, ValueId),
-    Rem(ValueId, ValueId),
-    // Comparison
-    Eq(ValueId, ValueId), Ne(ValueId, ValueId),
-    Lt(ValueId, ValueId), Le(ValueId, ValueId),
-    Gt(ValueId, ValueId), Ge(ValueId, ValueId),
-    // Logical
-    And(ValueId, ValueId), Or(ValueId, ValueId), Not(ValueId),
-    // Control flow
-    Call(SmolStr, Vec<ValueId>),
-    Return(ValueId),
-}
-
-pub struct BasicBlock {
-    pub id: BlockId,
-    pub instructions: Vec<(ValueId, Instruction)>,
-    pub terminator: Terminator,
-}
-
-pub enum Terminator {
-    Return(ValueId),
-    Branch(BlockId),
-    CondBranch { condition: ValueId, true_block: BlockId, false_block: BlockId },
-}
-```
-
-### 2. The Lowering API (AST -> IR)
-
-```rust
-pub struct IrBuilder {
-    // current block, variable mappings, etc.
-}
-
-impl IrBuilder {
-    /// Takes a type-checked AST and flattens it into IR
-    pub fn lower_function(&mut self, ast: &ast::Decl) -> IrFunction {
-        todo!()
-    }
-}
-```
-
----
-
-## Phase 6: JIT/Cranelift Initialization (Day 7)
-
-On Day 7, you initialize the Cranelift engine. You won't compile complex code yet, just verify you can translate your `IrFunction` into Cranelift IR and generate a pointer.
-
-```rust
-// crates/runtime/src/jit.rs
-use cranelift_codegen::settings::{self, Configurable};
-use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::Module;
-
-pub struct JitCompiler {
-    module: JITModule,
-    ctx: cranelift_codegen::Context,
-    builder_ctx: cranelift_frontend::FunctionBuilderContext,
-}
-
+pub struct JitCompiler { /* Cranelift module + context */ }
 impl JitCompiler {
-    pub fn new() -> Self {
-        let mut flag_builder = settings::builder();
-        flag_builder.set("opt_level", "speed").unwrap();
-        let isa_builder = cranelift_native::builder().unwrap_or_else(|msg| {
-            panic!("host machine is not supported: {}", msg);
-        });
-
-        let builder = JITBuilder::with_isa(
-            isa_builder.finish(settings::Flags::new(flag_builder)).unwrap(),
-            cranelift_module::default_libcall_names(),
-        );
-
-        Self {
-            module: JITModule::new(builder),
-            ctx: cranelift_codegen::Context::new(),
-            builder_ctx: cranelift_frontend::FunctionBuilderContext::new(),
-        }
-    }
-
-    // Test case: Compile a simple `let return_5 = () => 5` to test the pipeline
+    pub fn new() -> Self;
+    pub fn compile(&mut self, func: &IrFunction) -> Result<*const u8, JitError>;
 }
+pub fn run(module: &IrModule) -> Result<i32, RuntimeError>;
 ```
 
----
+## The 14 example programs (integration target)
 
-## Your Deliverables by the End of Week 1
+All 14 programs in `example-programs/*.pp` must lex, parse, type-check, lower, JIT, and run with expected output by Day 14. They are the spec.
 
-1. **Workspace & Build Pipeline:** Everything compiles with `cargo build`.
-2. **`ast` crate:** Spans, Token enums, and Arena-based AST node definitions are solid.
-3. **`lexer` crate:** All TDD tests pass. Converts strings to `Token` streams perfectly.
-4. **`parser` crate:** All TDD tests pass. Correctly handles dot operator and builds a `bumpalo` AST.
-5. **`ir` crate:** The SSA structures are defined.
-6. **`runtime` crate:** The Cranelift module can be instantiated without panicking.
+```
+hello.pp               hello world, prelude println
+factorial.pp           recursive + tail-recursive
+fibonacci.pp           naive + tail-recursive
+io-effects.pp          do-block with stdlib::io
+closures.pp            higher-order, fold-based counter
+option-result.pp       Option/Result methods
+patterns.pp            sum types, exhaustive match
+records.pp             record types, field access, record update
+state-machine.pp       AppState transition fold
+sorting.pp             quicksort, mergesort (recursive fns)
+higher-order.pp        map, filter, fold chains
+generics.pp            polymorphic combinators
+ascii-art.pp           recursive string repeat
+game-of-life.pp        2D grid, cell predicates
+```
 
-By setting up `crates/ast` correctly on Day 1, you unblock Member 1 (Typechecker). They don't need your Parser to work; they can manually construct `bumpalo` AST nodes in their tests and start writing the HM unification algorithm immediately!
+Every program uses only features dijith's stack must implement. No program is "out of scope" for 0.1.
+
+## Pre-commit gates (run before every commit)
+
+```bash
+cargo fmt --check
+cargo clippy -- -D warnings
+cargo test
+```
+
+These three commands are dijith's responsibility to keep green. When the other 3 members merge into main, the gates still hold.
+
+## Working with the other team members
+
+- **Member 1 (Runtime + Stdlib)** — does NOT need dijith's code; works off the IR shape and `Value` enum. Once dijith lands the IR on Day 10, Member 1 can write the tree-walking interpreter against it. Member 1's interpreter is the dev-mode fallback when Cranelift is unavailable.
+- **Member 2 (CLI + Diagnostics + Resolver + Prelude)** — wires the CLI. Can integrate the lexer on Day 2, parser on Day 4, typechecker on Day 8, full pipeline on Day 12. Their module resolver consumes the public typechecker API.
+- **Member 3 (Tooling + Docs + Examples)** — completely independent. Tree-sitter grammar is a separate repo; LSP server consumes the public APIs; docs are docs.
+
+## What dijith does NOT do
+
+- Tree-walking interpreter (Member 1)
+- Stdlib built-in function implementations (Member 1)
+- Module resolver implementation (Member 2)
+- CLI subcommand wiring (Member 2)
+- Error rendering with miette (Member 2)
+- Prelude definition (Member 2)
+- Tree-sitter grammar (Member 3)
+- LSP server (Member 3)
+- README, getting-started, language tour docs (Member 3)
+- More example programs beyond the 14 (Member 3)
+
+The boundary is sharp: anything outside `lexer`, `parser`, `typechecker`, `ir`, or the Cranelift wiring in `runtime` belongs to someone else.
+
+## Reference: the language spec
+
+The full syntax and type system is in `pipe-lang.md`. Key points dijith must implement:
+
+- **Template strings** `` `Hello, ${name}!` `` for string interpolation; plain `"hello"` allowed when no `${}` is needed
+- **No `++` operator**; array concatenation is `arr.concat(other)`
+- **Inline type annotations** `let name : T = expr`; HM inference for non-recursive, explicit for recursive
+- **Effect types** `Effect<T>`; do-blocks are pure desugaring to monadic bind (Haskell IO model)
+- **Pure-by-default**; mutations are rejected by the typechecker
+- **Module resolver** is `Member 2`'s deliverable; dijith's typechecker calls into it during `infer_decl` for `Use`
+
+The spec is the contract. If the spec and the implementation disagree, the spec wins.

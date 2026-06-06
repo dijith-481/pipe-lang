@@ -1,379 +1,283 @@
-# Member 2: Standard Library & Effects (Week 1 Deliverables)
+# Member 2 — CLI, Diagnostics, Module Resolver, and Prelude
 
-**Crate Ownership:** `crates/stdlib`
-**Mission:** Build the functional core of the standard library — list operations, Option/Result handling, and the IO effect shell. All functions are pure Rust `BuiltinFunction` implementations exposed to the language via the runtime.
+**Crate ownership:** `crates/cli/src/**/*.rs`, `crates/diagnostics/src/**/*.rs`, `crates/typechecker/src/resolve.rs` (new), `crates/stdlib/src/prelude.rs` (new)
 
-## Architecture Overview
+**Mission:** Build the developer-experience layer: the `pipe-lang` binary, rich error rendering, the `use` statement resolver, and the implicit-import prelude. None of this touches compiler internals — it's plumbing and lookup tables.
 
-### Your API Contract (already implemented)
+## Why this allocation
 
+- **CLI is `clap` plumbing.** Subcommand definitions, argument parsing, exit codes. No clever algorithms.
+- **Diagnostics is `miette` rendering.** Take error structs, format with source snippets and arrows. Mechanical.
+- **Module resolver is a small lookup table.** Parse `use path::{a, b}` syntax, look up the module by name, return the bound names with their types. No unification, no inference.
+- **Prelude is a fixed list of names.** A `Vec<(SmolStr, PolyType)>` returned at typechecker init. No cleverness.
+
+All four are independent of the hard compiler internals (lexer internals, typechecker internals, IR lowering, Cranelift). You can start and finish most of this work in parallel with dijith, using mocked APIs that get replaced when dijith's crates land.
+
+## What's already done (don't redo)
+
+- `crates/cli/src/main.rs` — Clap CLI with `compile`, `run`, `check` subcommands and `--emit-ir`, `--opt-level` flags
+- `crates/cli/src/session.rs` — `CompilerSession` with `load_source`, `set_source`, `run_pipeline` (currently a stub; you'll wire it)
+- `crates/diagnostics/src/errors.rs` — `CompilerError` enum (8 variants, `thiserror` + `miette::Diagnostic`)
+- `crates/diagnostics/src/lib.rs` — re-exports
+- 13 tests in `diagnostics/errors.rs`, 5 in `cli/session.rs`, 9 in `ast/span.rs` = 27 tests already passing
+
+## Deliverable A: Module Resolver (Days 1–4)
+
+**File:** `crates/typechecker/src/resolve.rs` (new)
+
+**Purpose:** Handle `use` statements. Given a parsed `Decl::Use { path, kind }`, populate the `TypeEnv` with the resolved bindings.
+
+**API:**
 ```rust
-// crates/runtime/src/bridge.rs
-pub trait BuiltinFunction: fmt::Debug + Send + Sync {
-    fn name(&self) -> SmolStr;
-    fn arity(&self) -> usize;
-    fn execute(&self, args: &[Value]) -> Result<Value, RuntimeError>;
+pub struct Resolver<'a> {
+    modules: HashMap<ModulePath, ModuleDef>,
+}
+
+pub struct ModulePath(pub Vec<SmolStr>);  // e.g. ModulePath(vec!["stdlib", "io"])
+
+pub struct ModuleDef {
+    pub name: SmolStr,
+    pub exports: HashMap<SmolStr, PolyType>,
+    pub methods: HashMap<SmolStr, PolyType>,
+}
+
+pub enum UseKind {
+    Module,                          // use stdlib::io
+    Single(SmolStr),                 // use stdlib::io::println
+    Brace(Vec<SmolStr>),             // use stdlib::io::{println, readLine}
+    Glob,                            // use stdlib::io::*
+}
+
+impl<'a> Resolver<'a> {
+    pub fn new() -> Self;
+    pub fn register_module(&mut self, path: ModulePath, def: ModuleDef);
+    pub fn resolve_use(
+        &mut self,
+        env: &mut TypeEnv,
+        path: &ModulePath,
+        kind: &UseKind,
+        span: Span,
+    ) -> Result<(), ResolveError>;
 }
 ```
 
-### Value types you'll work with (already implemented)
+**Resolution rules:**
 
+| `use` form | Result |
+|---|---|
+| `use stdlib::io` | Bind `io` as a record value of type `{ println: (str) -> Effect<()>, readLine: () -> Effect<str>, ... }` |
+| `use stdlib::io::println` | Bind `println` directly: `println : (str) -> Effect<()>` |
+| `use stdlib::io::{println, readLine}` | Bind both unqualified |
+| `use stdlib::io::*` | Glob-import all of `io`'s exports into the current scope |
+
+Method calls on a module record desugar to field access + apply:
+`io.readLine()` → `(io.readLine)()` → `Call(lookup(io, "readLine"), [])`
+
+**Error type:**
 ```rust
-// crates/runtime/src/value.rs
-pub enum Value {
-    I8(i8), I16(i16), I32(i32), I64(i64),
-    U8(u8), U16(u16), U32(u32), U64(u64), Usize(usize),
-    F32(f32), F64(f64),
-    Bool(bool), Str(SmolStr),
-    Array(Arc<[Value]>),
-    Record(Arc<RecordData>),
-    Closure(Arc<ClosureData>),
-    Tag { tag: u32, payload: Arc<[Value]> },
-    Effect(Arc<dyn BuiltinFunction>),
-    Unit,
+pub enum ResolveError {
+    UnknownModule { path: ModulePath, span: Span },
+    UnknownSymbol { module: ModulePath, name: SmolStr, span: Span },
+    DuplicateImport { name: SmolStr, span: Span },
 }
 ```
 
-### Tag conventions for Option/Result
+**Test suite (6 tests):**
+- `resolve_module_use` — `use stdlib::io` binds `io` as a record
+- `resolve_single_use` — `use stdlib::io::println` binds `println`
+- `resolve_brace_use` — `use stdlib::io::{println, readLine}` binds both
+- `resolve_glob_use` — `use stdlib::io::*` imports everything
+- `resolve_unknown_module` — `use stdlib::nope` → `ResolveError::UnknownModule`
+- `resolve_unknown_symbol` — `use stdlib::io::nope` → `ResolveError::UnknownSymbol`
 
+## Deliverable B: Stdlib Prelude (Days 1–3)
+
+**File:** `crates/stdlib/src/prelude.rs` (new)
+
+**Purpose:** Define the implicit imports every program gets. The typechecker calls this on startup to seed the global `TypeEnv`.
+
+**API:**
 ```rust
-// Option: tag 0 = None, tag 1 = Some
-Value::tag(0, vec![])                    // None
-Value::tag(1, vec![inner_value])         // Some(inner)
-
-// Result: tag 0 = Err, tag 1 = Ok
-Value::tag(0, vec![error_value])         // Err(e)
-Value::tag(1, vec![ok_value])            // Ok(v)
+pub fn prelude() -> Vec<(SmolStr, PolyType)>;
+pub fn io_module() -> ModuleDef;
+pub fn array_methods() -> Vec<(SmolStr, PolyType)>;
+pub fn option_methods() -> Vec<(SmolStr, PolyType)>;
+pub fn result_methods() -> Vec<(SmolStr, PolyType)>;
+pub fn str_methods() -> Vec<(SmolStr, PolyType)>;
 ```
 
-### Helper constructors (already on Value)
+**The prelude (no `use` needed):**
 
-```rust
-Value::array(vec![...])                  // Array from Vec
-Value::tag(tag_id, vec![...])            // Tag with payload
-Value::record(vec![("field", val), ...]) // Record with fields
+| Name | Type |
+|---|---|
+| `println` | `(str) -> Effect<()>` |
+| `print` | `(str) -> Effect<()>` |
+| `eprint` | `(str) -> Effect<()>` |
+| `eprintln` | `(str) -> Effect<()>` |
+| `Some` | `<A>(A) -> Option<A>` |
+| `None` | `Option<Nothing>` (or `forall a. Option<a>` via polymorphism) |
+| `Ok` | `<T, E>(T) -> Result<T, E>` |
+| `Err` | `<T, E>(E) -> Result<T, E>` |
+| `id` | `<A>(A) -> A` |
+| `const` | `<A, B>(A) -> (B) -> A` |
+| `flip` | `<A, B, C>((A, B) -> C) -> (B, A) -> C` |
+| `compose` | `<A, B, C>((B) -> C, (A) -> B) -> (A) -> C` |
+| `pipe` | `<A, B, C>((A) -> B, (B) -> C) -> (A) -> C` |
+| `apply` | `<A, B>((A) -> B, A) -> B` |
+
+**`io` module exports (require `use stdlib::io`):**
+- `io.println : (str) -> Effect<()>`
+- `io.print : (str) -> Effect<()>`
+- `io.readLine : () -> Effect<str>`
+- `io.readFile : (str) -> Effect<Result<str, IOError>>`
+- `io.writeFile : (str, str) -> Effect<Result<(), IOError>>`
+
+**Method tables (auto-resolved by type at use site):**
+- `Array<T>.map, .filter, .fold, .len, .concat, .drop, .take, .head, .tail, .isEmpty, .zip, .find, .flatMap, .distinct, .sortBy`
+- `Option<T>.map, .flatMap, .unwrap, .isSome, .isNone, .orElse`
+- `Result<T, E>.map, .flatMap, .mapErr, .recover, .unwrap`
+- `str.len, .toString, .concat, .contains, .startsWith, .endsWith, .trim, .toUpperCase, .toLowerCase, .split, .replace, .slice`
+- `i32.toString, .+, .-, .*, ./, .%, .<, .<=, .>, .>=, .==, .!=`
+- `i64.toString, ...` (same set)
+- `f64.toString, ...` (same set)
+- `bool.toString, .==, .!=, .&&, .||, .!`
+
+**Test suite (4 tests):**
+- `prelude_has_println` — `prelude()` contains `(println, (str) -> Effect<()>)`
+- `prelude_has_constructors` — `Some`, `None`, `Ok`, `Err` present
+- `io_module_has_all_exports` — `io.println`, `io.readLine`, `io.readFile`, `io.writeFile` present
+- `array_methods_have_correct_signatures` — `Array.map` has the right polymorphic type
+
+## Deliverable C: CLI Subcommands (Days 2–6)
+
+**File:** `crates/cli/src/main.rs`, `crates/cli/src/session.rs`
+
+**Subcommands:**
+
+```
+pipe-lang check <file>           # lex + parse + typecheck; print errors; exit 0/1
+pipe-lang run <file>             # lex + parse + typecheck + lower + execute
+pipe-lang compile <file> [--emit-ir]  # full pipeline, optionally emit IR to stdout
+pipe-lang --version              # print all crate versions
+pipe-lang run -                  # read source from stdin
 ```
 
-### Current stdlib crate
+**Flags (extend existing CLI):**
+- `--json` — machine-readable error output
+- `--no-color` — disable ANSI colors
+- `--opt-level <0|1|2>` — Cranelift optimization (default 1)
+- `--interp` — force tree-walking interpreter instead of Cranelift (for Member 1's fallback)
 
+**Test suite (4 tests):**
+- `cli_check_exits_zero_on_success`
+- `cli_check_exits_one_on_type_error`
+- `cli_run_executes_hello_world`
+- `cli_json_output_is_valid_json`
+
+## Deliverable D: Diagnostics Rendering (Days 3–5)
+
+**File:** `crates/diagnostics/src/reporter.rs` (new)
+
+**API:**
 ```rust
-// crates/stdlib/src/lib.rs — currently only:
-pub fn version() -> &'static str { env!("CARGO_PKG_VERSION") }
-```
+pub struct DiagnosticReporter {
+    use_color: bool,
+    use_json: bool,
+}
 
-### Tests Already Passing
-
-- `runtime/value.rs`: 26 tests (all Value types, equality, display, helpers)
-- `runtime/bridge.rs`: 4 tests (BuiltinFunction trait examples)
-- `runtime/error.rs`: 7 tests (RuntimeError variants)
-
-## Week 1 Deliverables & Timeline
-
-### Days 1-2: List Operations (The Functional Core)
-
-**Goal:** Implement all list builtins as structs implementing `BuiltinFunction`.
-
-**File:** `crates/stdlib/src/list.rs`
-
-**Task 1: `ListLen`**
-```rust
-#[derive(Debug)]
-pub struct ListLen;
-
-impl BuiltinFunction for ListLen {
-    fn name(&self) -> SmolStr { SmolStr::new("List.len") }
-    fn arity(&self) -> usize { 1 }
-    fn execute(&self, args: &[Value]) -> Result<Value, RuntimeError> {
-        let arr = args[0].as_array().ok_or_else(|| RuntimeError::TypeMismatch {
-            expected: "Array".into(),
-            got: format!("{:?}", &args[0]),
-        })?;
-        Ok(Value::Usize(arr.len()))
-    }
+impl DiagnosticReporter {
+    pub fn new() -> Self;
+    pub fn with_color(mut self, b: bool) -> Self;
+    pub fn with_json(mut self, b: bool) -> Self;
+    pub fn report(&self, errors: &[CompilerError]) -> String;
 }
 ```
 
-**Task 2: `ListHead`**
+**Behavior:**
+- `report()` returns a single string with all errors formatted
+- Each error has a source snippet with `^^^^` pointing to the `Span`
+- JSON output: `[{ code, message, span: { start, end }, source_line }]`
+- The reporter consumes `CompilerError` (existing in `diagnostics::errors`) and renders it via `miette::GraphicalReportHandler` for the pretty form, or via `serde_json` for the JSON form
+
+**Wire-up in `session.rs`:**
 ```rust
-// Returns Option: Tag(1, [first]) or Tag(0, [])
-fn execute(&self, args: &[Value]) -> Result<Value, RuntimeError> {
-    let arr = args[0].as_array().ok_or(...)?;
-    match arr.first() {
-        Some(v) => Ok(Value::tag(1, vec![v.clone()])),
-        None => Ok(Value::tag(0, vec![])),
-    }
+pub fn run_pipeline(&mut self) -> Result<CompileResult, Box<SourceDiagnostic>> {
+    // Stage 1: Lex (calls dijith's lexer)
+    let tokens: Vec<Token> = Lexer::new(&self.source).collect::<Result<_, _>>()
+        .map_err(|e| Box::new(SourceDiagnostic::new(...)))?;
+
+    // Stage 2: Parse (calls dijith's parser)
+    let bump = Bump::new();
+    let program = parser::parse(&bump, &tokens)
+        .map_err(|errs| /* convert to SourceDiagnostic */)?;
+
+    // Stage 3: Resolve (this doc's Deliverable A)
+    let mut resolver = Resolver::new();
+    resolver.resolve_program(program)?;
+
+    // Stage 4: Typecheck (calls dijith's typechecker)
+    let typed = typechecker::infer_program(program)
+        .map_err(|errs| /* convert */)?;
+
+    // Stage 5: Lower (calls dijith's IR)
+    let ir_module = ir::lower_program(&typed)
+        .map_err(|e| /* convert */)?;
+
+    Ok(CompileResult { diagnostics: vec![], success: true, ir: Some(ir_module) })
+}
+
+pub fn report_diagnostics(&self, result: &CompileResult) -> String {
+    let reporter = DiagnosticReporter::new()
+        .with_color(self.config.color)
+        .with_json(self.config.json);
+    reporter.report(&result.diagnostics)
 }
 ```
 
-**Task 3: `ListTail`**
-```rust
-// Returns Option: Tag(1, [rest]) or Tag(0, []) if empty/single
-fn execute(&self, args: &[Value]) -> Result<Value, RuntimeError> {
-    let arr = args[0].as_array().ok_or(...)?;
-    if arr.len() <= 1 {
-        Ok(Value::tag(0, vec![]))
-    } else {
-        Ok(Value::tag(1, vec![Value::array(arr[1..].to_vec())]))
-    }
-}
-```
+**Test suite (4 tests):**
+- `reporter_renders_lex_error` — `Lexer` error becomes a string with source snippet
+- `reporter_renders_parse_error` — missing `}` becomes a string with `^^^^` under the right line
+- `reporter_renders_type_error` — type mismatch shows both expected and got
+- `reporter_json_is_valid` — JSON output parses with `serde_json::from_str`
 
-**Task 4: `ListMap`**
-```rust
-// Takes (array, closure). Returns new array with closure applied to each element.
-fn execute(&self, args: &[Value]) -> Result<Value, RuntimeError> {
-    let arr = args[0].as_array().ok_or(...)?;
-    let closure = match &args[1] {
-        Value::Closure(c) => c,
-        _ => return Err(RuntimeError::TypeMismatch { expected: "Closure".into(), got: format!("{:?}", &args[1]) }),
-    };
-    // For each element, call the closure
-    let results: Result<Vec<Value>, _> = arr.iter()
-        .map(|elem| call_closure(closure, &[elem.clone()]))
-        .collect();
-    Ok(Value::array(results?))
-}
-```
+## Deliverable E: End-to-end CLI (Day 7)
 
-**Task 5: `ListFilter`**
-```rust
-// Takes (array, predicate_closure). Returns elements where predicate returns true.
-fn execute(&self, args: &[Value]) -> Result<Value, RuntimeError> {
-    // Similar to map, but check if closure returns Value::Bool(true)
-}
-```
+`cargo run --bin pipe-lang -- run example-programs/hello.pp` prints `Hello, World!` and exits 0.
 
-**Task 6: `ListFold`**
-```rust
-// Takes (array, initial, reducer_closure). Folds left.
-fn execute(&self, args: &[Value]) -> Result<Value, RuntimeError> {
-    let arr = args[0].as_array().ok_or(...)?;
-    let mut acc = args[1].clone();
-    let closure = match &args[2] { Value::Closure(c) => c, ... };
-    for elem in arr {
-        acc = call_closure(closure, &[acc, elem.clone()])?;
-    }
-    Ok(acc)
-}
-```
+`cargo run --bin pipe-lang -- check example-programs/factorial.pp` exits 0 with no output.
 
-**TDD approach:** Write all 6 tests before implementation:
-- `list_len_empty` — `List.len([])` returns `0usize`
-- `list_len_three` — `List.len([1,2,3])` returns `3usize`
-- `list_head_some` — `List.head([1,2])` returns `Some(1)`
-- `list_head_none` — `List.head([])` returns `None`
-- `list_tail_some` — `List.tail([1,2,3])` returns `Some([2,3])`
-- `list_tail_single` — `List.tail([1])` returns `None`
-- `list_map_double` — `List.map([1,2,3], (x) => x * 2)` returns `[2,4,6]`
-- `list_filter_even` — `List.filter([1,2,3,4], (x) => x % 2 == 0)` returns `[2,4]`
-- `list_fold_sum` — `List.fold([1,2,3], 0, (acc, x) => acc + x)` returns `6`
+`cargo run --bin pipe-lang -- check broken.pp` exits 1 with a `miette`-rendered error.
 
-### Days 3-4: Option & Result Handling
+## Test counts
 
-**File:** `crates/stdlib/src/option.rs`, `crates/stdlib/src/result.rs`
+| Suite | Tests |
+|---|---|
+| Module Resolver (Deliverable A) | 6 |
+| Prelude (Deliverable B) | 4 |
+| CLI (Deliverable C) | 4 |
+| Diagnostics (Deliverable D) | 4 |
+| **Total new** | **18** |
+| Pre-existing | 27 |
+| **Grand total** | **45** |
 
-**Task 7: `OptionMap`**
-```rust
-// Takes (option, closure). If Some(v), applies closure. If None, returns None.
-fn execute(&self, args: &[Value]) -> Result<Value, RuntimeError> {
-    let (tag, payload) = args[0].as_tag().ok_or(...)?;
-    match tag {
-        0 => Ok(Value::tag(0, vec![])),  // None -> None
-        1 => {
-            let closure = match &args[1] { Value::Closure(c) => c, ... };
-            let result = call_closure(closure, &[payload[0].clone()])?;
-            Ok(Value::tag(1, vec![result]))
-        }
-        _ => Err(RuntimeError::TypeMismatch { expected: "Option".into(), ... }),
-    }
-}
-```
+## Common pitfalls
 
-**Task 8: `OptionUnwrap`**
-```rust
-// Takes (option, default). Returns inner value or default.
-fn execute(&self, args: &[Value]) -> Result<Value, RuntimeError> {
-    let (tag, payload) = args[0].as_tag().ok_or(...)?;
-    match tag {
-        0 => Ok(args[1].clone()),  // None -> default
-        1 => Ok(payload[0].clone()),  // Some(v) -> v
-        _ => Err(...),
-    }
-}
-```
-
-**Task 9: `OptionIsSome` / `OptionIsNone`**
-```rust
-// Simple tag checks
-fn execute(&self, args: &[Value]) -> Result<Value, RuntimeError> {
-    let (tag, _) = args[0].as_tag().ok_or(...)?;
-    Ok(Value::Bool(tag == 1))  // is_some
-}
-```
-
-**Task 10: `ResultMap` / `ResultFlatMap`**
-```rust
-// Result.map: if Ok(v), applies closure. If Err(e), returns Err(e).
-// Result.flatMap: like map but closure returns Result directly (no wrapping).
-fn execute(&self, args: &[Value]) -> Result<Value, RuntimeError> {
-    let (tag, payload) = args[0].as_tag().ok_or(...)?;
-    match tag {
-        0 => Ok(Value::tag(0, vec![payload[0].clone()])),  // Err -> Err
-        1 => {
-            let closure = match &args[1] { Value::Closure(c) => c, ... };
-            let result = call_closure(closure, &[payload[0].clone()])?;
-            Ok(Value::tag(1, vec![result]))  // Ok -> Ok(f(v))
-        }
-        _ => Err(...),
-    }
-}
-```
-
-**TDD approach:**
-- `option_map_some` — `Option.map(Some(5), (x) => x * 2)` returns `Some(10)`
-- `option_map_none` — `Option.map(None, (x) => x * 2)` returns `None`
-- `option_unwrap_some` — `Option.unwrap(Some(5), 0)` returns `5`
-- `option_unwrap_none` — `Option.unwrap(None, 0)` returns `0`
-- `option_is_some_true` — `Option.isSome(Some(5))` returns `true`
-- `option_is_some_false` — `Option.isSome(None)` returns `false`
-- `result_map_ok` — `Result.map(Ok(5), (x) => x + 1)` returns `Ok(6)`
-- `result_map_err` — `Result.map(Err("e"), (x) => x + 1)` returns `Err("e")`
-- `result_flatmap_chain` — chaining `Result.flatMap` on `Ok` values
-
-### Days 5-7: The IO API Shell
-
-**Goal:** Implement IO builtins that return `Value::Effect` wrappers (deferred execution).
-
-**File:** `crates/stdlib/src/io.rs`
-
-**Task 11: `IOPrint`**
-```rust
-#[derive(Debug)]
-pub struct IOPrint;
-
-impl BuiltinFunction for IOPrint {
-    fn name(&self) -> SmolStr { SmolStr::new("IO.print") }
-    fn arity(&self) -> usize { 1 }
-    fn execute(&self, args: &[Value]) -> Result<Value, RuntimeError> {
-        // Validate input is a string
-        let msg = args[0].as_str().ok_or_else(|| RuntimeError::TypeMismatch {
-            expected: "Str".into(),
-            got: format!("{:?}", &args[0]),
-        })?;
-        // Return an Effect wrapping the print intent
-        // The runtime will execute this effect later
-        Ok(Value::Effect(Arc::new(PrintEffect {
-            msg: SmolStr::new(msg),
-            newline: false,
-        })))
-    }
-}
-
-#[derive(Debug)]
-struct PrintEffect {
-    msg: SmolStr,
-    newline: bool,
-}
-
-impl BuiltinFunction for PrintEffect {
-    fn name(&self) -> SmolStr { SmolStr::new("IO.print.effect") }
-    fn arity(&self) -> usize { 0 }
-    fn execute(&self, _args: &[Value]) -> Result<Value, RuntimeError> {
-        if self.newline {
-            println!("{}", self.msg);
-        } else {
-            print!("{}", self.msg);
-        }
-        Ok(Value::Unit)
-    }
-}
-```
-
-**Task 12: `IOPrintln`**
-```rust
-// Same as IOPrint but with newline: true
-fn execute(&self, args: &[Value]) -> Result<Value, RuntimeError> {
-    let msg = args[0].as_str().ok_or(...)?;
-    Ok(Value::Effect(Arc::new(PrintEffect {
-        msg: SmolStr::new(msg),
-        newline: true,
-    })))
-}
-```
-
-**Task 13: `IOReadLine`**
-```rust
-// Returns an Effect that, when executed, reads a line from stdin
-fn execute(&self, args: &[Value]) -> Result<Value, RuntimeError> {
-    Ok(Value::Effect(Arc::new(ReadLineEffect)))
-}
-
-#[derive(Debug)]
-struct ReadLineEffect;
-
-impl BuiltinFunction for ReadLineEffect {
-    fn name(&self) -> SmolStr { SmolStr::new("IO.readLine.effect") }
-    fn arity(&self) -> usize { 0 }
-    fn execute(&self, _args: &[Value]) -> Result<Value, RuntimeError> {
-        let mut input = String::new();
-        std::io::stdin().read_line(&mut input).map_err(|e| RuntimeError::EffectError {
-            msg: format!("failed to read line: {e}"),
-        })?;
-        Ok(Value::Str(SmolStr::new(input.trim_end())))
-    }
-}
-```
-
-**Task 14: Registry module**
-```rust
-// crates/stdlib/src/lib.rs
-pub mod io;
-pub mod list;
-pub mod option;
-pub mod result;
-
-use std::sync::Arc;
-use runtime::bridge::BuiltinFunction;
-
-/// Returns all standard library builtins as (name, Arc<dyn BuiltinFunction>) pairs.
-pub fn builtins() -> Vec<(SmolStr, Arc<dyn BuiltinFunction>)> {
-    vec![
-        ("List.len".into(), Arc::new(list::ListLen)),
-        ("List.head".into(), Arc::new(list::ListHead)),
-        ("List.tail".into(), Arc::new(list::ListTail)),
-        ("List.map".into(), Arc::new(list::ListMap)),
-        ("List.filter".into(), Arc::new(list::ListFilter)),
-        ("List.fold".into(), Arc::new(list::ListFold)),
-        ("Option.map".into(), Arc::new(option::OptionMap)),
-        ("Option.unwrap".into(), Arc::new(option::OptionUnwrap)),
-        ("Option.isSome".into(), Arc::new(option::OptionIsSome)),
-        ("Option.isNone".into(), Arc::new(option::OptionIsNone)),
-        ("Result.map".into(), Arc::new(result::ResultMap)),
-        ("Result.flatMap".into(), Arc::new(result::ResultFlatMap)),
-        ("IO.print".into(), Arc::new(io::IOPrint)),
-        ("IO.println".into(), Arc::new(io::IOPrintln)),
-        ("IO.readLine".into(), Arc::new(io::IOReadLine)),
-    ]
-}
-```
-
-**TDD approach:**
-- `io_print_returns_effect` — `IO.print("hello")` returns `Value::Effect`, not `Unit`
-- `io_println_returns_effect` — same for `IO.println`
-- `io_print_effect_executes` — when the effect is executed, it produces `Unit`
-- `io_readline_returns_effect` — `IO.readLine()` returns an effect
-- `io_print_wrong_type` — `IO.print(42)` returns `RuntimeError::TypeMismatch`
-- `registry_has_all_builtins` — `builtins()` returns 15 entries
-
-## Common Pitfalls
-
-1. **Don't execute IO directly** — always return `Value::Effect` wrapper
-2. **Clone values in closures** — `Arc` makes this cheap, but be explicit
-3. **Tag IDs must be consistent** — Option::None is always tag 0, Some is always tag 1
-4. **Return `RuntimeError::TypeMismatch`** for wrong argument types, not panics
+1. **Span accuracy is everything.** The arrow must point to the right character, not the whole expression. Verify by hand on a few examples.
+2. **JSON output must be valid.** `serde_json::from_str` it in tests; don't trust `format!()`.
+3. **Exit codes matter.** 0 on success, 1 on any error. CI scripts depend on this.
+4. **Stdin mode (`pipe-lang run -`)** must read the entire stream before lexing.
+5. **The resolver never panics.** Bad `use` produces a `ResolveError`, not a crash.
+6. **Don't recompile `cargo build --features=python`** — that feature doesn't exist for the CLI; only used by Member 1's stdlib if at all.
 
 ## Dependencies
 
-- `runtime` crate: `Value`, `BuiltinFunction`, `RuntimeError`
-- `ast` crate: `SmolStr` (re-exported)
-- `thiserror`: already in Cargo.toml (add to stdlib's Cargo.toml)
+- `miette` (with `fancy` feature) — add to `crates/diagnostics/Cargo.toml`
+- `serde` + `serde_json` — add to `crates/diagnostics/Cargo.toml`
+- `clap` (with `derive` feature) — already present
+- `lexer`, `parser`, `typechecker`, `ir` — consumed as APIs (the implementation is dijith's; you write the glue)
+
+You can write Deliverables A and B in parallel with dijith's work, using the public APIs documented in `dijith.md`. Deliverables C, D, E depend on dijith's stages landing at the documented days.
+
+## Handoff milestone: Day 7
+
+`pipe-lang` is a working binary. `check` and `run` subcommands work. Errors are rendered with `miette`. The 14 example programs can be type-checked and run via the CLI.
