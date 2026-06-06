@@ -325,13 +325,35 @@ type for `main`.
 ### 3.7 Effect Types
 
 ```
-Effect<T>    -- an effectful computation producing T
+Effect<T>    -- a description of an effectful computation producing T
 ```
 
-`Effect<T>` wraps a computation that may perform IO. Effect values
-are produced by the IO module and executed by the runtime. Pure
-functions cannot perform IO; only expressions inside a `do { ... }`
-block can run effects.
+`Effect<T>` is a **first-class, immutable data structure** that
+*describes* a computation which may perform IO. It is constructed
+purely — no side effects occur at construction time. The actual
+side effects (writing to stdout, reading stdin, writing files) are
+deferred to a single execution point: when the `Effect<()>` value
+returned by `main` is run by the runtime.
+
+The semantics are exactly those of Haskell's `IO` monad, restricted
+to a single effect type. The world state is implicit in the
+monadic-bind chain; `Effect::bind` threads it through.
+
+```pipe
+// An Effect<str> is a value, not an action.
+// You can pass it, return it, store it in a record — it's just data.
+let prompt : () -> Effect<str> = () => io.readLine()
+
+// Composing Effects is pure: nothing has happened yet.
+let greet : () -> Effect<()> = () => do {
+    name <- prompt()
+    println(`Hello, ${name}!`)
+}
+```
+
+Pure functions cannot perform IO. The type checker rejects any
+attempt to call a side-effecting function (e.g. `io.readLine`)
+outside a `do` block.
 
 The `io` module is accessed via `use stdlib::io`; the functions
 `println`, `print`, `eprint`, `eprintln` are in the prelude and do
@@ -525,25 +547,118 @@ let main : () -> Effect<()> = do {
 }
 ```
 
-`do` blocks sequence effectful operations. Each `<-` binding
-extracts the value from an `Effect<T>`. The final expression of the
-block determines the block's return type, which becomes the `T` in
-`Effect<T>`. Pure statements (non-effect expressions) interleaved
-with `<-` bindings are allowed and evaluated in order.
+`do` blocks are **pure desugaring** to monadic-style bind on
+`Effect<T>`. There is no runtime magic; the `do { ... }` syntax
+expands during parsing to ordinary function calls on the `Effect`
+type. The actual side effects (writing to stdout, reading stdin)
+are deferred to a single execution point — when the `Effect<()>` value
+returned by `main` is run by the runtime.
+
+#### Desugaring Rules
+
+The grammar of `do` blocks:
+
+```
+do-block  := "do" "{" stmt* final-expr "}"
+stmt      := binding-stmt | expr-stmt
+binding-stmt := pat "<-" expr ";"
+expr-stmt   := expr ";"
+final-expr  := expr                (no trailing ";")
+```
+
+The desugaring rules, applied recursively to the final expression:
+
+1. **Single expression with no bindings:**
+
+   ```pipe
+   do { e }
+   ```
+
+   desugars to `e` itself. (The `do` is still required when `e :
+   Effect<T>` and we need to typecheck the effect context, but
+   syntactically it's the same expression.)
+
+2. **One binding, then expression:**
+
+   ```pipe
+   do { x <- m; e }
+   ```
+
+   desugars to `Effect::bind(m, (x) => e)`.
+
+3. **Pure statement (no binding) followed by final expression:**
+
+   ```pipe
+   do { s; e }
+   ```
+
+   desugars to `Effect::then(s, e)`, where `then` evaluates `s`
+   (which must be `Effect<_>`) and discards its result, then
+   evaluates `e`. This is for side-effecting statements like
+   `println(...)` whose return value is unused.
+
+4. **`let` bindings inside a do block:**
+
+   ```pipe
+   do {
+       x <- m
+       let y = expr
+       e
+   }
+   ```
+
+   desugars to `Effect::bind(m, (x) => { let y = expr; e })`. The
+   `let` is bound inside the inner closure, exactly like a `let`
+   in any other expression context. `Effect::map` could equivalently
+   be used for the pure `let` case; the result is identical.
+
+5. **Nested do blocks:** a `do` block may appear wherever an
+   `Effect<T>` is expected, including as the body of a `let` binding
+   or as the final expression of an outer `do` block.
+
+#### Examples
 
 ```pipe
-let main : () -> Effect<()> = do {
+// Simple effect
+do { println(`hi`) }
+
+// Single binding
+do {
+    name <- io.readLine()
+    println(`Hello, ${name}!`)
+}
+
+// Mixed pure statement and binding
+do {
     println(`What is your name?`)
     name <- io.readLine()
-    let greeting = `Hello, ${name}!`
+    println(`Hello, ${name}!`)
+}
+
+// let inside a do block (the let is in the inner closure)
+do {
+    x <- io.readLine()
+    let greeting = `Hello, ${x}!`
     println(greeting)
 }
 ```
 
-A `do` block with no `<-` bindings desugars to a single effectful
-expression; it is required whenever any statement of `main`
-performs IO. The simplest program — `let main : () -> Effect<()> =
-println(`Hello`)` — is a single-expression `do` body.
+#### Why this matters
+
+- `Effect<T>` is a **first-class immutable value**, not a runtime
+  command. You can pass it, store it, return it, or compose it.
+- The "world state" of IO is implicit in the bind chain. The
+  semantics are exactly those of Haskell's `IO` monad, restricted
+  to a single effect type.
+- Pure functions cannot construct an `Effect<T>` value that does
+  IO. Only the `io` module and the prelude's IO functions are
+  permitted to produce effectful values, and the type checker
+  enforces that they only appear inside `do` blocks.
+- The only primitive operations on `Effect<T>` (treated as
+  internal helpers, not user-facing) are `pure : (T) -> Effect<T>`,
+  `bind : (Effect<T>, (T) -> Effect<U>) -> Effect<U>`, and `then :
+  (Effect<_>, Effect<U>) -> Effect<U>`. The `do` block is the
+  user-facing surface for these.
 
 ---
 
