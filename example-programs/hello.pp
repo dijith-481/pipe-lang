@@ -1,7 +1,3 @@
 // Hello World — the simplest pipe-lang program
-use stdlib.io
-
-let main : () -> Effect<Unit>
-let main = do {
-    IO.println("Hello, World!")
-}
+// `println` is in the prelude; no `use` is required.
+let main : () -> Effect<()> = println("Hello, World!")

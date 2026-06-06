@@ -1,7 +1,5 @@
 // Quicksort — classic functional algorithm
-use stdlib.io
 
-let quicksort : (Array<i32>) -> Array<i32>
 let quicksort = (arr) => match arr {
     []         => []
     [pivot]    => [pivot]
@@ -15,13 +13,11 @@ let quicksort = (arr) => match arr {
 }
 
 // Merge sort — divide and conquer
-let split : (Array<i32>) -> (Array<i32>, Array<i32>)
 let split = (arr) => {
     let mid = arr.len() / 2
     (arr.take(mid), arr.drop(mid))
 }
 
-let merge : (Array<i32>, Array<i32>) -> Array<i32>
 let merge = (a, b) => match (a, b) {
     ([], bs)         => bs
     (as_, [])        => as_
@@ -32,7 +28,6 @@ let merge = (a, b) => match (a, b) {
     }
 }
 
-let mergesort : (Array<i32>) -> Array<i32>
 let mergesort = (arr) => match arr {
     []      => []
     [x]     => [x]
@@ -42,10 +37,9 @@ let mergesort = (arr) => match arr {
     }
 }
 
-let main : () -> Effect<Unit>
-let main = do {
+let main : () -> Effect<()> = do {
     let data = [38, 27, 43, 3, 9, 82, 10, 55, 12, 1]
-    IO.println("Original:  " ++ data.toString())
-    IO.println("Quicksort: " ++ quicksort(data).toString())
-    IO.println("Mergesort: " ++ mergesort(data).toString())
+    println("Original:  " ++ data.toString())
+    println("Quicksort: " ++ quicksort(data).toString())
+    println("Mergesort: " ++ mergesort(data).toString())
 }

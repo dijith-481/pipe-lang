@@ -1,13 +1,11 @@
 // Pattern matching — exhaustive matching on sum types
-use stdlib.io
 
 type Shape =
   | Circle(f64)
   | Rectangle(f64, f64)
   | Triangle(f64, f64, f64)
 
-let area : (Shape) -> f64
-let area = (shape) => match shape {
+let area : (Shape) -> f64 = (shape) => match shape {
     Circle(r)          => 3.14159 * r * r
     Rectangle(w, h)    => w * h
     Triangle(a, b, c)  => {
@@ -17,7 +15,6 @@ let area = (shape) => match shape {
     }
 }
 
-let describe : (Shape) -> str
 let describe = (shape) => match shape {
     Circle(r)          => "Circle with radius " ++ r.toString()
     Rectangle(w, h)    => "Rectangle " ++ w.toString() ++ "x" ++ h.toString()
@@ -31,7 +28,6 @@ type Message =
   | Chat(str, str)
   | Ping
 
-let handleMessage : (Message) -> str
 let handleMessage = (msg) => match msg {
     Login(user, _)    => user ++ " logged in"
     Logout            => "user logged out"
@@ -39,16 +35,15 @@ let handleMessage = (msg) => match msg {
     Ping              => "ping received"
 }
 
-let main : () -> Effect<Unit>
-let main = do {
+let main : () -> Effect<()> = do {
     let shapes = [Circle(5.0), Rectangle(4.0, 6.0), Triangle(3.0, 4.0, 5.0)]
 
     shapes.map((s) => {
-        IO.println(describe(s) ++ " has area " ++ area(s).toString())
+        println(describe(s) ++ " has area " ++ area(s).toString())
     })
 
-    IO.println("")
+    println("")
 
     let messages = [Login("alice", "secret"), Chat("bob", "hello"), Ping, Logout]
-    messages.map((m) => IO.println(handleMessage(m)))
+    messages.map((m) => println(handleMessage(m)))
 }

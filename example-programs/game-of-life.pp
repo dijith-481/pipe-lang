@@ -1,10 +1,8 @@
 // Conway's Game of Life — functional cellular automata
-use stdlib.io
 
 type Cell = bool
 
-let step : (Array<Array<Cell>>) -> Array<Array<Cell>>
-let step = (grid) => {
+let step : (Array<Array<Cell>>) -> Array<Array<Cell>> = (grid) => {
     let h = grid.len()
     let w = grid[0].len()
 
@@ -41,17 +39,14 @@ let step = (grid) => {
     })
 }
 
-let cellToString : (Cell) -> str
 let cellToString = (c) => if c { "#" } else { "." }
 
-let gridToString : (Array<Array<Cell>>) -> str
 let gridToString = (grid) =>
     grid.map((row) =>
         row.map(cellToString).fold("", (acc, s) => acc ++ s)
     ).fold("", (acc, line) => acc ++ line ++ "\n")
 
-let main : () -> Effect<Unit>
-let main = do {
+let main : () -> Effect<()> = do {
     // Glider pattern
     let grid = [
         [false, true,  false, false, false, false, false, false],
@@ -64,11 +59,11 @@ let main = do {
         [false, false, false, false, false, false, false, false],
     ]
 
-    IO.println("Generation 0:")
-    IO.println(gridToString(grid))
+    println("Generation 0:")
+    println(gridToString(grid))
 
     // Step a few times
     let g1 = step(grid)
-    IO.println("Generation 1:")
-    IO.println(gridToString(g1))
+    println("Generation 1:")
+    println(gridToString(g1))
 }
