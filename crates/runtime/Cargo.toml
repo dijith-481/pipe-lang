@@ -9,4 +9,6 @@ cranelift-codegen = "0.132.0"
 cranelift-frontend = "0.132.0"
 cranelift-jit = "0.132.0"
 cranelift-module = "0.132.0"
+cranelift-native = "0.132.0"
+ir = { version = "0.1.0", path = "../ir" }
 thiserror = "2.0.18"

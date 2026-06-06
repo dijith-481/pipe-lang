@@ -1,17 +1,18 @@
 use ast::span::Span;
+use miette::{Diagnostic, NamedSource};
+use std::sync::Arc;
 
 /// Unified compiler error type aggregating all phases of compilation.
 ///
 /// Each variant carries a [`Span`] for precise error location reporting
-/// via `miette` diagnostics.
-#[derive(Debug, Clone, thiserror::Error, miette::Diagnostic)]
+/// via `miette` diagnostics. This type is lightweight and does NOT carry
+/// the source code itself.
+#[derive(Debug, Clone, thiserror::Error, Diagnostic)]
 pub enum CompilerError {
     /// Error produced by the lexer.
     #[error("lex error: {msg}")]
     #[diagnostic(code(pipe_lang::lex))]
     LexError {
-        #[source_code]
-        src: String,
         #[label]
         span: Span,
         msg: String,
@@ -21,8 +22,6 @@ pub enum CompilerError {
     #[error("parse error: {msg}")]
     #[diagnostic(code(pipe_lang::parse))]
     ParseError {
-        #[source_code]
-        src: String,
         #[label]
         span: Span,
         msg: String,
@@ -33,8 +32,6 @@ pub enum CompilerError {
     #[error("type error: {msg}")]
     #[diagnostic(code(pipe_lang::ty))]
     TypeError {
-        #[source_code]
-        src: String,
         #[label]
         span: Span,
         msg: String,
@@ -44,8 +41,6 @@ pub enum CompilerError {
     #[error("ir error: {msg}")]
     #[diagnostic(code(pipe_lang::ir))]
     IrError {
-        #[source_code]
-        src: String,
         #[label]
         span: Span,
         msg: String,
@@ -55,8 +50,6 @@ pub enum CompilerError {
     #[error("runtime error: {msg}")]
     #[diagnostic(code(pipe_lang::runtime))]
     RuntimeError {
-        #[source_code]
-        src: String,
         #[label]
         span: Option<Span>,
         msg: String,
@@ -66,8 +59,6 @@ pub enum CompilerError {
     #[error("effect error: {msg}")]
     #[diagnostic(code(pipe_lang::effect))]
     EffectError {
-        #[source_code]
-        src: String,
         #[label]
         span: Option<Span>,
         msg: String,
@@ -83,32 +74,87 @@ pub enum CompilerError {
     #[diagnostic(code(pipe_lang::multiple))]
     Multiple {
         count: usize,
-        #[source_code]
-        src: String,
         #[label]
         span: Option<Span>,
     },
 }
 
+/// The top-level diagnostic wrapper that pairs an error with the source code.
+///
+/// This is what is actually rendered to the user. It uses `Arc<str>` to
+/// ensure the source code is not duplicated in memory.
+#[derive(Debug, thiserror::Error, Diagnostic)]
+#[error("{error}")]
+pub struct SourceDiagnostic {
+    #[source_code]
+    pub src: NamedSource<Arc<str>>,
+
+    #[diagnostic(transparent)]
+    pub error: CompilerError,
+}
+
+impl SourceDiagnostic {
+    /// Creates a new diagnostic wrapper.
+    pub fn new(filename: impl Into<String>, source: Arc<str>, error: CompilerError) -> Self {
+        Self {
+            src: NamedSource::new(filename.into(), source),
+            error,
+        }
+    }
+}
+
+impl From<lexer::error::LexError> for CompilerError {
+    fn from(err: lexer::error::LexError) -> Self {
+        match err {
+            lexer::error::LexError::UnexpectedChar { ch, span } => {
+                CompilerError::lex_error(span, format!("unexpected character `{ch}`"))
+            }
+            lexer::error::LexError::UnterminatedString { span } => {
+                CompilerError::lex_error(span, "unterminated string literal")
+            }
+            lexer::error::LexError::InvalidNumber { span } => {
+                CompilerError::lex_error(span, "invalid numeric literal")
+            }
+            lexer::error::LexError::UnexpectedEof { span } => {
+                CompilerError::lex_error(span, "unexpected end of input")
+            }
+        }
+    }
+}
+
+impl From<parser::error::ParseError> for CompilerError {
+    fn from(err: parser::error::ParseError) -> Self {
+        match err {
+            parser::error::ParseError::UnexpectedToken {
+                expected,
+                found,
+                span,
+            } => CompilerError::parse_error(span, format!("unexpected token `{found}`"), expected),
+            parser::error::ParseError::UnexpectedEof { expected, span } => {
+                CompilerError::parse_error(span, "unexpected end of input", expected)
+            }
+            parser::error::ParseError::ExpectedExpression { span } => {
+                CompilerError::parse_error(span, "expected expression", vec![])
+            }
+            parser::error::ParseError::Unimplemented { span } => {
+                CompilerError::parse_error(span, "parser stub in use", vec![])
+            }
+        }
+    }
+}
+
 impl CompilerError {
     /// Creates a new lex error.
-    pub fn lex_error(source: String, span: Span, msg: impl Into<String>) -> Self {
+    pub fn lex_error(span: Span, msg: impl Into<String>) -> Self {
         CompilerError::LexError {
-            src: source,
             span,
             msg: msg.into(),
         }
     }
 
     /// Creates a new parse error.
-    pub fn parse_error(
-        source: String,
-        span: Span,
-        msg: impl Into<String>,
-        expected: Vec<String>,
-    ) -> Self {
+    pub fn parse_error(span: Span, msg: impl Into<String>, expected: Vec<String>) -> Self {
         CompilerError::ParseError {
-            src: source,
             span,
             msg: msg.into(),
             expected,
@@ -116,9 +162,8 @@ impl CompilerError {
     }
 
     /// Creates a new type error.
-    pub fn type_error(source: String, span: Span, msg: impl Into<String>) -> Self {
+    pub fn type_error(span: Span, msg: impl Into<String>) -> Self {
         CompilerError::TypeError {
-            src: source,
             span,
             msg: msg.into(),
         }
@@ -136,7 +181,7 @@ impl CompilerError {
                 *span
             }
             CompilerError::IoError(_) => None,
-            CompilerError::Multiple { .. } => None,
+            CompilerError::Multiple { span, .. } => *span,
         }
     }
 
@@ -151,14 +196,9 @@ impl CompilerError {
 mod tests {
     use super::*;
 
-    fn sample_source() -> String {
-        "let x = 5 + \"hello\"".to_string()
-    }
-
     #[test]
     fn lex_error_is_display() {
-        let err =
-            CompilerError::lex_error(sample_source(), Span::new(0, 1), "unexpected character");
+        let err = CompilerError::lex_error(Span::new(0, 1), "unexpected character");
         let msg = format!("{err}");
         assert!(msg.contains("lex error"));
         assert!(msg.contains("unexpected character"));
@@ -167,9 +207,8 @@ mod tests {
     #[test]
     fn parse_error_includes_expected_tokens() {
         let err = CompilerError::parse_error(
-            sample_source(),
             Span::new(15, 16),
-            "expected `)`",
+            "expected `)` ",
             vec!["`(`".into(), "identifier".into()],
         );
         match &err {
@@ -182,11 +221,7 @@ mod tests {
 
     #[test]
     fn type_error_display() {
-        let err = CompilerError::type_error(
-            sample_source(),
-            Span::new(14, 20),
-            "cannot add `Int` and `Str`",
-        );
+        let err = CompilerError::type_error(Span::new(14, 20), "cannot add `Int` and `Str` ");
         let msg = format!("{err}");
         assert!(msg.contains("type error"));
         assert!(msg.contains("cannot add"));
@@ -196,7 +231,6 @@ mod tests {
     fn multiple_errors_collection() {
         let err = CompilerError::Multiple {
             count: 2,
-            src: sample_source(),
             span: None,
         };
         assert!(err.is_multiple());
@@ -207,7 +241,7 @@ mod tests {
 
     #[test]
     fn span_returns_correct_location() {
-        let err = CompilerError::lex_error(sample_source(), Span::new(10, 15), "unexpected");
+        let err = CompilerError::lex_error(Span::new(10, 15), "unexpected");
         assert_eq!(err.span(), Some(Span::new(10, 15)));
     }
 
@@ -222,7 +256,6 @@ mod tests {
     #[test]
     fn runtime_error_with_optional_span() {
         let err = CompilerError::RuntimeError {
-            src: sample_source(),
             span: None,
             msg: "division by zero".into(),
         };
@@ -232,10 +265,17 @@ mod tests {
     #[test]
     fn runtime_error_with_span() {
         let err = CompilerError::RuntimeError {
-            src: sample_source(),
             span: Some(Span::new(10, 12)),
             msg: "out of bounds".into(),
         };
         assert_eq!(err.span(), Some(Span::new(10, 12)));
+    }
+
+    #[test]
+    fn source_diagnostic_wrapping() {
+        let source = Arc::from("let x = 42");
+        let err = CompilerError::lex_error(Span::new(0, 3), "test error");
+        let diag = SourceDiagnostic::new("test.pp", source, err);
+        assert!(format!("{diag}").contains("test error"));
     }
 }

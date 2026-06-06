@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 
@@ -64,7 +65,7 @@ pub enum Value {
 /// Data for a record value.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RecordData {
-    pub fields: Vec<(SmolStr, Value)>,
+    pub fields: BTreeMap<SmolStr, Value>,
 }
 
 /// Data for a closure value.
@@ -213,8 +214,8 @@ impl Value {
         }
     }
 
-    /// Create a record value from a list of field pairs.
-    pub fn record(fields: Vec<(SmolStr, Value)>) -> Self {
+    /// Create a record value from a map of fields.
+    pub fn record(fields: BTreeMap<SmolStr, Value>) -> Self {
         Value::Record(Arc::new(RecordData { fields }))
     }
 }
@@ -337,8 +338,8 @@ mod tests {
 
     #[test]
     fn f64_value_roundtrip() {
-        let v = Value::F64(3.14);
-        assert_eq!(v.as_f64(), Some(3.14));
+        let v = Value::F64(3.15);
+        assert_eq!(v.as_f64(), Some(3.15));
         assert_eq!(v.as_i32(), None);
     }
 
@@ -405,14 +406,14 @@ mod tests {
 
     #[test]
     fn record_value_fields() {
-        let v = Value::record(vec![
-            (SmolStr::new("name"), Value::Str(SmolStr::new("Alice"))),
-            (SmolStr::new("age"), Value::I32(30)),
-        ]);
+        let mut fields = BTreeMap::new();
+        fields.insert(SmolStr::new("name"), Value::Str(SmolStr::new("Alice")));
+        fields.insert(SmolStr::new("age"), Value::I32(30));
+        let v = Value::record(fields);
         match v {
             Value::Record(r) => {
                 assert_eq!(r.fields.len(), 2);
-                assert_eq!(r.fields[0].0.as_str(), "name");
+                assert!(r.fields.contains_key("name"));
             }
             _ => panic!("expected Record"),
         }

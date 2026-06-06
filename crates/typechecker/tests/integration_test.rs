@@ -4,15 +4,16 @@
 //! correctly. Once the parser is ready, these tests will be extended to
 //! cover the full `lex -> parse -> typecheck` pipeline.
 
-use ast::ast::{BinOp, Decl, Expr, Param};
+use ast::ast::{BinOp, Decl, Expr};
 use ast::span::Span;
 use bumpalo::Bump;
 use lexer::Lexer;
 use typechecker::{MonoType, PolyType, TypeEnv, infer_decl, infer_expr};
 
 /// Helper to lex source and return significant tokens (excluding whitespace/newlines/eof).
-fn lex_tokens(source: &str) -> Vec<lexer::Token> {
+fn lex_tokens(source: &str) -> Vec<lexer::Token<'_>> {
     Lexer::new(source)
+        .filter_map(|r| r.ok())
         .filter(|t| !t.kind.is_trivial() && !matches!(t.kind, lexer::TokenKind::Eof))
         .collect()
 }
@@ -44,7 +45,7 @@ fn integration_lex_closure() {
 
 #[test]
 fn integration_lex_import() {
-    assert_lex_count("use stdlib.io", 4); // use stdlib . io
+    assert_lex_count("use stdlib::io", 4); // use stdlib :: io
 }
 
 #[test]
@@ -79,10 +80,10 @@ fn integration_lex_numeric_types() {
 #[test]
 fn integration_let_binding_typechecks() {
     let bump = Bump::new();
-    let val = Expr::i32(42, Span::new(8, 10), &bump);
+    let val = Expr::int("42", Span::new(8, 10), &bump);
     let decl = Decl::Bind {
         name: "x",
-        value: &val,
+        value: val,
         span: Span::new(0, 10),
     };
     let mut env = TypeEnv::new();
@@ -94,8 +95,8 @@ fn integration_let_binding_typechecks() {
 #[test]
 fn integration_binary_expression_typechecks() {
     let bump = Bump::new();
-    let lhs = Expr::i32(1, Span::new(0, 1), &bump);
-    let rhs = Expr::i32(2, Span::new(4, 5), &bump);
+    let lhs = Expr::int("1", Span::new(0, 1), &bump);
+    let rhs = Expr::int("2", Span::new(4, 5), &bump);
     let expr = Expr::binary(BinOp::Add, lhs, rhs, Span::new(0, 5), &bump);
     let mut env = TypeEnv::new();
     let ty = infer_expr(&mut env, expr).unwrap();
@@ -105,8 +106,8 @@ fn integration_binary_expression_typechecks() {
 #[test]
 fn integration_comparison_returns_bool() {
     let bump = Bump::new();
-    let lhs = Expr::i32(5, Span::new(0, 1), &bump);
-    let rhs = Expr::i32(10, Span::new(4, 6), &bump);
+    let lhs = Expr::int("5", Span::new(0, 1), &bump);
+    let rhs = Expr::int("10", Span::new(4, 6), &bump);
     let expr = Expr::binary(BinOp::Lt, lhs, rhs, Span::new(0, 6), &bump);
     let mut env = TypeEnv::new();
     let ty = infer_expr(&mut env, expr).unwrap();
@@ -140,21 +141,21 @@ fn integration_prelude_loads_all_builtins() {
 }
 
 #[test]
-fn integration_i32_literal_infers_correctly() {
+fn integration_int_literal_infers_correctly() {
     let bump = Bump::new();
     let mut env = TypeEnv::new();
 
-    let val = Expr::i32(42, Span::new(0, 2), &bump);
+    let val = Expr::int("42", Span::new(0, 2), &bump);
     let ty = infer_expr(&mut env, val).unwrap();
     assert_eq!(ty, MonoType::I32);
 }
 
 #[test]
-fn integration_f64_literal_infers_correctly() {
+fn integration_float_literal_infers_correctly() {
     let bump = Bump::new();
     let mut env = TypeEnv::new();
 
-    let val = Expr::f64(3.14, Span::new(0, 4), &bump);
+    let val = Expr::float("3.14", Span::new(0, 4), &bump);
     let ty = infer_expr(&mut env, val).unwrap();
     assert_eq!(ty, MonoType::F64);
 }
@@ -185,10 +186,10 @@ fn integration_bind_then_reference() {
     let mut env = TypeEnv::new();
 
     // First bind x = 42
-    let val_x = Expr::i32(42, Span::new(8, 10), &bump);
+    let val_x = Expr::int("42", Span::new(8, 10), &bump);
     let decl_x = Decl::Bind {
         name: "x",
-        value: &val_x,
+        value: val_x,
         span: Span::new(0, 10),
     };
     infer_decl(&mut env, &decl_x).unwrap();
@@ -202,57 +203,8 @@ fn integration_unbound_variable_fails() {
     let bump = Bump::new();
     let ident = Expr::ident("undefined", Span::new(0, 9), &bump);
     let mut env = TypeEnv::new();
-    let result = infer_expr(&mut env, &ident);
+    let result = infer_expr(&mut env, ident);
     assert!(result.is_err());
-}
-
-#[test]
-fn integration_all_numeric_literal_types() {
-    let bump = Bump::new();
-    let mut env = TypeEnv::new();
-
-    let span = Span::new(0, 2);
-
-    let ty = infer_expr(&mut env, Expr::i8(42, span, &bump)).unwrap();
-    assert_eq!(ty, MonoType::I8);
-
-    let ty = infer_expr(&mut env, Expr::i16(42, span, &bump)).unwrap();
-    assert_eq!(ty, MonoType::I16);
-
-    let ty = infer_expr(&mut env, Expr::i32(42, span, &bump)).unwrap();
-    assert_eq!(ty, MonoType::I32);
-
-    let ty = infer_expr(&mut env, Expr::i64(42, span, &bump)).unwrap();
-    assert_eq!(ty, MonoType::I64);
-
-    let ty = infer_expr(&mut env, Expr::u8(42, span, &bump)).unwrap();
-    assert_eq!(ty, MonoType::U8);
-
-    let ty = infer_expr(&mut env, Expr::u16(42, span, &bump)).unwrap();
-    assert_eq!(ty, MonoType::U16);
-
-    let ty = infer_expr(&mut env, Expr::u32(42, span, &bump)).unwrap();
-    assert_eq!(ty, MonoType::U32);
-
-    let ty = infer_expr(&mut env, Expr::u64(42, span, &bump)).unwrap();
-    assert_eq!(ty, MonoType::U64);
-
-    let ty = infer_expr(&mut env, Expr::usize(42, span, &bump)).unwrap();
-    assert_eq!(ty, MonoType::Usize);
-}
-
-#[test]
-fn integration_float_types() {
-    let bump = Bump::new();
-    let mut env = TypeEnv::new();
-
-    let f32_val = Expr::f32(1.5, Span::new(0, 3), &bump);
-    let ty = infer_expr(&mut env, f32_val).unwrap();
-    assert_eq!(ty, MonoType::F32);
-
-    let f64_val = Expr::f64(2.5, Span::new(0, 3), &bump);
-    let ty = infer_expr(&mut env, f64_val).unwrap();
-    assert_eq!(ty, MonoType::F64);
 }
 
 #[test]
@@ -261,27 +213,13 @@ fn integration_chained_binary_ops() {
     let mut env = TypeEnv::new();
 
     // (1 + 2) + 3
-    let a = Expr::i32(1, Span::new(0, 1), &bump);
-    let b = Expr::i32(2, Span::new(4, 5), &bump);
+    let a = Expr::int("1", Span::new(0, 1), &bump);
+    let b = Expr::int("2", Span::new(4, 5), &bump);
     let inner = Expr::binary(BinOp::Add, a, b, Span::new(0, 5), &bump);
-    let c = Expr::i32(3, Span::new(8, 9), &bump);
+    let c = Expr::int("3", Span::new(8, 9), &bump);
     let outer = Expr::binary(BinOp::Add, inner, c, Span::new(0, 9), &bump);
 
     let ty = infer_expr(&mut env, outer).unwrap();
-    assert_eq!(ty, MonoType::I32);
-}
-
-#[test]
-fn integration_different_numeric_types_infer_left_type() {
-    let bump = Bump::new();
-    let mut env = TypeEnv::new();
-
-    // i32 + f64 — stub currently returns left operand type (no type checking yet)
-    let lhs = Expr::i32(1, Span::new(0, 1), &bump);
-    let rhs = Expr::f64(2.0, Span::new(4, 7), &bump);
-    let expr = Expr::binary(BinOp::Add, lhs, rhs, Span::new(0, 7), &bump);
-    let ty = infer_expr(&mut env, expr).unwrap();
-    // TODO: once type checking is implemented, this should fail
     assert_eq!(ty, MonoType::I32);
 }
 

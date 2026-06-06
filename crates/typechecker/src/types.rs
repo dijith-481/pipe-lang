@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fmt;
 
 use ast::SmolStr;
@@ -6,7 +7,7 @@ use ast::SmolStr;
 ///
 /// Type variables are used during inference to represent unknown types
 /// that will be resolved through unification.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TypeId(pub u32);
 
 impl fmt::Display for TypeId {
@@ -48,7 +49,7 @@ pub enum MonoType {
         params: Vec<MonoType>,
         ret: Box<MonoType>,
     },
-    Record(Vec<(SmolStr, MonoType)>),
+    Record(BTreeMap<SmolStr, MonoType>),
     Tag {
         name: SmolStr,
         payload: Vec<MonoType>,
@@ -159,6 +160,8 @@ impl MonoType {
 pub struct PolyType {
     /// Type variables quantified (universally bound) in this type.
     pub quantified: Vec<TypeId>,
+    /// Trait bounds for the quantified variables.
+    pub bounds: BTreeMap<TypeId, Vec<SmolStr>>,
     /// The body type.
     pub body: MonoType,
 }
@@ -174,6 +177,15 @@ impl fmt::Display for PolyType {
                     write!(f, " ")?;
                 }
                 write!(f, "{v}")?;
+                if let Some(bounds) = self.bounds.get(v) {
+                    write!(f, ":")?;
+                    for (j, b) in bounds.iter().enumerate() {
+                        if j > 0 {
+                            write!(f, "+")?;
+                        }
+                        write!(f, "{b}")?;
+                    }
+                }
             }
             write!(f, ". {}", self.body)
         }
@@ -186,14 +198,33 @@ impl PolyType {
     pub fn mono(ty: MonoType) -> Self {
         Self {
             quantified: Vec::new(),
+            bounds: BTreeMap::new(),
             body: ty,
         }
     }
 
-    /// Creates a polymorphic type with the given quantified variables.
+    /// Creates a polymorphic type with the given quantified variables and no bounds.
     #[must_use]
     pub fn poly(quantified: Vec<TypeId>, body: MonoType) -> Self {
-        Self { quantified, body }
+        Self {
+            quantified,
+            bounds: BTreeMap::new(),
+            body,
+        }
+    }
+
+    /// Creates a polymorphic type with the given quantified variables and bounds.
+    #[must_use]
+    pub fn poly_with_bounds(
+        quantified: Vec<TypeId>,
+        bounds: BTreeMap<TypeId, Vec<SmolStr>>,
+        body: MonoType,
+    ) -> Self {
+        Self {
+            quantified,
+            bounds,
+            body,
+        }
     }
 }
 
@@ -247,5 +278,14 @@ mod tests {
             ret: Box::new(MonoType::Bool),
         };
         assert!(func.is_concrete());
+    }
+
+    #[test]
+    fn record_type_construction() {
+        let mut fields = BTreeMap::new();
+        fields.insert("name".into(), MonoType::Str);
+        fields.insert("age".into(), MonoType::I32);
+        let record = MonoType::Record(fields);
+        assert!(record.is_concrete());
     }
 }

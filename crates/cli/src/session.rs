@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use diagnostics::errors::CompilerError;
+use diagnostics::errors::{CompilerError, SourceDiagnostic};
 use lexer::{Lexer, TokenKind};
 
 /// Configuration for a compilation session.
@@ -44,7 +45,7 @@ impl SessionConfig {
 #[derive(Debug)]
 pub struct CompileResult {
     /// Any diagnostics produced (errors or warnings).
-    pub diagnostics: Vec<CompilerError>,
+    pub diagnostics: Vec<SourceDiagnostic>,
     /// Whether compilation succeeded.
     pub success: bool,
 }
@@ -53,7 +54,7 @@ impl CompileResult {
     /// Prints all diagnostics to stderr.
     pub fn eprint_to_stderr(&self) {
         for diag in &self.diagnostics {
-            eprintln!("{diag}");
+            eprintln!("{diag:?}");
         }
     }
 }
@@ -64,7 +65,7 @@ impl CompileResult {
 /// It reads the source file, runs each pipeline stage, and collects diagnostics.
 pub struct CompilerSession {
     config: SessionConfig,
-    source: Option<String>,
+    source: Option<Arc<str>>,
 }
 
 impl CompilerSession {
@@ -107,12 +108,12 @@ impl CompilerSession {
                 self.config.file_path.display()
             ))
         })?;
-        self.source = Some(src);
+        self.source = Some(Arc::from(src));
         Ok(())
     }
 
     /// Sets the source code directly (useful for testing).
-    pub fn set_source(&mut self, source: impl Into<String>) {
+    pub fn set_source(&mut self, source: impl Into<Arc<str>>) {
         self.source = Some(source.into());
     }
 
@@ -125,22 +126,27 @@ impl CompilerSession {
     ///
     /// # Errors
     ///
-    /// Returns errors from any pipeline stage (lex, parse, typecheck).
-    pub fn run_pipeline(&mut self) -> Result<CompileResult, CompilerError> {
-        let source = self
+    /// Returns errors from any pipeline stage (lex, parse, typecheck) wrapped in [`SourceDiagnostic`].
+    pub fn run_pipeline(&mut self) -> Result<CompileResult, Box<SourceDiagnostic>> {
+        let source_arc = self
             .source
-            .as_deref()
+            .clone()
             .expect("source must be loaded before running pipeline");
+        let filename = self.config.file_path.to_string_lossy().to_string();
 
-        let diagnostics = Vec::new();
+        let diagnostics: Vec<SourceDiagnostic> = Vec::new();
 
         // Stage 1: Lex
-        let lexer = Lexer::new(source);
-        let tokens: Vec<_> = lexer.collect();
+        let lexer = Lexer::new(&source_arc);
+        let tokens: Vec<_> = lexer.collect::<Result<Vec<_>, _>>().map_err(|e| {
+            Box::new(SourceDiagnostic::new(
+                filename.clone(),
+                source_arc.clone(),
+                e.into(),
+            ))
+        })?;
 
-        // Check for error tokens produced by the lexer (if we add error tokens)
-        // For now, the lexer emits all tokens including EOF.
-        // We filter out whitespace/comment/newline for downstream stages.
+        // Filter out whitespace/comment/newline for downstream stages.
         let _significant_tokens: Vec<_> = tokens
             .iter()
             .filter(|t| {
@@ -156,7 +162,7 @@ impl CompilerSession {
 
         // Stage 2: Parse (stub — not implemented yet)
         // TODO: integrate parser when it exists
-        // let program = parser::parse(&tokens)?;
+        // let program = parser::parse(&tokens).map_err(|e| SourceDiagnostic::new(filename.clone(), source_arc.clone(), e))?;
 
         // Stage 3: Typecheck (stub — not implemented yet)
         // TODO: integrate typechecker when parser is ready

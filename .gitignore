@@ -3,3 +3,7 @@ Cargo.lock
 *.swp
 *.swo
 .env
+
+# opencode local configuration (not source code)
+.agents/
+skills-lock.json

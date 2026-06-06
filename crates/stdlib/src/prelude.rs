@@ -330,7 +330,7 @@ mod tests {
     fn id_returns_same_value() {
         let id = Id;
         let val = Value::I32(42);
-        let result = id.execute(&[val.clone()]).unwrap();
+        let result = id.execute(std::slice::from_ref(&val)).unwrap();
         assert_eq!(result, val);
     }
 

@@ -1,7 +1,6 @@
 use clap::{Parser, Subcommand};
 
-pub mod session;
-
+use cli::session;
 use session::{CompilerSession, SessionConfig};
 
 /// The pipe-lang compiler and runtime.

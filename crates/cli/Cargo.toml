@@ -3,6 +3,12 @@ name = "cli"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+# Enables the end-to-end integration tests in tests/end_to_end.rs.
+# These require the full pipeline to be implemented. Flipped on
+# for Day 10 in PHASES.md.
+phase-c = []
+
 [dependencies]
 ast = { version = "0.1.0", path = "../ast" }
 clap = { version = "4.6.1", features = ["derive"] }

@@ -13,17 +13,8 @@ pub fn infer_expr<'a>(_env: &mut TypeEnv, expr: &Expr<'a>) -> Result<MonoType, T
     // TODO: Implement full type inference
     // This is a stub that handles basic cases
     match expr {
-        Expr::I8(_, _) => Ok(MonoType::I8),
-        Expr::I16(_, _) => Ok(MonoType::I16),
-        Expr::I32(_, _) => Ok(MonoType::I32),
-        Expr::I64(_, _) => Ok(MonoType::I64),
-        Expr::U8(_, _) => Ok(MonoType::U8),
-        Expr::U16(_, _) => Ok(MonoType::U16),
-        Expr::U32(_, _) => Ok(MonoType::U32),
-        Expr::U64(_, _) => Ok(MonoType::U64),
-        Expr::Usize(_, _) => Ok(MonoType::Usize),
-        Expr::F32(_, _) => Ok(MonoType::F32),
-        Expr::F64(_, _) => Ok(MonoType::F64),
+        Expr::IntLiteral(_, _) => Ok(MonoType::I32),
+        Expr::FloatLiteral(_, _) => Ok(MonoType::F64),
         Expr::Bool(_, _) => Ok(MonoType::Bool),
         Expr::Str(_, _) => Ok(MonoType::Str),
 
@@ -51,6 +42,11 @@ pub fn infer_expr<'a>(_env: &mut TypeEnv, expr: &Expr<'a>) -> Result<MonoType, T
                 BinOp::And | BinOp::Or => {
                     // TODO: check both operands are Bool
                     Ok(MonoType::Bool)
+                }
+                BinOp::Cons => {
+                    // TODO: list cons — for now, return the right operand's type
+                    // (the head and tail are checked when we know the full list type).
+                    Ok(MonoType::Unit)
                 }
             }
         }
@@ -164,7 +160,7 @@ mod tests {
     #[test]
     fn infer_i32_literal() {
         let bump = Bump::new();
-        let expr = Expr::i32(42, Span::new(0, 2), &bump);
+        let expr = Expr::int("42", Span::new(0, 2), &bump);
         let mut env = TypeEnv::new();
         let ty = infer_expr(&mut env, expr).unwrap();
         assert_eq!(ty, MonoType::I32);
@@ -191,7 +187,7 @@ mod tests {
     #[test]
     fn infer_f64_literal() {
         let bump = Bump::new();
-        let expr = Expr::f64(3.14, Span::new(0, 4), &bump);
+        let expr = Expr::float("3.14", Span::new(0, 4), &bump);
         let mut env = TypeEnv::new();
         let ty = infer_expr(&mut env, expr).unwrap();
         assert_eq!(ty, MonoType::F64);
@@ -209,8 +205,8 @@ mod tests {
     #[test]
     fn infer_binary_add_i32() {
         let bump = Bump::new();
-        let lhs = Expr::i32(1, Span::new(0, 1), &bump);
-        let rhs = Expr::i32(2, Span::new(4, 5), &bump);
+        let lhs = Expr::int("1", Span::new(0, 1), &bump);
+        let rhs = Expr::int("2", Span::new(4, 5), &bump);
         let expr = Expr::binary(BinOp::Add, lhs, rhs, Span::new(0, 5), &bump);
         let mut env = TypeEnv::new();
         let ty = infer_expr(&mut env, expr).unwrap();
@@ -220,8 +216,8 @@ mod tests {
     #[test]
     fn infer_comparison_returns_bool() {
         let bump = Bump::new();
-        let lhs = Expr::i32(1, Span::new(0, 1), &bump);
-        let rhs = Expr::i32(2, Span::new(4, 5), &bump);
+        let lhs = Expr::int("1", Span::new(0, 1), &bump);
+        let rhs = Expr::int("2", Span::new(4, 5), &bump);
         let expr = Expr::binary(BinOp::Gt, lhs, rhs, Span::new(0, 5), &bump);
         let mut env = TypeEnv::new();
         let ty = infer_expr(&mut env, expr).unwrap();
@@ -231,10 +227,10 @@ mod tests {
     #[test]
     fn infer_decl_bind_adds_to_env() {
         let bump = Bump::new();
-        let val = Expr::i32(42, Span::new(8, 10), &bump);
+        let val = Expr::int("42", Span::new(8, 10), &bump);
         let decl = ast::ast::Decl::Bind {
             name: "x",
-            value: &val,
+            value: val,
             span: Span::new(0, 10),
         };
         let mut env = TypeEnv::new();
@@ -245,7 +241,6 @@ mod tests {
 
     #[test]
     fn infer_decl_import_stdlib_io() {
-        let bump = Bump::new();
         let decl = ast::ast::Decl::Import {
             path: "stdlib.io",
             span: Span::new(0, 13),
@@ -257,7 +252,6 @@ mod tests {
 
     #[test]
     fn infer_decl_import_unknown_module() {
-        let bump = Bump::new();
         let decl = ast::ast::Decl::Import {
             path: "stdlib.nonexistent",
             span: Span::new(0, 20),
@@ -275,9 +269,9 @@ mod tests {
 
         // id(42) should return i32
         let func = Expr::ident("id", Span::new(0, 2), &bump);
-        let arg = Expr::i32(42, Span::new(3, 5), &bump);
-        let args = bumpalo::collections::Vec::from_iter_in([arg].into_iter(), &bump);
-        let expr = Expr::app(&func, args, Span::new(0, 6), &bump);
+        let arg = Expr::int("42", Span::new(3, 5), &bump);
+        let args = bumpalo::collections::Vec::from_iter_in([arg], &bump);
+        let expr = Expr::app(func, args, Span::new(0, 6), &bump);
         let ty = infer_expr(&mut env, expr).unwrap();
         assert_eq!(ty, MonoType::I32);
     }

@@ -18,6 +18,10 @@ pub enum ParseError {
     /// Missing expression.
     #[error("expected expression")]
     ExpectedExpression { span: Span },
+
+    /// Stub parser is in use — the real parser is not yet implemented.
+    #[error("parser is a stub; the real implementation is in progress")]
+    Unimplemented { span: Span },
 }
 
 impl ParseError {
@@ -27,7 +31,8 @@ impl ParseError {
         match self {
             ParseError::UnexpectedToken { span, .. }
             | ParseError::UnexpectedEof { span, .. }
-            | ParseError::ExpectedExpression { span } => *span,
+            | ParseError::ExpectedExpression { span }
+            | ParseError::Unimplemented { span } => *span,
         }
     }
 }

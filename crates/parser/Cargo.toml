@@ -5,5 +5,7 @@ edition = "2024"
 
 [dependencies]
 ast = { version = "0.1.0", path = "../ast" }
+lexer = { version = "0.1.0", path = "../lexer" }
+bumpalo = { version = "3.16.0", features = ["collections"] }
 miette = "7.6.0"
 thiserror = "2.0.18"
