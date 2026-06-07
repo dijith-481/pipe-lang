@@ -9,6 +9,7 @@ workspace = true
 [dependencies]
 ast = { version = "0.1.0", path = "../ast" }
 diagnostics = { version = "0.1.0", path = "../diagnostics" }
+ena = "0.14.4"
 thiserror = "2.0.18"
 
 [dev-dependencies]

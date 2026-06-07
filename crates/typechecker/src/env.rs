@@ -77,6 +77,13 @@ impl TypeEnv {
         self.scopes.len()
     }
 
+    /// Iterates over all polytypes currently visible in the environment.
+    ///
+    /// Used by `generalize` to compute the set of free variables in scope.
+    pub fn all_types(&self) -> impl Iterator<Item = &PolyType> {
+        self.scopes.iter().flat_map(|scope| scope.values())
+    }
+
     /// Loads the prelude into the global scope.
     ///
     /// The prelude contains core types (`Option`, `Result`) and utility

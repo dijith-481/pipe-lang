@@ -361,6 +361,10 @@ impl<'a> Expr<'a> {
         })
     }
 
+    pub fn record(fields: Vec<'a, RecordField<'a>>, span: Span, arena: &'a Bump) -> &'a Self {
+        arena.alloc(Expr::Record { fields, span })
+    }
+
     pub fn app(
         func: &'a Expr<'a>,
         args: Vec<'a, &'a Expr<'a>>,
