@@ -82,7 +82,7 @@ pub enum TokenKind<'a> {
 
     // Trivial tokens (preserved for tooling, skipped by parser)
     Whitespace(&'a str), // spaces and tabs
-    Comment(&'a str),    // // line comment or -- line comment
+    Comment(&'a str),    // // line comment
     Newline,             // \n or \r\n
 
     // Special
@@ -531,12 +531,9 @@ impl<'a> Iterator for Lexer<'a> {
                 }
             }
 
-            // - or -- line comment or -> function arrow
+            // - or -> function arrow
             '-' => {
-                if self.peek() == Some('-') {
-                    self.advance(); // consume second -
-                    self.read_comment(start)
-                } else if self.peek() == Some('>') {
+                if self.peek() == Some('>') {
                     self.advance(); // consume >
                     TokenKind::FuncArrow
                 } else {
