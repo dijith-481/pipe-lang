@@ -212,6 +212,38 @@ fn write_func_type(f: &mut fmt::Formatter<'_>, ft: &FuncType) -> fmt::Result {
 // Instructions
 // ---------------------------------------------------------------------------
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordAllocData {
+    pub type_name: SmolStr,
+    pub fields: Vec<ValueId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TagConstructData {
+    pub type_name: SmolStr,
+    pub variant: SmolStr,
+    pub discriminant: u32,
+    pub payload: Vec<ValueId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MakeClosureData {
+    pub func_name: SmolStr,
+    pub captures: Vec<ValueId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallIndirectData {
+    pub callee: ValueId,
+    pub args: Vec<ValueId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallNamedData {
+    pub name: SmolStr,
+    pub args: Vec<ValueId>,
+}
+
 /// A single SSA instruction.
 ///
 /// Instructions are *pure* (no terminator, no control flow) except
@@ -282,10 +314,7 @@ pub enum Instruction {
 
     // -- Records --
     /// Allocate a record with the given fields (in declaration order).
-    RecordAlloc {
-        type_name: SmolStr,
-        fields: Vec<ValueId>,
-    },
+    RecordAlloc(Box<RecordAllocData>),
     /// Read a field by name.
     RecordGet {
         record: ValueId,
@@ -304,12 +333,7 @@ pub enum Instruction {
     // -- Tags (sum types) --
     /// Construct a tag variant. The discriminant is resolved at
     /// lower time from the type's variant table.
-    TagConstruct {
-        type_name: SmolStr,
-        variant: SmolStr,
-        discriminant: u32,
-        payload: Vec<ValueId>,
-    },
+    TagConstruct(Box<TagConstructData>),
     /// Extract the discriminant of a tag value. Returns U32.
     TagDiscriminant(ValueId),
     /// Extract the `index`-th payload field. Returns the field's
@@ -323,25 +347,16 @@ pub enum Instruction {
     /// Wrap a function pointer plus its captured environment into a
     /// closure value. The `func_name` references an `IrFunction` in the
     /// same module; the codegen resolves it to a native pointer.
-    MakeClosure {
-        func_name: SmolStr,
-        captures: Vec<ValueId>,
-    },
+    MakeClosure(Box<MakeClosureData>),
     /// Call a closure value with the given arguments. Used after
     /// `MakeClosure`, or when the callee is a function parameter.
-    CallIndirect {
-        callee: ValueId,
-        args: Vec<ValueId>,
-    },
+    CallIndirect(Box<CallIndirectData>),
 
     // -- Named calls (builtins, top-level functions) --
     /// Call a named function. The codegen resolves the name to a
     /// builtin (registered in `runtime::bridge`) or to another
     /// `IrFunction` in the same module.
-    CallNamed {
-        name: SmolStr,
-        args: Vec<ValueId>,
-    },
+    CallNamed(Box<CallNamedData>),
 
     // -- Effects --
     /// Sequentially bind an effect to a name, then run `next` with
@@ -423,9 +438,9 @@ impl fmt::Display for Instruction {
             } => write!(f, "array_set {array}[{index}] = {value}"),
             Instruction::ArrayLen(a) => write!(f, "array_len {a}"),
             Instruction::ArrayConcat(a, b) => write!(f, "array_concat {a} {b}"),
-            Instruction::RecordAlloc { type_name, fields } => {
-                write!(f, "record_alloc {type_name}(")?;
-                for (i, v) in fields.iter().enumerate() {
+            Instruction::RecordAlloc(data) => {
+                write!(f, "record_alloc {}(", data.type_name)?;
+                for (i, v) in data.fields.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
@@ -444,14 +459,9 @@ impl fmt::Display for Instruction {
                 field_index: _,
                 value,
             } => write!(f, "record_set {record}.{field} = {value}"),
-            Instruction::TagConstruct {
-                type_name,
-                variant,
-                discriminant: _,
-                payload,
-            } => {
-                write!(f, "tag {type_name}::{variant}(")?;
-                for (i, v) in payload.iter().enumerate() {
+            Instruction::TagConstruct(data) => {
+                write!(f, "tag {}::{}(", data.type_name, data.variant)?;
+                for (i, v) in data.payload.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
@@ -461,12 +471,9 @@ impl fmt::Display for Instruction {
             }
             Instruction::TagDiscriminant(v) => write!(f, "tag_discriminant {v}"),
             Instruction::TagGet { value, index } => write!(f, "tag_get {value}.{index}"),
-            Instruction::MakeClosure {
-                func_name,
-                captures,
-            } => {
-                write!(f, "closure {func_name}(")?;
-                for (i, v) in captures.iter().enumerate() {
+            Instruction::MakeClosure(data) => {
+                write!(f, "closure {}(", data.func_name)?;
+                for (i, v) in data.captures.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
@@ -474,9 +481,9 @@ impl fmt::Display for Instruction {
                 }
                 write!(f, ")")
             }
-            Instruction::CallIndirect { callee, args } => {
-                write!(f, "call_indirect {callee}(")?;
-                for (i, v) in args.iter().enumerate() {
+            Instruction::CallIndirect(data) => {
+                write!(f, "call_indirect {}(", data.callee)?;
+                for (i, v) in data.args.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
@@ -484,9 +491,9 @@ impl fmt::Display for Instruction {
                 }
                 write!(f, ")")
             }
-            Instruction::CallNamed { name, args } => {
-                write!(f, "call {name}(")?;
-                for (i, v) in args.iter().enumerate() {
+            Instruction::CallNamed(data) => {
+                write!(f, "call {}(", data.name)?;
+                for (i, v) in data.args.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
@@ -705,6 +712,8 @@ pub struct IrModule {
     pub imports: Vec<SmolStr>,
     /// Top-level declarations.
     pub decls: Vec<IrDecl>,
+    /// Cache for O(1) function lookup by name
+    function_indices: std::cell::RefCell<Option<std::collections::HashMap<SmolStr, usize>>>,
 }
 
 impl IrModule {
@@ -724,6 +733,7 @@ impl IrModule {
 
     /// Returns a mutable slice of all functions in this module.
     pub fn functions_mut(&mut self) -> impl Iterator<Item = &mut IrFunction> {
+        self.function_indices.take();
         self.decls.iter_mut().filter_map(|d| match d {
             IrDecl::Function(f) => Some(f),
             IrDecl::TypeAlias { .. } => None,
@@ -733,7 +743,25 @@ impl IrModule {
     /// Looks up a function by name. Returns `None` if not found.
     #[must_use]
     pub fn function(&self, name: &str) -> Option<&IrFunction> {
-        self.functions().find(|f| f.name.as_str() == name)
+        let mut cache = self.function_indices.borrow_mut();
+        let map = cache.get_or_insert_with(|| {
+            self.decls
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, d)| match d {
+                    IrDecl::Function(f) => Some((f.name.clone(), idx)),
+                    _ => None,
+                })
+                .collect()
+        });
+        if let Some(&idx) = map.get(name) {
+            match &self.decls[idx] {
+                IrDecl::Function(f) => Some(f),
+                _ => None,
+            }
+        } else {
+            None
+        }
     }
 }
 

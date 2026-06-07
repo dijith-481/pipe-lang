@@ -3,6 +3,9 @@ name = "cli"
 version = "0.1.0"
 edition = "2024"
 
+[lints]
+workspace = true
+
 [features]
 # Enables the end-to-end integration tests in tests/end_to_end.rs.
 # These require the full pipeline to be implemented. Flipped on

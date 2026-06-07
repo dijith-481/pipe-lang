@@ -84,6 +84,7 @@ impl TypeEnv {
     /// that are automatically available in every pipe-lang program.
     pub fn load_prelude(&mut self) {
         use crate::types::MonoType;
+        use std::rc::Rc;
 
         // Load Option<T> as a sum type
         let opt_a = self.fresh_var();
@@ -91,7 +92,7 @@ impl TypeEnv {
             vec![opt_a],
             MonoType::Tag {
                 name: "Option".into(),
-                payload: vec![MonoType::Var(opt_a)],
+                payload: Rc::from([MonoType::Var(opt_a)]),
             },
         );
         self.insert("Option", option_type);
@@ -103,7 +104,7 @@ impl TypeEnv {
             vec![res_t, res_e],
             MonoType::Tag {
                 name: "Result".into(),
-                payload: vec![MonoType::Var(res_t), MonoType::Var(res_e)],
+                payload: Rc::from([MonoType::Var(res_t), MonoType::Var(res_e)]),
             },
         );
         self.insert("Result", result_type);
@@ -114,8 +115,8 @@ impl TypeEnv {
         let id_type = PolyType::poly(
             vec![a],
             MonoType::Func {
-                params: vec![MonoType::Var(a)],
-                ret: Box::new(MonoType::Var(a)),
+                params: Rc::from([MonoType::Var(a)]),
+                ret: Rc::new(MonoType::Var(a)),
             },
         );
         self.insert("id", id_type);
@@ -126,10 +127,10 @@ impl TypeEnv {
         let const_type = PolyType::poly(
             vec![ca, cb],
             MonoType::Func {
-                params: vec![MonoType::Var(ca)],
-                ret: Box::new(MonoType::Func {
-                    params: vec![MonoType::Var(cb)],
-                    ret: Box::new(MonoType::Var(ca)),
+                params: Rc::from([MonoType::Var(ca)]),
+                ret: Rc::new(MonoType::Func {
+                    params: Rc::from([MonoType::Var(cb)]),
+                    ret: Rc::new(MonoType::Var(ca)),
                 }),
             },
         );
@@ -142,13 +143,13 @@ impl TypeEnv {
         let flip_type = PolyType::poly(
             vec![fa, fb, fc],
             MonoType::Func {
-                params: vec![MonoType::Func {
-                    params: vec![MonoType::Var(fa), MonoType::Var(fb)],
-                    ret: Box::new(MonoType::Var(fc)),
-                }],
-                ret: Box::new(MonoType::Func {
-                    params: vec![MonoType::Var(fb), MonoType::Var(fa)],
-                    ret: Box::new(MonoType::Var(fc)),
+                params: Rc::from([MonoType::Func {
+                    params: Rc::from([MonoType::Var(fa), MonoType::Var(fb)]),
+                    ret: Rc::new(MonoType::Var(fc)),
+                }]),
+                ret: Rc::new(MonoType::Func {
+                    params: Rc::from([MonoType::Var(fb), MonoType::Var(fa)]),
+                    ret: Rc::new(MonoType::Var(fc)),
                 }),
             },
         );
@@ -161,19 +162,19 @@ impl TypeEnv {
         let compose_type = PolyType::poly(
             vec![comp_a, comp_b, comp_c],
             MonoType::Func {
-                params: vec![
+                params: Rc::from([
                     MonoType::Func {
-                        params: vec![MonoType::Var(comp_b)],
-                        ret: Box::new(MonoType::Var(comp_c)),
+                        params: Rc::from([MonoType::Var(comp_b)]),
+                        ret: Rc::new(MonoType::Var(comp_c)),
                     },
                     MonoType::Func {
-                        params: vec![MonoType::Var(comp_a)],
-                        ret: Box::new(MonoType::Var(comp_b)),
+                        params: Rc::from([MonoType::Var(comp_a)]),
+                        ret: Rc::new(MonoType::Var(comp_b)),
                     },
-                ],
-                ret: Box::new(MonoType::Func {
-                    params: vec![MonoType::Var(comp_a)],
-                    ret: Box::new(MonoType::Var(comp_c)),
+                ]),
+                ret: Rc::new(MonoType::Func {
+                    params: Rc::from([MonoType::Var(comp_a)]),
+                    ret: Rc::new(MonoType::Var(comp_c)),
                 }),
             },
         );
@@ -188,19 +189,19 @@ impl TypeEnv {
         let pipe_type = PolyType::poly(
             vec![pipe_a, pipe_b, pipe_c],
             MonoType::Func {
-                params: vec![
+                params: Rc::from([
                     MonoType::Func {
-                        params: vec![MonoType::Var(pipe_a)],
-                        ret: Box::new(MonoType::Var(pipe_b)),
+                        params: Rc::from([MonoType::Var(pipe_a)]),
+                        ret: Rc::new(MonoType::Var(pipe_b)),
                     },
                     MonoType::Func {
-                        params: vec![MonoType::Var(pipe_b)],
-                        ret: Box::new(MonoType::Var(pipe_c)),
+                        params: Rc::from([MonoType::Var(pipe_b)]),
+                        ret: Rc::new(MonoType::Var(pipe_c)),
                     },
-                ],
-                ret: Box::new(MonoType::Func {
-                    params: vec![MonoType::Var(pipe_a)],
-                    ret: Box::new(MonoType::Var(pipe_c)),
+                ]),
+                ret: Rc::new(MonoType::Func {
+                    params: Rc::from([MonoType::Var(pipe_a)]),
+                    ret: Rc::new(MonoType::Var(pipe_c)),
                 }),
             },
         );
@@ -212,14 +213,14 @@ impl TypeEnv {
         let apply_type = PolyType::poly(
             vec![app_a, app_b],
             MonoType::Func {
-                params: vec![
+                params: Rc::from([
                     MonoType::Func {
-                        params: vec![MonoType::Var(app_a)],
-                        ret: Box::new(MonoType::Var(app_b)),
+                        params: Rc::from([MonoType::Var(app_a)]),
+                        ret: Rc::new(MonoType::Var(app_b)),
                     },
                     MonoType::Var(app_a),
-                ],
-                ret: Box::new(MonoType::Var(app_b)),
+                ]),
+                ret: Rc::new(MonoType::Var(app_b)),
             },
         );
         self.insert("apply", apply_type);

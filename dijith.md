@@ -1,149 +1,102 @@
-# dijith — The Compiler Internals Owner
+# dijith — Compiler Frontend Lead & Architect
 
-**Crate ownership:** `crates/lexer`, `crates/parser`, `crates/typechecker`, `crates/ir`, Cranelift wiring in `crates/runtime`
+**Crate Ownership:** `crates/lexer`, `crates/parser`, `crates/ast`, `crates/typechecker`, `crates/ir`
 
-**Mission:** Get 14 example `.pp` programs from source text to running native code via Cranelift JIT, end-to-end. Owns the full compiler pipeline from `&str` to function pointer.
+**Mission:** You own the pipeline from raw source text down to the flattened Intermediate Representation (IR). Your immediate goal is to aggressively strip out legacy bloat and align the codebase with the new minimalist, pure functional specification. Following the cleanup, you will implement a high-performance Hindley-Milner type inference engine and lower the Typed AST into a clean, SSA-lite IR for the Cranelift backend.
 
-## Why this allocation
+---
 
-The 4 modules above form a single, sequential pipeline:
+## Phase 1: The Great Cleanup (Days 1–3)
 
-```
-.pp → [lexer] → [parser] → [typechecker] → [ir] → [cranelift] → running program
-```
+The current codebase contains remnants of an old, bloated plan (Haskell-style `do`-notation, unused keywords, inefficient memory usage). Your first task is to take a machete to the codebase and enforce the minimalist vision.
 
-The output of each stage is the input to the next. Putting all 4 on one person means:
-- One person owns the AST shape and the IR shape
-- One person controls the contract with the Cranelift backend
-- One person is responsible for the type-driven optimizations (HM inference informs IR)
-- No cross-team coordination on compiler internals — the other 3 members consume the public API
+### 1. Lexer, Parser, and AST Purge
+*   **Kill Dead Keywords:** Remove `with`, `return`, `effect`, `do`, and `yield` from `TokenKind` in `crates/lexer/src/lexer.rs`.
+*   **Remove `Do` Blocks:** Delete `Expr::Do` and `DoStmt` from `crates/ast/src/ast.rs`. Remove all parsing and typechecking logic for them. 
+*   **Standardize Blocks:** Ensure standard `{ statement; expr }` blocks are the only way to sequence expressions.
+*   **Make Types Optional:** Ensure the parser treats type annotations strictly as `Option<&'a TypeExpr>`.
+*   **Eliminate Implicit Imports:** Ensure the parser strictly handles `use` statements without any magic prelude injection at the syntax level.
 
-The other 3 team members do **easy, parallel** work that doesn't touch compiler internals: a tree-walking interpreter, CLI plumbing, and tooling. See `member1.md`, `member2.md`, `member3.md`.
+### 2. Typechecker Memory & Performance Overhaul
+*   **Stop the Deep Clones:** The current `MonoType` deep-clones itself recursively during unification (`apply()`). Refactor `MonoType` to be allocated in an Arena (`bumpalo`) or use `Rc`/`Arc` so types are passed by reference, not by value.
+*   **Union-Find Substitution:** The `unify.rs` substitution uses a slow, cloning `HashMap` that operates in $O(N^2)$. Replace this with a **Union-Find (Disjoint Set)** data structure (e.g., using the `ena` crate or writing a custom one). This makes type variable resolution amortized $O(1)$ via path compression.
+*   **Demote `Effect<T>`:** Remove `MonoType::Effect` as a special compiler intrinsic. `Effect<T>` must be treated as a standard generic type, identical in compiler mechanics to `Option<T>`.
 
-## What dijith delivers
+### 3. IR Crate Optimization
+*   **Box Large Variants:** The `Instruction` enum in `crates/ir/src/lib.rs` is currently ~80 bytes because of variants like `TagConstruct` and `RecordAlloc`. Box the large payloads (e.g., `TagConstruct(Box<TagConstructData>)`) so the enum shrinks to ~32 bytes, maximizing cache locality and speeding up backend traversal.
 
-The day-by-day plan is in `deliverables.md`. Summary:
+---
 
-| Phase | Days | Deliverable | Tests |
-|---|---|---|---|
-| 0 | 1 | AST, TokenKind, MonoType::Effect, Bind.ty contracts | — |
-| 1 | 1–2 | Lexer (hand-written, pull-based, template literals, `::` path sep) | 11 |
-| 2 | 2–4 | Parser (recursive descent, arena AST, error recovery) | 14 |
-| 3 | 4–8 | Typechecker (HM with let-polymorphism, Effect<T>, pattern typing) | 26 |
-| 4 | 8–10 | IR (flat SSA-lite, lowered from typed AST) | 7 |
-| 5 | 10–12 | Cranelift JIT (IR → Cranelift IR → native code, FFI for builtins) | 8 |
-| 6 | 12–14 | Integration polish, pre-commit gates green | — |
-| **Total** | **14 days** | **`pipe-lang run example-programs/hello.pp` prints `Hello, World!`** | **66 tests** |
+## Phase 2: High-Performance Typechecker (Days 4–8)
 
-## Public APIs dijith exposes to other team members
+Once the foundation is clean, implement the core analysis engine.
 
-These are the contracts other members will consume. They must be stable from the day listed.
+### 1. Hindley-Milner Inference (Algorithm W)
+*   Implement robust HM inference using your new Union-Find structure in `crates/typechecker/src/infer.rs` and `unify.rs`.
+*   Ensure functions without type annotations are fully inferred (e.g., `let add = (a, b) => a + b` infers `(i32, i32) -> i32` based on usage, or generic `<A>(A, A) -> A` if purely polymorphic).
 
-### Day 2: `crates/lexer`
+### 2. Let-Polymorphism
+*   Implement `generalize` and `instantiate`.
+*   Ensure polymorphic functions (`let id = (x) => x`) correctly generalize their type variables and instantiate fresh variables at every call site.
+
+### 3. Strict Rules & Exhaustiveness
+*   **No Coercions:** Strictly enforce that `i32` and `f64` do not mix. Enforce explicit numeric suffixes or strict unification.
+*   **Pattern Matching:** Implement exhaustiveness checking for Sum Types (`Option`, `Result`) and primitive matching. A missing arm must throw a `TypeError::NonExhaustiveMatch`.
+
+---
+
+## Phase 3: IR Lowering (Days 9–12)
+
+Bridge the gap between your complex Typed AST and the flat structure required by the Cranelift backend.
+
+### 1. Flattening the AST
+*   Write `lower_program` in `crates/ir/src/lower.rs`.
+*   Convert nested expressions (e.g., `a(b(c()))`) into a flat, SSA-lite list of `Instruction`s bound to distinct `ValueId`s within `BasicBlock`s.
+*   Enforce explicit terminators (`Return`, `Jump`, `Branch`, `Switch`) at the end of every `BasicBlock`.
+
+### 2. Closure Hoisting
+*   Detect free variables captured by closures during lowering.
+*   Extract them and emit explicit `MakeClosure` instructions that package the function pointer with its captured environment.
+
+### 3. Method Desugaring
+*   Desugar method chaining (`a.map(f)`) into standard function calls (`map(a, f)`) resolving to the correct standard library function based on the inferred type.
+
+---
+
+## Your API Contracts (What you must expose)
+
+To ensure your team is unblocked, you must guarantee the stability of these API boundaries as early as possible.
+
+### 1. For the Tooling/LSP Member:
+They need clean, stateless entry points that return either success or your `CompilerError` types for `miette` rendering.
 ```rust
-pub struct Lexer<'a> { /* ... */ }
-impl<'a> Lexer<'a> {
-    pub fn new(source: &'a str) -> Self;
-    // Implements Iterator<Item = Result<Token<'a>, LexError>>
+// In crates/parser/src/lib.rs
+pub fn parse<'a>(bump: &'a Bump, source: &'a str) -> Result<&'a Program<'a>, Vec<CompilerError>>;
+
+// In crates/typechecker/src/lib.rs
+pub fn typecheck<'a>(ast: &'a Program<'a>) -> Result<TypedProgram<'a>, Vec<CompilerError>>;
+```
+
+### 2. For the Cranelift JIT Member:
+They need the frozen, clean IR shape to start mapping to native machine code.
+```rust
+// In crates/ir/src/lib.rs
+pub struct IrModule {
+    pub imports: Vec<SmolStr>,
+    pub functions: Vec<IrFunction>,
 }
-pub struct Token<'a> { pub kind: TokenKind<'a>, pub span: Span }
-pub enum TokenKind<'a> { /* see deliverables.md Day 1 */ }
+
+pub fn lower(typed_ast: &TypedProgram) -> Result<IrModule, CompilerError>;
 ```
 
-### Day 4: `crates/parser`
-```rust
-pub fn parse<'a>(bump: &'a Bump, tokens: &[Token]) -> Result<&'a Program<'a>, Vec<ParseError>>;
-```
+---
 
-### Day 8: `crates/typechecker`
-```rust
-pub fn infer_program<'a>(program: &'a Program<'a>) -> Result<TypedProgram<'a>, Vec<TypeError>>;
-pub struct TypedProgram<'a> {
-    pub ast: &'a Program<'a>,
-    pub env: TypeEnv,
-    pub type_for_span: HashMap<Span, MonoType>,
-}
-```
+## Success Criteria for dijith
 
-### Day 10: `crates/ir`
-```rust
-pub fn lower_program(typed: &TypedProgram) -> Result<IrModule, IrError>;
-pub struct IrModule { pub functions: Vec<IrFunction> }
-```
-
-### Day 12: `crates/runtime::jit` (Cranelift)
-```rust
-pub struct JitCompiler { /* Cranelift module + context */ }
-impl JitCompiler {
-    pub fn new() -> Self;
-    pub fn compile(&mut self, func: &IrFunction) -> Result<*const u8, JitError>;
-}
-pub fn run(module: &IrModule) -> Result<i32, RuntimeError>;
-```
-
-## The 14 example programs (integration target)
-
-All 14 programs in `example-programs/*.pp` must lex, parse, type-check, lower, JIT, and run with expected output by Day 14. They are the spec.
-
-```
-hello.pp               hello world, prelude println
-factorial.pp           recursive + tail-recursive
-fibonacci.pp           naive + tail-recursive
-io-effects.pp          do-block with stdlib::io
-closures.pp            higher-order, fold-based counter
-option-result.pp       Option/Result methods
-patterns.pp            sum types, exhaustive match
-records.pp             record types, field access, record update
-state-machine.pp       AppState transition fold
-sorting.pp             quicksort, mergesort (recursive fns)
-higher-order.pp        map, filter, fold chains
-generics.pp            polymorphic combinators
-ascii-art.pp           recursive string repeat
-game-of-life.pp        2D grid, cell predicates
-```
-
-Every program uses only features dijith's stack must implement. No program is "out of scope" for 0.1.
-
-## Pre-commit gates (run before every commit)
-
-```bash
-cargo fmt --check
-cargo clippy -- -D warnings
-cargo test
-```
-
-These three commands are dijith's responsibility to keep green. When the other 3 members merge into main, the gates still hold.
-
-## Working with the other team members
-
-- **Member 1 (Runtime + Stdlib)** — does NOT need dijith's code; works off the IR shape and `Value` enum. Once dijith lands the IR on Day 10, Member 1 can write the tree-walking interpreter against it. Member 1's interpreter is the dev-mode fallback when Cranelift is unavailable.
-- **Member 2 (CLI + Diagnostics + Resolver + Prelude)** — wires the CLI. Can integrate the lexer on Day 2, parser on Day 4, typechecker on Day 8, full pipeline on Day 12. Their module resolver consumes the public typechecker API.
-- **Member 3 (Tooling + Docs + Examples)** — completely independent. Tree-sitter grammar is a separate repo; LSP server consumes the public APIs; docs are docs.
-
-## What dijith does NOT do
-
-- Tree-walking interpreter (Member 1)
-- Stdlib built-in function implementations (Member 1)
-- Module resolver implementation (Member 2)
-- CLI subcommand wiring (Member 2)
-- Error rendering with miette (Member 2)
-- Prelude definition (Member 2)
-- Tree-sitter grammar (Member 3)
-- LSP server (Member 3)
-- README, getting-started, language tour docs (Member 3)
-- More example programs beyond the 14 (Member 3)
-
-The boundary is sharp: anything outside `lexer`, `parser`, `typechecker`, `ir`, or the Cranelift wiring in `runtime` belongs to someone else.
-
-## Reference: the language spec
-
-The full syntax and type system is in `pipe-lang.md`. Key points dijith must implement:
-
-- **Template strings** `` `Hello, ${name}!` `` for string interpolation; plain `"hello"` allowed when no `${}` is needed
-- **No `++` operator**; array concatenation is `arr.concat(other)`
-- **Inline type annotations** `let name : T = expr`; HM inference for non-recursive, explicit for recursive
-- **Effect types** `Effect<T>`; do-blocks are pure desugaring to monadic bind (Haskell IO model)
-- **Pure-by-default**; mutations are rejected by the typechecker
-- **Module resolver** is `Member 2`'s deliverable; dijith's typechecker calls into it during `infer_decl` for `Use`
-
-The spec is the contract. If the spec and the implementation disagree, the spec wins.
+1. **Zero Dead Code:** The codebase contains no logic for `do` blocks, `with`, or `effect` keywords.
+2. **Typechecker Speed:** `MonoType` is passed by reference (Arena/Rc) and Unification uses Union-Find.
+3. **IR Generates Cleanly:** All 14 example programs parse, typecheck, and lower into a valid `IrModule` without panicking.
+4. **Pre-commit Gates Green:** 
+   * `cargo fmt --check`
+   * `cargo clippy --workspace -- -D warnings`
+   * `cargo test --workspace` (All existing and newly added AST/Typechecker/IR tests pass).

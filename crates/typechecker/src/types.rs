@@ -44,15 +44,15 @@ pub enum MonoType {
     Str,
 
     // -- Compound --
-    Array(Box<MonoType>),
+    Array(std::rc::Rc<MonoType>),
     Func {
-        params: Vec<MonoType>,
-        ret: Box<MonoType>,
+        params: std::rc::Rc<[MonoType]>,
+        ret: std::rc::Rc<MonoType>,
     },
-    Record(BTreeMap<SmolStr, MonoType>),
+    Record(std::rc::Rc<BTreeMap<SmolStr, MonoType>>),
     Tag {
         name: SmolStr,
-        payload: Vec<MonoType>,
+        payload: std::rc::Rc<[MonoType]>,
     },
     Unit,
 
@@ -240,14 +240,14 @@ mod tests {
     fn mono_type_is_concrete() {
         assert!(MonoType::I32.is_concrete());
         assert!(MonoType::Bool.is_concrete());
-        assert!(MonoType::Array(Box::new(MonoType::Str)).is_concrete());
+        assert!(MonoType::Array(std::rc::Rc::new(MonoType::Str)).is_concrete());
     }
 
     #[test]
     fn mono_type_with_var_is_not_concrete() {
         let ty = MonoType::Var(TypeId(0));
         assert!(!ty.is_concrete());
-        assert!(!MonoType::Array(Box::new(ty)).is_concrete());
+        assert!(!MonoType::Array(std::rc::Rc::new(ty)).is_concrete());
     }
 
     #[test]
@@ -274,8 +274,8 @@ mod tests {
     #[test]
     fn func_type_construction() {
         let func = MonoType::Func {
-            params: vec![MonoType::I32, MonoType::Str],
-            ret: Box::new(MonoType::Bool),
+            params: std::rc::Rc::from([MonoType::I32, MonoType::Str]),
+            ret: std::rc::Rc::new(MonoType::Bool),
         };
         assert!(func.is_concrete());
     }
@@ -285,7 +285,7 @@ mod tests {
         let mut fields = BTreeMap::new();
         fields.insert("name".into(), MonoType::Str);
         fields.insert("age".into(), MonoType::I32);
-        let record = MonoType::Record(fields);
+        let record = MonoType::Record(std::rc::Rc::new(fields));
         assert!(record.is_concrete());
     }
 }

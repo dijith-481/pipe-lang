@@ -17,58 +17,74 @@ pub fn parse<'a>(source: &'a str, arena: &'a Bump) -> Result<Program<'a>, ParseE
 
 struct Parser<'a> {
     source: &'a str,
-    tokens: Vec<Token<'a>>,
-    pos: usize,
+    lexer: Lexer<'a>,
+    lookahead: std::collections::VecDeque<Token<'a>>,
     arena: &'a Bump,
+    last_span: Span,
+    lexer_error: Option<ParseError>,
 }
 
 impl<'a> Parser<'a> {
     fn new(source: &'a str, arena: &'a Bump) -> Result<Self, ParseError> {
-        let mut tokens = Vec::new();
-        let lexer = Lexer::new(source);
-        for res in lexer {
-            match res {
-                Ok(tok) => {
+        Ok(Self {
+            source,
+            lexer: Lexer::new(source),
+            lookahead: std::collections::VecDeque::new(),
+            arena,
+            last_span: Span::empty(0),
+            lexer_error: None,
+        })
+    }
+
+    fn fill_lookahead(&mut self, n: usize) {
+        if self.lexer_error.is_some() {
+            return;
+        }
+        while self.lookahead.len() <= n {
+            match self.lexer.next() {
+                Some(Ok(tok)) => {
                     if !tok.kind.is_trivial() {
-                        tokens.push(tok);
+                        self.lookahead.push_back(tok);
                     }
                 }
-                Err(e) => {
-                    return Err(ParseError::UnexpectedToken {
+                Some(Err(e)) => {
+                    self.lexer_error = Some(ParseError::UnexpectedToken {
                         expected: vec!["valid token".to_string()],
                         found: format!("lexer error: {e:?}"),
                         span: e.span(),
                     });
+                    break;
                 }
+                None => break,
             }
         }
-        Ok(Self {
-            source,
-            tokens,
-            pos: 0,
-            arena,
-        })
     }
 
-    fn peek(&self) -> Option<Token<'a>> {
-        self.tokens.get(self.pos).cloned()
+    fn peek(&mut self) -> Option<Token<'a>> {
+        self.fill_lookahead(0);
+        self.lookahead.front().cloned()
     }
 
-    fn peek_kind(&self) -> Option<TokenKind<'a>> {
+    fn peek_n(&mut self, n: usize) -> Option<Token<'a>> {
+        self.fill_lookahead(n);
+        self.lookahead.get(n).cloned()
+    }
+
+    fn peek_kind(&mut self) -> Option<TokenKind<'a>> {
         self.peek().map(|t| t.kind)
     }
 
-    fn advance(&mut self) -> Option<Token<'a>> {
-        if self.pos < self.tokens.len() {
-            let tok = self.tokens[self.pos].clone();
-            self.pos += 1;
-            Some(tok)
-        } else {
-            None
-        }
+    fn advance(&mut self) -> Token<'a> {
+        self.fill_lookahead(0);
+        let tok = self
+            .lookahead
+            .pop_front()
+            .expect("advance called when no tokens left");
+        self.last_span = tok.span;
+        tok
     }
 
-    fn check(&self, kind: &TokenKind<'a>) -> bool {
+    fn check(&mut self, kind: &TokenKind<'a>) -> bool {
         self.peek_kind().as_ref().is_some_and(|k| k == kind)
     }
 
@@ -83,12 +99,12 @@ impl<'a> Parser<'a> {
 
     fn expect(&mut self, kind: TokenKind<'a>) -> Result<Token<'a>, ParseError> {
         if self.check(&kind) {
-            Ok(self.advance().unwrap())
+            Ok(self.advance())
         } else {
             let peeked = self.peek();
             let span = peeked.as_ref().map(|t| t.span).unwrap_or_else(|| {
-                if let Some(last) = self.tokens.last() {
-                    Span::new(last.span.end, last.span.end)
+                if self.last_span.end > 0 {
+                    Span::new(self.last_span.end, self.last_span.end)
                 } else {
                     Span::new(0, 0)
                 }
@@ -106,13 +122,13 @@ impl<'a> Parser<'a> {
 
     fn expect_ident(&mut self) -> Result<(&'a str, Span), ParseError> {
         if let Some(TokenKind::Ident(name)) = self.peek_kind() {
-            let tok = self.advance().unwrap();
+            let tok = self.advance();
             Ok((name, tok.span))
         } else {
             let peeked = self.peek();
             let span = peeked.as_ref().map(|t| t.span).unwrap_or_else(|| {
-                if let Some(last) = self.tokens.last() {
-                    Span::new(last.span.end, last.span.end)
+                if self.last_span.end > 0 {
+                    Span::new(self.last_span.end, self.last_span.end)
                 } else {
                     Span::new(0, 0)
                 }
@@ -132,6 +148,9 @@ impl<'a> Parser<'a> {
         let mut decls = BumpVec::new_in(self.arena);
         while self.peek_kind().is_some() && !self.check(&TokenKind::Eof) {
             self.parse_decl_into(&mut decls)?;
+        }
+        if let Some(err) = self.lexer_error.take() {
+            return Err(err);
         }
         Ok(Program { decls })
     }
@@ -154,7 +173,7 @@ impl<'a> Parser<'a> {
                     path.push_str(next_ident.0);
                 }
                 let path_str = self.arena.alloc_str(&path);
-                let end_span = self.tokens[self.pos - 1].span;
+                let end_span = self.last_span;
                 decls.push(Decl::Import {
                     path: path_str,
                     span: Span::new(start_tok.span.start, end_span.end),
@@ -177,7 +196,7 @@ impl<'a> Parser<'a> {
                 }
                 self.expect(TokenKind::Assign)?;
                 let rhs = self.parse_type_expr()?;
-                let end_span = self.tokens[self.pos - 1].span;
+                let end_span = self.last_span;
                 decls.push(Decl::TypeAlias {
                     name,
                     params,
@@ -192,7 +211,7 @@ impl<'a> Parser<'a> {
                 let mut type_sig_opt = None;
                 if self.match_token(&TokenKind::Colon) {
                     let ty = self.parse_type_expr()?;
-                    let end_span = self.tokens[self.pos - 1].span;
+                    let end_span = self.last_span;
                     type_sig_opt = Some(Decl::TypeSig {
                         name,
                         ty,
@@ -201,7 +220,7 @@ impl<'a> Parser<'a> {
                 }
                 if self.match_token(&TokenKind::Assign) {
                     let value = self.parse_expr()?;
-                    let end_span = self.tokens[self.pos - 1].span;
+                    let end_span = self.last_span;
                     if let Some(type_sig) = type_sig_opt {
                         decls.push(type_sig);
                     }
@@ -224,7 +243,7 @@ impl<'a> Parser<'a> {
                 Ok(())
             }
             _ => {
-                let tok = self.advance().unwrap();
+                let tok = self.advance();
                 Err(ParseError::UnexpectedToken {
                     expected: vec!["let".to_string(), "type".to_string(), "use".to_string()],
                     found: format!("{:?}", tok.kind),
@@ -246,7 +265,7 @@ impl<'a> Parser<'a> {
         let left = self.parse_type_apply()?;
         if self.match_token(&TokenKind::FuncArrow) {
             let right = self.parse_type_function()?;
-            let end_span = self.tokens[self.pos - 1].span;
+            let end_span = self.last_span;
             Ok(self.arena.alloc(TypeExpr::Function {
                 from: left,
                 to: right,
@@ -262,7 +281,7 @@ impl<'a> Parser<'a> {
         while self.match_token(&TokenKind::Lt) {
             loop {
                 let arg = self.parse_type_expr()?;
-                let end_span = self.tokens[self.pos - 1].span;
+                let end_span = self.last_span;
                 current = self.arena.alloc(TypeExpr::Apply {
                     func: current,
                     arg,
@@ -285,11 +304,11 @@ impl<'a> Parser<'a> {
 
         match &peeked.kind {
             TokenKind::Ident(name) => {
-                let tok = self.advance().unwrap();
+                let tok = self.advance();
                 Ok(self.arena.alloc(TypeExpr::Named(name, tok.span)))
             }
             TokenKind::OpenParen => {
-                let start_tok = self.advance().unwrap();
+                let start_tok = self.advance();
                 let mut types = BumpVec::new_in(self.arena);
                 let mut has_comma = false;
                 while !self.check(&TokenKind::CloseParen) {
@@ -309,7 +328,7 @@ impl<'a> Parser<'a> {
                 }
             }
             TokenKind::OpenBrace => {
-                let start_tok = self.advance().unwrap();
+                let start_tok = self.advance();
                 let mut fields = BumpVec::new_in(self.arena);
                 while !self.check(&TokenKind::CloseBrace) {
                     let (name, _) = self.expect_ident()?;
@@ -348,7 +367,7 @@ impl<'a> Parser<'a> {
                     }
                     self.expect(TokenKind::Comma)?;
                 }
-                end_span = self.tokens[self.pos - 1].span;
+                end_span = self.last_span;
             }
             variants.push(TypeVariant {
                 name,
@@ -357,7 +376,7 @@ impl<'a> Parser<'a> {
             });
         }
 
-        let end_span = self.tokens[self.pos - 1].span;
+        let end_span = self.last_span;
         Ok(self.arena.alloc(TypeExpr::Sum {
             variants,
             span: Span::new(start_span.start, end_span.end),
@@ -376,11 +395,11 @@ impl<'a> Parser<'a> {
                 if prec < min_prec {
                     break;
                 }
-                let tok = self.advance().unwrap();
+                let tok = self.advance();
                 let op = self.to_binop(&tok.kind);
                 let next_min_prec = if op == BinOp::Cons { prec } else { prec + 1 };
                 let right = self.parse_expr_with_precedence(next_min_prec)?;
-                let end_span = self.tokens[self.pos - 1].span;
+                let end_span = self.last_span;
                 left = self.arena.alloc(Expr::Binary {
                     op,
                     left,
@@ -434,14 +453,14 @@ impl<'a> Parser<'a> {
 
     fn parse_unary_or_primary(&mut self) -> Result<&'a Expr<'a>, ParseError> {
         if let Some(TokenKind::Not | TokenKind::Minus) = self.peek_kind() {
-            let tok = self.advance().unwrap();
+            let tok = self.advance();
             let op = match tok.kind {
                 TokenKind::Not => UnaryOp::Not,
                 TokenKind::Minus => UnaryOp::Neg,
                 _ => unreachable!(),
             };
             let operand = self.parse_unary_or_primary()?;
-            let end_span = self.tokens[self.pos - 1].span;
+            let end_span = self.last_span;
             return Ok(self.arena.alloc(Expr::Unary {
                 op,
                 operand,
@@ -459,13 +478,13 @@ impl<'a> Parser<'a> {
 
         let expr = match &peeked.kind {
             TokenKind::Let => {
-                let start_tok = self.advance().unwrap();
+                let start_tok = self.advance();
                 let (name, _) = self.expect_ident()?;
                 self.expect(TokenKind::Assign)?;
                 let value = self.parse_expr()?;
                 self.expect(TokenKind::In)?;
                 let body = self.parse_expr()?;
-                let end_span = self.tokens[self.pos - 1].span;
+                let end_span = self.last_span;
                 self.arena.alloc(Expr::Let {
                     name,
                     value,
@@ -474,7 +493,7 @@ impl<'a> Parser<'a> {
                 })
             }
             TokenKind::If => {
-                let start_tok = self.advance().unwrap();
+                let start_tok = self.advance();
                 let condition = self.parse_expr()?;
                 if !self.check(&TokenKind::OpenBrace) {
                     self.expect(TokenKind::Then)?;
@@ -486,7 +505,7 @@ impl<'a> Parser<'a> {
                 if self.match_token(&TokenKind::Else) {
                     else_branch = Some(self.parse_expr()?);
                 }
-                let end_span = self.tokens[self.pos - 1].span;
+                let end_span = self.last_span;
                 self.arena.alloc(Expr::If {
                     condition,
                     then_branch,
@@ -495,7 +514,7 @@ impl<'a> Parser<'a> {
                 })
             }
             TokenKind::Match => {
-                let start_tok = self.advance().unwrap();
+                let start_tok = self.advance();
                 let subject = self.parse_expr()?;
                 self.expect(TokenKind::OpenBrace)?;
                 let mut arms = BumpVec::new_in(self.arena);
@@ -517,7 +536,7 @@ impl<'a> Parser<'a> {
                 })
             }
             TokenKind::Do => {
-                let start_tok = self.advance().unwrap();
+                let start_tok = self.advance();
                 self.expect(TokenKind::OpenBrace)?;
                 let mut stmts = BumpVec::new_in(self.arena);
 
@@ -548,32 +567,32 @@ impl<'a> Parser<'a> {
                 })
             }
             TokenKind::Ident(name) => {
-                let tok = self.advance().unwrap();
+                let tok = self.advance();
                 self.arena.alloc(Expr::Ident(name, tok.span))
             }
             TokenKind::Int(text) => {
-                let tok = self.advance().unwrap();
+                let tok = self.advance();
                 self.arena.alloc(Expr::IntLiteral(text, tok.span))
             }
             TokenKind::Float(text) => {
-                let tok = self.advance().unwrap();
+                let tok = self.advance();
                 self.arena.alloc(Expr::FloatLiteral(text, tok.span))
             }
             TokenKind::Str(text) => {
-                let tok = self.advance().unwrap();
+                let tok = self.advance();
                 self.arena.alloc(Expr::Str(text, tok.span))
             }
             TokenKind::True => {
-                let tok = self.advance().unwrap();
+                let tok = self.advance();
                 self.arena.alloc(Expr::Bool(true, tok.span))
             }
             TokenKind::False => {
-                let tok = self.advance().unwrap();
+                let tok = self.advance();
                 self.arena.alloc(Expr::Bool(false, tok.span))
             }
             TokenKind::Backtick => self.parse_template_expr()?,
             TokenKind::OpenBracket => {
-                let start_tok = self.advance().unwrap();
+                let start_tok = self.advance();
                 let mut elems = BumpVec::new_in(self.arena);
                 while !self.check(&TokenKind::CloseBracket) {
                     elems.push(self.parse_expr()?);
@@ -594,15 +613,14 @@ impl<'a> Parser<'a> {
                 })?;
 
                 // Determine if it is a record or a block.
-                let is_record = if self.pos + 2 < self.tokens.len() {
-                    matches!(self.tokens[self.pos + 1].kind, TokenKind::Ident(_))
-                        && matches!(self.tokens[self.pos + 2].kind, TokenKind::Colon)
+                let is_record = if let (Some(t1), Some(t2)) = (self.peek_n(1), self.peek_n(2)) {
+                    matches!(t1.kind, TokenKind::Ident(_)) && matches!(t2.kind, TokenKind::Colon)
                 } else {
                     false
                 };
 
                 if is_record {
-                    self.advance().unwrap(); // consume OpenBrace
+                    self.advance(); // consume OpenBrace
                     let mut fields = BumpVec::new_in(self.arena);
                     while !self.check(&TokenKind::CloseBrace) {
                         let (name, _) = self.expect_ident()?;
@@ -617,7 +635,7 @@ impl<'a> Parser<'a> {
                         span: Span::new(start_tok.span.start, end_tok.span.end),
                     })
                 } else {
-                    self.advance().unwrap(); // consume OpenBrace
+                    self.advance(); // consume OpenBrace
                     let mut stmts = BumpVec::new_in(self.arena);
                     let mut result_expr = None;
 
@@ -661,7 +679,7 @@ impl<'a> Parser<'a> {
                 if self.is_lambda_next() {
                     self.parse_lambda()?
                 } else {
-                    let start_tok = self.advance().unwrap();
+                    let start_tok = self.advance();
                     let mut elems = BumpVec::new_in(self.arena);
                     let mut has_comma = false;
                     while !self.check(&TokenKind::CloseParen) {
@@ -693,7 +711,7 @@ impl<'a> Parser<'a> {
         let mut left = expr;
         loop {
             if self.check(&TokenKind::OpenParen) {
-                if self.is_separated_by_newline(self.pos - 1, self.pos) {
+                if self.is_separated_by_newline() {
                     break;
                 }
                 self.advance();
@@ -737,7 +755,7 @@ impl<'a> Parser<'a> {
                     });
                 }
             } else if self.check(&TokenKind::OpenBracket) {
-                if self.is_separated_by_newline(self.pos - 1, self.pos) {
+                if self.is_separated_by_newline() {
                     break;
                 }
                 self.advance();
@@ -755,16 +773,16 @@ impl<'a> Parser<'a> {
         Ok(left)
     }
 
-    fn is_lambda_next(&self) -> bool {
+    fn is_lambda_next(&mut self) -> bool {
         let mut depth = 0;
-        for i in self.pos..self.tokens.len() {
-            let t = &self.tokens[i];
+        let mut i = 0;
+        while let Some(t) = self.peek_n(i) {
             match t.kind {
                 TokenKind::OpenParen => depth += 1,
                 TokenKind::CloseParen => {
                     depth -= 1;
                     if depth == 0 {
-                        if let Some(next_tok) = self.tokens.get(i + 1) {
+                        if let Some(next_tok) = self.peek_n(i + 1) {
                             return matches!(next_tok.kind, TokenKind::Arrow | TokenKind::Colon);
                         }
                         return false;
@@ -772,16 +790,17 @@ impl<'a> Parser<'a> {
                 }
                 _ => {}
             }
+            i += 1;
         }
         false
     }
-    fn is_bind_statement(&self) -> bool {
+    fn is_bind_statement(&mut self) -> bool {
         let mut depth = 0;
         let mut seen_ident_or_lit = false;
         let mut seen_closed_group = false;
+        let mut i = 0;
 
-        for i in self.pos..self.tokens.len() {
-            let t = &self.tokens[i];
+        while let Some(t) = self.peek_n(i) {
             match &t.kind {
                 TokenKind::OpenBrace | TokenKind::OpenParen | TokenKind::OpenBracket => {
                     depth += 1;
@@ -855,18 +874,20 @@ impl<'a> Parser<'a> {
                 }
                 _ => {}
             }
+            i += 1;
         }
         false
     }
 
-    fn is_separated_by_newline(&self, pos1: usize, pos2: usize) -> bool {
-        if pos1 >= self.tokens.len() || pos2 >= self.tokens.len() {
-            return false;
-        }
-        let start = self.tokens[pos1].span.end;
-        let end = self.tokens[pos2].span.start;
-        if start <= end && end <= self.source.len() {
-            self.source[start..end].contains('\n')
+    fn is_separated_by_newline(&mut self) -> bool {
+        let start = self.last_span.end;
+        if let Some(peeked) = self.peek() {
+            let end = peeked.span.start;
+            if start <= end && end <= self.source.len() {
+                self.source[start..end].contains('\n')
+            } else {
+                false
+            }
         } else {
             false
         }
@@ -901,7 +922,7 @@ impl<'a> Parser<'a> {
 
         self.expect(TokenKind::Arrow)?;
         let body = self.parse_expr()?;
-        let end_span = self.tokens[self.pos - 1].span;
+        let end_span = self.last_span;
 
         Ok(self.arena.alloc(Expr::Lambda {
             params,
@@ -976,29 +997,29 @@ impl<'a> Parser<'a> {
 
         match &peeked.kind {
             TokenKind::Underscore => {
-                let tok = self.advance().unwrap();
+                let tok = self.advance();
                 Ok(self.arena.alloc(Pattern::Wildcard(tok.span)))
             }
             TokenKind::Int(val) => {
-                let tok = self.advance().unwrap();
+                let tok = self.advance();
                 Ok(self
                     .arena
                     .alloc(Pattern::Literal(LiteralPattern::Int(val), tok.span)))
             }
             TokenKind::Float(val) => {
-                let tok = self.advance().unwrap();
+                let tok = self.advance();
                 Ok(self
                     .arena
                     .alloc(Pattern::Literal(LiteralPattern::Float(val), tok.span)))
             }
             TokenKind::Str(val) => {
-                let tok = self.advance().unwrap();
+                let tok = self.advance();
                 Ok(self
                     .arena
                     .alloc(Pattern::Literal(LiteralPattern::Str(val), tok.span)))
             }
             TokenKind::Backtick => {
-                let start_tok = self.advance().unwrap();
+                let start_tok = self.advance();
                 let next = self.peek().ok_or_else(|| ParseError::UnexpectedEof {
                     expected: vec!["template content".to_string()],
                     span: Span::empty(self.source.len()),
@@ -1021,26 +1042,25 @@ impl<'a> Parser<'a> {
                         });
                     }
                 };
-                let end_tok = self.tokens[self.pos - 1].clone();
                 Ok(self.arena.alloc(Pattern::Literal(
                     LiteralPattern::Str(val),
-                    Span::new(start_tok.span.start, end_tok.span.end),
+                    Span::new(start_tok.span.start, self.last_span.end),
                 )))
             }
             TokenKind::True => {
-                let tok = self.advance().unwrap();
+                let tok = self.advance();
                 Ok(self
                     .arena
                     .alloc(Pattern::Literal(LiteralPattern::Bool(true), tok.span)))
             }
             TokenKind::False => {
-                let tok = self.advance().unwrap();
+                let tok = self.advance();
                 Ok(self
                     .arena
                     .alloc(Pattern::Literal(LiteralPattern::Bool(false), tok.span)))
             }
             TokenKind::Ident(name) => {
-                let tok = self.advance().unwrap();
+                let tok = self.advance();
                 if name
                     .chars()
                     .next()
@@ -1068,7 +1088,7 @@ impl<'a> Parser<'a> {
                 }
             }
             TokenKind::OpenBracket => {
-                let start_tok = self.advance().unwrap();
+                let start_tok = self.advance();
                 let mut patterns = BumpVec::new_in(self.arena);
                 while !self.check(&TokenKind::CloseBracket) {
                     patterns.push(self.parse_pattern()?.clone());
@@ -1083,7 +1103,7 @@ impl<'a> Parser<'a> {
                 }))
             }
             TokenKind::OpenBrace => {
-                let start_tok = self.advance().unwrap();
+                let start_tok = self.advance();
                 let mut fields = BumpVec::new_in(self.arena);
                 while !self.check(&TokenKind::CloseBrace) {
                     let (name, _) = self.expect_ident()?;
@@ -1101,7 +1121,7 @@ impl<'a> Parser<'a> {
                 }))
             }
             TokenKind::OpenParen => {
-                let start_tok = self.advance().unwrap();
+                let start_tok = self.advance();
                 let mut patterns = BumpVec::new_in(self.arena);
                 while !self.check(&TokenKind::CloseParen) {
                     patterns.push(self.parse_pattern()?.clone());

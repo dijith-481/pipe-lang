@@ -205,12 +205,12 @@ impl<'a> Lexer<'a> {
 
     /// Reads a backtick template literal, emitting a stream of tokens:
     ///   `Backtick` (TemplateStr ("...") | TemplateHoleStart <inner-tokens> TemplateHoleEnd)* TemplateEnd
-    fn read_template(&mut self, start: usize) -> Result<Vec<Token<'a>>, LexError> {
-        let mut out = Vec::new();
-        out.push(Token {
+    fn read_template(&mut self, start: usize) -> Result<Token<'a>, LexError> {
+        self.pending.clear();
+        let first = Token {
             kind: TokenKind::Backtick,
             span: Span::new(start, start + 1),
-        });
+        };
 
         let mut chunk_start = self.current_pos;
         loop {
@@ -222,31 +222,31 @@ impl<'a> Lexer<'a> {
                 }
                 Some('`') => {
                     let chunk_end = self.current_pos;
-                    out.push(Token {
+                    self.pending.push_back(Token {
                         kind: TokenKind::TemplateStr(&self.source[chunk_start..chunk_end]),
                         span: Span::new(chunk_start, chunk_end),
                     });
                     self.advance(); // consume `
                     let end = self.current_pos;
-                    out.push(Token {
+                    self.pending.push_back(Token {
                         kind: TokenKind::TemplateEnd,
                         span: Span::new(end - 1, end),
                     });
-                    return Ok(out);
+                    return Ok(first);
                 }
                 Some('$') => {
                     let mut clone = self.chars.clone();
                     clone.next();
                     if clone.next().is_some_and(|(_, c)| c == '{') {
                         let chunk_end = self.current_pos;
-                        out.push(Token {
+                        self.pending.push_back(Token {
                             kind: TokenKind::TemplateStr(&self.source[chunk_start..chunk_end]),
                             span: Span::new(chunk_start, chunk_end),
                         });
                         self.advance(); // consume $
                         self.advance(); // consume {
                         let hole_start = self.current_pos;
-                        out.push(Token {
+                        self.pending.push_back(Token {
                             kind: TokenKind::TemplateHoleStart,
                             span: Span::new(hole_start - 2, hole_start),
                         });
@@ -261,7 +261,7 @@ impl<'a> Lexer<'a> {
                                     }
                                     tok.span.start += hole_start;
                                     tok.span.end += hole_start;
-                                    out.push(tok);
+                                    self.pending.push_back(tok);
                                 }
                                 Err(mut e) => {
                                     match &mut e {
@@ -282,7 +282,7 @@ impl<'a> Lexer<'a> {
                         }
                         self.advance(); // consume }
                         let end = self.current_pos;
-                        out.push(Token {
+                        self.pending.push_back(Token {
                             kind: TokenKind::TemplateHoleEnd,
                             span: Span::new(end - 1, end),
                         });
@@ -574,14 +574,7 @@ impl<'a> Iterator for Lexer<'a> {
 
             // Template literal (backtick-delimited, may contain ${...} holes)
             '`' => match self.read_template(start) {
-                Ok(tokens) => {
-                    let mut iter = tokens.into_iter();
-                    let first = iter
-                        .next()
-                        .expect("read_template always returns >= 1 token");
-                    self.pending = iter.collect();
-                    return Some(Ok(first));
-                }
+                Ok(first) => return Some(Ok(first)),
                 Err(err) => return Some(Err(err)),
             },
 

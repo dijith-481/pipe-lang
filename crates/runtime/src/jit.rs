@@ -311,10 +311,9 @@ mod tests {
             .push((Some(v_ret), ir::Instruction::ConstI32(n)));
         entry.terminator = Terminator::Return(v_ret);
         func.blocks.push(entry);
-        IrModule {
-            imports: vec![],
-            decls: vec![ir::IrDecl::Function(func)],
-        }
+        let mut module = IrModule::new();
+        module.decls.push(ir::IrDecl::Function(func));
+        module
     }
 
     #[test]
@@ -368,10 +367,8 @@ mod tests {
             .push((Some(v2), ir::Instruction::Add(v0, v1)));
         entry.terminator = Terminator::Return(v2);
         func.blocks.push(entry);
-        let module = IrModule {
-            imports: vec![],
-            decls: vec![ir::IrDecl::Function(func)],
-        };
+        let mut module = IrModule::new();
+        module.decls.push(ir::IrDecl::Function(func));
         let result = compile_ir(&module);
         assert!(matches!(
             result,

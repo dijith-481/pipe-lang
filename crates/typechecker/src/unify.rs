@@ -38,17 +38,17 @@ impl Substitution {
                     ty.clone()
                 }
             }
-            MonoType::Array(inner) => MonoType::Array(Box::new(self.apply(inner))),
+            MonoType::Array(inner) => MonoType::Array(std::rc::Rc::new(self.apply(inner))),
             MonoType::Func { params, ret } => MonoType::Func {
                 params: params.iter().map(|p| self.apply(p)).collect(),
-                ret: Box::new(self.apply(ret)),
+                ret: std::rc::Rc::new(self.apply(ret)),
             },
-            MonoType::Record(fields) => MonoType::Record(
+            MonoType::Record(fields) => MonoType::Record(std::rc::Rc::new(
                 fields
                     .iter()
                     .map(|(n, t)| (n.clone(), self.apply(t)))
                     .collect(),
-            ),
+            )),
             MonoType::Tag { name, payload } => MonoType::Tag {
                 name: name.clone(),
                 payload: payload.iter().map(|t| self.apply(t)).collect(),
@@ -135,11 +135,14 @@ pub fn unify(a: &MonoType, b: &MonoType) -> Result<Substitution, TypeError> {
     }
 }
 
-/// Merges two substitutions, applying each to the other's mappings.
 fn merge_substitution(base: &mut Substitution, new: &Substitution) -> Result<(), TypeError> {
+    for ty in base.mappings.values_mut() {
+        *ty = new.apply(ty);
+    }
     for (id, ty) in &new.mappings {
-        let resolved = base.apply(ty);
-        base.insert(*id, resolved);
+        if !base.mappings.contains_key(id) {
+            base.insert(*id, ty.clone());
+        }
     }
     Ok(())
 }
@@ -179,8 +182,8 @@ mod tests {
     #[test]
     fn unify_arrays() {
         let sub = unify(
-            &MonoType::Array(Box::new(MonoType::I32)),
-            &MonoType::Array(Box::new(MonoType::Var(TypeId(0)))),
+            &MonoType::Array(std::rc::Rc::new(MonoType::I32)),
+            &MonoType::Array(std::rc::Rc::new(MonoType::Var(TypeId(0)))),
         )
         .unwrap();
         assert_eq!(sub.lookup(TypeId(0)), Some(&MonoType::I32));
@@ -189,12 +192,12 @@ mod tests {
     #[test]
     fn unify_functions() {
         let a = MonoType::Func {
-            params: vec![MonoType::I32],
-            ret: Box::new(MonoType::Bool),
+            params: std::rc::Rc::from([MonoType::I32]),
+            ret: std::rc::Rc::new(MonoType::Bool),
         };
         let b = MonoType::Func {
-            params: vec![MonoType::Var(TypeId(0))],
-            ret: Box::new(MonoType::Var(TypeId(1))),
+            params: std::rc::Rc::from([MonoType::Var(TypeId(0))]),
+            ret: std::rc::Rc::new(MonoType::Var(TypeId(1))),
         };
         let sub = unify(&a, &b).unwrap();
         assert_eq!(sub.lookup(TypeId(0)), Some(&MonoType::I32));
@@ -204,12 +207,12 @@ mod tests {
     #[test]
     fn unify_arity_mismatch() {
         let a = MonoType::Func {
-            params: vec![MonoType::I32],
-            ret: Box::new(MonoType::Bool),
+            params: std::rc::Rc::from([MonoType::I32]),
+            ret: std::rc::Rc::new(MonoType::Bool),
         };
         let b = MonoType::Func {
-            params: vec![MonoType::I32, MonoType::Str],
-            ret: Box::new(MonoType::Bool),
+            params: std::rc::Rc::from([MonoType::I32, MonoType::Str]),
+            ret: std::rc::Rc::new(MonoType::Bool),
         };
         let err = unify(&a, &b).unwrap_err();
         assert!(matches!(err, TypeError::ArityMismatch { .. }));
