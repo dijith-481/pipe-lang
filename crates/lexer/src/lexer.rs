@@ -46,7 +46,7 @@ pub enum TokenKind<'a> {
     Assign,     // =
     Dot,        // .
     PathSep,    // ::
-    Pipe,       // |
+    Bar,        // |
     Comma,      // ,
     Colon,      // :
     Semicolon,  // ;
@@ -474,7 +474,7 @@ impl<'a> Iterator for Lexer<'a> {
                     self.advance();
                     TokenKind::Or
                 } else {
-                    TokenKind::Pipe
+                    TokenKind::Bar
                 }
             }
 

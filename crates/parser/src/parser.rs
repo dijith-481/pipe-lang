@@ -251,7 +251,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_type_expr(&mut self) -> Result<&'a TypeExpr<'a>, ParseError> {
-        if self.check(&TokenKind::Pipe) {
+        if self.check(&TokenKind::Bar) {
             return self.parse_type_sum();
         }
         self.parse_type_function()
@@ -352,7 +352,7 @@ impl<'a> Parser<'a> {
         let start_span = self.peek().map(|t| t.span).unwrap_or(Span::empty(0));
         let mut variants = BumpVec::new_in(self.arena);
 
-        while self.match_token(&TokenKind::Pipe) {
+        while self.match_token(&TokenKind::Bar) {
             let (name, name_span) = self.expect_ident()?;
             let mut fields = BumpVec::new_in(self.arena);
             let mut end_span = name_span;
