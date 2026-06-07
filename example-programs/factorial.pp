@@ -1,25 +1,19 @@
 // Factorial — recursive and tail-recursive
 
 // Recursive factorial
-let factorial : (i32) -> i64 = (n) => match n {
-    0 => 1i64
-    1 => 1i64
+let factorial : (i32) -> i32 = (n) => match n {
+    0 => 1
+    1 => 1
     n => n * factorial(n - 1)
 }
 
 // Tail-recursive with accumulator
-let factorialAcc : (i32, i64) -> i64 = (n, acc) => match n {
+let factorialAcc : i32 -> i32 -> i32 = (n) => (acc) => match n {
     0 => acc
     1 => acc
-    n => factorialAcc(n - 1, n * acc)
+    n => factorialAcc(n - 1)(n * acc)
 }
 
-let factorialTail : (i32) -> i64 = (n) => factorialAcc(n, 1i64)
+let factorialTail : (i32) -> i32 = (n) => factorialAcc(n)(1)
 
-// Compute factorials of 0 through 10
-let main = () =>
-    [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
-        .map((n) => {
-            let result = factorialTail(n)
-            println(`${n}! = ${result}`)
-        })
+let main = () => factorialTail(5)
