@@ -4,11 +4,12 @@
 //! correctly. Once the parser is ready, these tests will be extended to
 //! cover the full `lex -> parse -> typecheck` pipeline.
 
-use ast::ast::{BinOp, Decl, Expr};
+use ast::ast::{BinOp, Decl, Expr, MatchArm, Pattern};
 use ast::span::Span;
 use bumpalo::Bump;
 use bumpalo::collections::Vec as BumpVec;
 use lexer::Lexer;
+use std::rc::Rc;
 use typechecker::{MonoType, PolyType, TypeEnv, TypeError, infer_decl, infer_expr};
 
 /// Helper to lex source and return significant tokens (excluding whitespace/newlines/eof).
@@ -2655,4 +2656,314 @@ fn hm_let_poly_swap_tuple() {
         }
         _ => panic!("expected Tuple, got {ty_tuple:?}"),
     }
+}
+
+// ===========================================================================
+// Constructor Expression Tests
+// ===========================================================================
+
+/// `Some(42)` should produce `Option<i32>`
+#[test]
+fn ctor_some_with_value() {
+    let bump = Bump::new();
+    let mut env = TypeEnv::new();
+    env.load_prelude();
+
+    let some_ref = Expr::ident("Some", Span::new(0, 4), &bump);
+    let num = Expr::int("42", Span::new(5, 7), &bump);
+    let expr = Expr::app(
+        some_ref,
+        BumpVec::from_iter_in([num], &bump),
+        Span::new(0, 8),
+        &bump,
+    );
+
+    let ty = infer_expr(&mut env, expr).unwrap();
+    match ty {
+        MonoType::Tag { name, payload } => {
+            assert_eq!(name.as_str(), "Option");
+            assert_eq!(payload[0], MonoType::I32);
+        }
+        _ => panic!("expected Option<i32>, got {ty:?}"),
+    }
+}
+
+/// `None` should produce `Option<?fresh>`
+#[test]
+fn ctor_none() {
+    let bump = Bump::new();
+    let mut env = TypeEnv::new();
+    env.load_prelude();
+
+    let expr = Expr::ident("None", Span::new(0, 4), &bump);
+    let ty = infer_expr(&mut env, expr).unwrap();
+    match ty {
+        MonoType::Tag { name, payload } => {
+            assert_eq!(name.as_str(), "Option");
+            assert_eq!(payload.len(), 1);
+        }
+        _ => panic!("expected Option<_>, got {ty:?}"),
+    }
+}
+
+/// `Ok("hello")` should produce `Result<str, ?fresh>`
+#[test]
+fn ctor_ok() {
+    let bump = Bump::new();
+    let mut env = TypeEnv::new();
+    env.load_prelude();
+
+    let ok_ref = Expr::ident("Ok", Span::new(0, 2), &bump);
+    let s = Expr::str("hello", Span::new(3, 10), &bump);
+    let expr = Expr::app(
+        ok_ref,
+        BumpVec::from_iter_in([s], &bump),
+        Span::new(0, 11),
+        &bump,
+    );
+
+    let ty = infer_expr(&mut env, expr).unwrap();
+    match ty {
+        MonoType::Tag { name, payload } => {
+            assert_eq!(name.as_str(), "Result");
+            assert_eq!(payload[0], MonoType::Str);
+            assert_eq!(payload.len(), 2);
+        }
+        _ => panic!("expected Result<str, _>, got {ty:?}"),
+    }
+}
+
+/// `Err(42)` should produce `Result<?fresh, i32>`
+#[test]
+fn ctor_err() {
+    let bump = Bump::new();
+    let mut env = TypeEnv::new();
+    env.load_prelude();
+
+    let err_ref = Expr::ident("Err", Span::new(0, 3), &bump);
+    let num = Expr::int("42", Span::new(4, 6), &bump);
+    let expr = Expr::app(
+        err_ref,
+        BumpVec::from_iter_in([num], &bump),
+        Span::new(0, 7),
+        &bump,
+    );
+
+    let ty = infer_expr(&mut env, expr).unwrap();
+    match ty {
+        MonoType::Tag { name, payload } => {
+            assert_eq!(name.as_str(), "Result");
+            assert_eq!(payload[1], MonoType::I32);
+            assert_eq!(payload.len(), 2);
+        }
+        _ => panic!("expected Result<_, i32>, got {ty:?}"),
+    }
+}
+
+/// `Some(42)` and `Some("hello")` have different payload types (polymorphism)
+#[test]
+fn ctor_some_polymorphic() {
+    let bump = Bump::new();
+    let mut env = TypeEnv::new();
+    env.load_prelude();
+
+    // Some(42) -> Option<i32>
+    let some1 = Expr::ident("Some", Span::new(0, 4), &bump);
+    let num = Expr::int("42", Span::new(5, 7), &bump);
+    let expr1 = Expr::app(
+        some1,
+        BumpVec::from_iter_in([num], &bump),
+        Span::new(0, 8),
+        &bump,
+    );
+    let ty1 = infer_expr(&mut env, expr1).unwrap();
+
+    // Some("hello") -> Option<str>
+    let some2 = Expr::ident("Some", Span::new(0, 4), &bump);
+    let s = Expr::str("hello", Span::new(5, 12), &bump);
+    let expr2 = Expr::app(
+        some2,
+        BumpVec::from_iter_in([s], &bump),
+        Span::new(0, 13),
+        &bump,
+    );
+    let ty2 = infer_expr(&mut env, expr2).unwrap();
+
+    // Both should be Option but with different payloads
+    match (&ty1, &ty2) {
+        (
+            MonoType::Tag {
+                name: n1,
+                payload: p1,
+            },
+            MonoType::Tag {
+                name: n2,
+                payload: p2,
+            },
+        ) => {
+            assert_eq!(n1.as_str(), "Option");
+            assert_eq!(n2.as_str(), "Option");
+            assert_eq!(p1[0], MonoType::I32);
+            assert_eq!(p2[0], MonoType::Str);
+        }
+        _ => panic!("expected two Option tags, got {ty1:?} and {ty2:?}"),
+    }
+}
+
+// ===========================================================================
+// Pattern Matching with Constructors
+// ===========================================================================
+
+/// `match x { Some(v) => v None => 0 }` on `Option<i32>` — v should be i32
+#[test]
+fn pattern_match_option_some() {
+    let bump = Bump::new();
+    let mut env = TypeEnv::new();
+    env.load_prelude();
+
+    // Build: match x { Some(v) => v, None => 0 }
+    // where x: Option<i32>
+    let x_ref = Expr::ident("x", Span::new(6, 7), &bump);
+
+    // Some(v) => v
+    let v_ref = Expr::ident("v", Span::new(16, 17), &bump);
+    let some_pat = Pattern::Constructor {
+        name: "Some",
+        fields: BumpVec::from_iter_in([Pattern::Binding("v", Span::new(15, 16))], &bump),
+        span: Span::new(11, 18),
+    };
+    let arm1 = MatchArm {
+        pattern: bump.alloc(some_pat),
+        body: v_ref,
+    };
+
+    // None => 0
+    let zero = Expr::int("0", Span::new(27, 28), &bump);
+    let none_pat = Pattern::Constructor {
+        name: "None",
+        fields: BumpVec::new_in(&bump),
+        span: Span::new(21, 25),
+    };
+    let arm2 = MatchArm {
+        pattern: bump.alloc(none_pat),
+        body: zero,
+    };
+
+    let arms = BumpVec::from_iter_in([arm1, arm2], &bump);
+    let match_expr = bump.alloc(Expr::Match {
+        subject: x_ref,
+        arms,
+        span: Span::new(0, 29),
+    });
+
+    // Bind x: Option<i32>
+    let opt_i32 = MonoType::Tag {
+        name: "Option".into(),
+        payload: Rc::from([MonoType::I32]),
+    };
+    env.insert("x", PolyType::mono(opt_i32));
+
+    let ty = infer_expr(&mut env, match_expr).unwrap();
+    assert_eq!(ty, MonoType::I32);
+}
+
+/// `match x { Ok(v) => v, Err(_) => 0 }` on `Result<str, i32>` — v should be str
+#[test]
+fn pattern_match_result_ok() {
+    let bump = Bump::new();
+    let mut env = TypeEnv::new();
+    env.load_prelude();
+
+    let x_ref = Expr::ident("x", Span::new(6, 7), &bump);
+
+    // Ok(v) => v
+    let v_ref = Expr::ident("v", Span::new(15, 16), &bump);
+    let ok_pat = Pattern::Constructor {
+        name: "Ok",
+        fields: BumpVec::from_iter_in([Pattern::Binding("v", Span::new(14, 15))], &bump),
+        span: Span::new(10, 17),
+    };
+    let arm1 = MatchArm {
+        pattern: bump.alloc(ok_pat),
+        body: v_ref,
+    };
+
+    // Err(_) => "" (str) — same type as Ok arm
+    let empty = Expr::str("", Span::new(28, 30), &bump);
+    let err_pat = Pattern::Constructor {
+        name: "Err",
+        fields: BumpVec::from_iter_in([Pattern::Wildcard(Span::new(25, 26))], &bump),
+        span: Span::new(21, 27),
+    };
+    let arm2 = MatchArm {
+        pattern: bump.alloc(err_pat),
+        body: empty,
+    };
+
+    let arms = BumpVec::from_iter_in([arm1, arm2], &bump);
+    let match_expr = bump.alloc(Expr::Match {
+        subject: x_ref,
+        arms,
+        span: Span::new(0, 31),
+    });
+
+    // Bind x: Result<str, i32>
+    let res_str_i32 = MonoType::Tag {
+        name: "Result".into(),
+        payload: Rc::from([MonoType::Str, MonoType::I32]),
+    };
+    env.insert("x", PolyType::mono(res_str_i32));
+
+    let ty = infer_expr(&mut env, match_expr).unwrap();
+    assert_eq!(ty, MonoType::Str);
+}
+
+/// Mismatched arms: `match x { Some(v) => v, None => "hello" }` should fail
+#[test]
+fn pattern_match_option_mismatched_arms() {
+    let bump = Bump::new();
+    let mut env = TypeEnv::new();
+    env.load_prelude();
+
+    let x_ref = Expr::ident("x", Span::new(6, 7), &bump);
+
+    // Some(v) => v (i32)
+    let v_ref = Expr::ident("v", Span::new(16, 17), &bump);
+    let some_pat = Pattern::Constructor {
+        name: "Some",
+        fields: BumpVec::from_iter_in([Pattern::Binding("v", Span::new(15, 16))], &bump),
+        span: Span::new(11, 18),
+    };
+    let arm1 = MatchArm {
+        pattern: bump.alloc(some_pat),
+        body: v_ref,
+    };
+
+    // None => "hello" (str) — mismatch!
+    let hello = Expr::str("hello", Span::new(27, 34), &bump);
+    let none_pat = Pattern::Constructor {
+        name: "None",
+        fields: BumpVec::new_in(&bump),
+        span: Span::new(21, 25),
+    };
+    let arm2 = MatchArm {
+        pattern: bump.alloc(none_pat),
+        body: hello,
+    };
+
+    let arms = BumpVec::from_iter_in([arm1, arm2], &bump);
+    let match_expr = bump.alloc(Expr::Match {
+        subject: x_ref,
+        arms,
+        span: Span::new(0, 35),
+    });
+
+    let opt_i32 = MonoType::Tag {
+        name: "Option".into(),
+        payload: Rc::from([MonoType::I32]),
+    };
+    env.insert("x", PolyType::mono(opt_i32));
+
+    let result = infer_expr(&mut env, match_expr);
+    assert!(result.is_err());
 }

@@ -116,6 +116,63 @@ impl TypeEnv {
         );
         self.insert("Result", result_type);
 
+        // --- Sum type constructors ---
+
+        // Some : <a>(a) -> Option<a>
+        let some_a = self.fresh_var();
+        let some_type = PolyType::poly(
+            vec![some_a],
+            MonoType::Func {
+                params: Rc::from([MonoType::Var(some_a)]),
+                ret: Rc::new(MonoType::Tag {
+                    name: "Option".into(),
+                    payload: Rc::from([MonoType::Var(some_a)]),
+                }),
+            },
+        );
+        self.insert("Some", some_type);
+
+        // None : <a>Option<a>  (bare value, not a function)
+        let none_a = self.fresh_var();
+        let none_type = PolyType::poly(
+            vec![none_a],
+            MonoType::Tag {
+                name: "Option".into(),
+                payload: Rc::from([MonoType::Var(none_a)]),
+            },
+        );
+        self.insert("None", none_type);
+
+        // Ok : <a, b>(a) -> Result<a, b>
+        let ok_a = self.fresh_var();
+        let ok_b = self.fresh_var();
+        let ok_type = PolyType::poly(
+            vec![ok_a, ok_b],
+            MonoType::Func {
+                params: Rc::from([MonoType::Var(ok_a)]),
+                ret: Rc::new(MonoType::Tag {
+                    name: "Result".into(),
+                    payload: Rc::from([MonoType::Var(ok_a), MonoType::Var(ok_b)]),
+                }),
+            },
+        );
+        self.insert("Ok", ok_type);
+
+        // Err : <a, b>(b) -> Result<a, b>
+        let err_a = self.fresh_var();
+        let err_b = self.fresh_var();
+        let err_type = PolyType::poly(
+            vec![err_a, err_b],
+            MonoType::Func {
+                params: Rc::from([MonoType::Var(err_b)]),
+                ret: Rc::new(MonoType::Tag {
+                    name: "Result".into(),
+                    payload: Rc::from([MonoType::Var(err_a), MonoType::Var(err_b)]),
+                }),
+            },
+        );
+        self.insert("Err", err_type);
+
         // Load core utility function types
         // id : <a>(a) -> a
         let a = self.fresh_var();
