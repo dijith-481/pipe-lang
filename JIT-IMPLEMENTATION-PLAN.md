@@ -206,7 +206,103 @@ All heap values are refcounted (`Arc`). The pointer passed to JIT code is `*cons
 
 ---
 
-## Phase 5: Builtin Registration (Day 6-7)
+## Phase 5: Monomorphization (Day 5-6)
+
+**Goal:** Polymorphic functions generate specialized versions for each concrete type combination at JIT compile time.
+
+### Why Monomorphization
+
+The typechecker already produces a `TypedProgram` with a `type_map: HashMap<Span, MonoType>` that maps every expression span to its fully-resolved concrete type. This means at JIT time, we know exactly what concrete types every function is called with.
+
+### Approach
+
+Instead of generating one Cranelift function per `IrFunction`, we generate **one Cranelift function per (function_name, concrete_type_signature) pair**.
+
+**Example:**
+
+```
+let id = (x) => x
+let a = id(42)      // id called with i32
+let b = id("hello") // id called with str
+```
+
+The lowerer produces one `IrFunction` named `id` with param type `I32` (fallback for type vars). But the type map tells us:
+- Span of `id(42)` → `Func { params: [I32], ret: I32 }` → needs `id_i32`
+- Span of `id("hello")` → `Func { params: [Str], ret: Str }` → needs `id_str`
+
+The JIT generates:
+```
+fn id_i32(x: i32) -> i32 { x }
+fn id_str(x: str_ptr, x_len: u64) -> (str_ptr, u64) { x }
+```
+
+### Implementation Steps
+
+1. **Collect call sites**: Walk the `IrModule`, for each `CallNamed { name, args }`, look up the caller's span in `type_map` to get the concrete argument types.
+
+2. **Generate specialized functions**: For each unique `(name, [arg_types...])` combination, clone the `IrFunction`, replace parameter types with concrete types, and compile as a separate Cranelift function.
+
+3. **Rewrite call sites**: Replace `CallNamed { name: "id", args }` with `CallNamed { name: "id_i32", args }` (the specialized name).
+
+4. **Handle recursive functions**: For `let fact = (n) => if n == 0 { 1 } else { n * fact(n - 1) }`, `fact` calls itself with the same type. Generate one specialized version `fact_i32` that calls `fact_i32` recursively.
+
+### Name Mangling
+
+Specialized function names use a mangled format:
+
+```
+{id}_{type1}_{type2}_...
+```
+
+Examples:
+- `id` with `(i32)` → `id_i32`
+- `add` with `(i32, i32)` → `add_i32_i32`
+- `compose` with `((i32) -> i32, (i32) -> i32)` → `compose_Func_i32_i32_Func_i32_i32`
+
+For complex types, use a hash suffix to keep names short:
+- `compose` with complex sig → `compose_a1b2c3`
+
+### Type Map Integration
+
+The `TypedProgram.type_map` already has the concrete types at every call site. The JIT reads this map during compilation:
+
+```rust
+fn monomorphize(module: &IrModule, type_map: &HashMap<Span, MonoType>) -> IrModule {
+    let mut specialized = IrModule::new();
+    let mut name_map: HashMap<(String, Vec<IrType>), String> = HashMap::new();
+    
+    for decl in &module.decls {
+        if let IrDecl::Function(func) = decl {
+            // For each CallNamed in this function's blocks:
+            //   1. Look up the call site span in type_map
+            //   2. Get concrete arg types
+            //   3. Generate or reuse specialized version
+            //   4. Rewrite the call target name
+        }
+    }
+    specialized
+}
+```
+
+### Edge Cases
+
+| Case | Handling |
+|---|---|
+| Recursive calls with same type | One specialized version calls itself |
+| Recursive calls with different types | Generate multiple specialized versions (rare in practice) |
+| Polymorphic in unused position | Generate one version with the concrete type used |
+| Top-level `let id = (x) => x` without calls | Generate zero versions (dead code elimination) |
+| Closures capturing polymorphic values | Specialize based on captured value types |
+
+### Tests
+
+- `let id = (x) => x; id(42); id("hello")` — two specializations
+- `let fact = (n) => if n == 0 { 1 } else { n * fact(n-1) }` — recursive self-call
+- `let apply = (f, x) => f(x); apply((x) => x + 1, 41)` — higher-order polymorphism
+
+---
+
+## Phase 6: Builtin Registration (Day 6-7)
 
 **Goal:** Prelude functions work through the JIT.
 
@@ -247,7 +343,7 @@ struct BuiltinRegistry {
 
 ---
 
-## Phase 6: Optimization & Polish (Days 7-10)
+## Phase 7: Optimization & Polish (Days 7-10)
 
 ### Tail Call Optimization
 
