@@ -18,11 +18,11 @@ let findUser = (id) => match id {
 
 // Parse a string to i32 (simplified)
 let parseAge = (s) => match s {
-    `0`  => Ok(0)
-    `1`  => Ok(1)
-    `2`  => Ok(2)
-    `18` => Ok(18)
-    `25` => Ok(25)
+    "0"  => Ok(0)
+    "1"  => Ok(1)
+    "2"  => Ok(2)
+    "18" => Ok(18)
+    "25" => Ok(25)
     _    => Err(`invalid age: ${s}`)
 }
 
@@ -34,13 +34,9 @@ let greetUser = (userId) =>
 // Validate age
 let validateAge = (input) =>
     parseAge(input)
-        .flatMap((age) => if age >= 0 && age <= 150 {
-            Ok(age)
-        } else {
-            Err(`age out of range`)
-        })
+        .flatMap((age) => if age >= 0 { if age <= 150 { Ok(age) } else { Err(`age out of range`) } } else { Err(`age out of range`) })
 
-let main : () -> Effect<()> = do {
+let main = () => {
     // Option usage
     println(`--- Option ---`)
     println(greetUser(1).unwrap(`User not found`))

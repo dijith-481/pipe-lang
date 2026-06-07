@@ -14,11 +14,9 @@ let step : (Array<Array<Cell>>) -> Array<Array<Cell>> = (grid) => {
             offsets.fold(acc, (acc2, dc) => {
                 let r = row + dr
                 let c = col + dc
-                if r >= 0 && r < h && c >= 0 && c < w && !(dr == 0 && dc == 0) {
+                if r >= 0 { if r < h { if c >= 0 { if c < w { if !(dr == 0 && dc == 0) {
                     if grid[r][c] { acc2 + 1 } else { acc2 }
-                } else {
-                    acc2
-                }
+                } else { acc2 } } else { acc2 } } else { acc2 } } else { acc2 } } else { acc2 }
             })
         )
     }
@@ -46,7 +44,7 @@ let gridToString = (grid) =>
         row.map(cellToString).fold(``, (acc, s) => `${acc}${s}`)
     ).fold(``, (acc, line) => `${acc}${line}\n`)
 
-let main : () -> Effect<()> = do {
+let main = () => {
     // Glider pattern
     let grid = [
         [false, true,  false, false, false, false, false, false],

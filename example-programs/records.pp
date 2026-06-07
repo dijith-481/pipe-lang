@@ -23,7 +23,7 @@ let adults = (people) => people.filter(isAdult)
 
 let names = (people) => people.map(getName)
 
-let main : () -> Effect<()> = do {
+let main = () => {
     println(`Name: ${getName(alice)}`)
     println(`Is adult: ${isAdult(alice)}`)
 

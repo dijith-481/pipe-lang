@@ -19,15 +19,9 @@ pub enum TokenKind<'a> {
     // Keywords
     Type,
     Let,
-    In,
     If,
-    Then,
     Else,
     Match,
-    With,
-    Do,
-    Effect,
-    Return,
     Use,
     True,
     False,
@@ -35,7 +29,6 @@ pub enum TokenKind<'a> {
     // Operators
     Arrow,      // =>
     FuncArrow,  // ->
-    Bind,       // <-
     Plus,       // +
     Minus,      // -
     Star,       // *
@@ -104,15 +97,9 @@ impl<'a> TokenKind<'a> {
             self,
             TokenKind::Type
                 | TokenKind::Let
-                | TokenKind::In
                 | TokenKind::If
-                | TokenKind::Then
                 | TokenKind::Else
                 | TokenKind::Match
-                | TokenKind::With
-                | TokenKind::Do
-                | TokenKind::Effect
-                | TokenKind::Return
                 | TokenKind::Use
                 | TokenKind::True
                 | TokenKind::False
@@ -375,15 +362,9 @@ impl<'a> Lexer<'a> {
         match text {
             "type" => TokenKind::Type,
             "let" => TokenKind::Let,
-            "in" => TokenKind::In,
             "if" => TokenKind::If,
-            "then" => TokenKind::Then,
             "else" => TokenKind::Else,
             "match" => TokenKind::Match,
-            "with" => TokenKind::With,
-            "do" => TokenKind::Do,
-            "effect" => TokenKind::Effect,
-            "return" => TokenKind::Return,
             "use" => TokenKind::Use,
             "true" => TokenKind::True,
             "false" => TokenKind::False,
@@ -530,12 +511,9 @@ impl<'a> Iterator for Lexer<'a> {
                 }
             }
 
-            // < or <= or <-
+            // < or <=
             '<' => {
-                if self.peek() == Some('-') {
-                    self.advance();
-                    TokenKind::Bind
-                } else if self.peek() == Some('=') {
+                if self.peek() == Some('=') {
                     self.advance();
                     TokenKind::Le
                 } else {
@@ -620,14 +598,14 @@ mod tests {
 
     #[test]
     fn lex_keywords_and_identifiers() {
-        let tokens: Vec<_> = Lexer::new("type let in")
+        let tokens: Vec<_> = Lexer::new("type let if")
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
         assert_eq!(tokens[0].kind, TokenKind::Type);
         assert_eq!(tokens[1].kind, TokenKind::Whitespace(" "));
         assert_eq!(tokens[2].kind, TokenKind::Let);
         assert_eq!(tokens[3].kind, TokenKind::Whitespace(" "));
-        assert_eq!(tokens[4].kind, TokenKind::In);
+        assert_eq!(tokens[4].kind, TokenKind::If);
     }
 
     #[test]
@@ -670,10 +648,10 @@ mod tests {
 
     #[test]
     fn lex_operators() {
-        let tokens: Vec<_> = Lexer::new("=> <-").collect::<Result<Vec<_>, _>>().unwrap();
+        let tokens: Vec<_> = Lexer::new("=> <=").collect::<Result<Vec<_>, _>>().unwrap();
         assert_eq!(tokens[0].kind, TokenKind::Arrow);
         assert_eq!(tokens[1].kind, TokenKind::Whitespace(" "));
-        assert_eq!(tokens[2].kind, TokenKind::Bind);
+        assert_eq!(tokens[2].kind, TokenKind::Le);
     }
 
     #[test]

@@ -7,6 +7,7 @@
 use ast::ast::{BinOp, Decl, Expr};
 use ast::span::Span;
 use bumpalo::Bump;
+use bumpalo::collections::Vec as BumpVec;
 use lexer::Lexer;
 use typechecker::{MonoType, PolyType, TypeEnv, infer_decl, infer_expr};
 
@@ -50,15 +51,13 @@ fn integration_lex_import() {
 
 #[test]
 fn integration_lex_keywords() {
-    let tokens = lex_tokens("let type if then else match do use true false");
+    let tokens = lex_tokens("let type if else match use true false");
     let kinds: Vec<_> = tokens.iter().map(|t| &t.kind).collect();
     assert!(kinds.contains(&&lexer::TokenKind::Let));
     assert!(kinds.contains(&&lexer::TokenKind::Type));
     assert!(kinds.contains(&&lexer::TokenKind::If));
-    assert!(kinds.contains(&&lexer::TokenKind::Then));
     assert!(kinds.contains(&&lexer::TokenKind::Else));
     assert!(kinds.contains(&&lexer::TokenKind::Match));
-    assert!(kinds.contains(&&lexer::TokenKind::Do));
     assert!(kinds.contains(&&lexer::TokenKind::Use));
     assert!(kinds.contains(&&lexer::TokenKind::True));
     assert!(kinds.contains(&&lexer::TokenKind::False));
@@ -83,6 +82,7 @@ fn integration_let_binding_typechecks() {
     let val = Expr::int("42", Span::new(8, 10), &bump);
     let decl = Decl::Bind {
         name: "x",
+        ty: None,
         value: val,
         span: Span::new(0, 10),
     };
@@ -116,8 +116,9 @@ fn integration_comparison_returns_bool() {
 
 #[test]
 fn integration_import_succeeds() {
-    let decl = Decl::Import {
-        path: "stdlib.io",
+    let bump = Bump::new();
+    let decl = Decl::Use {
+        path: BumpVec::from_iter_in(["stdlib", "io"], &bump),
         span: Span::new(0, 13),
     };
     let mut env = TypeEnv::new();
@@ -189,6 +190,7 @@ fn integration_bind_then_reference() {
     let val_x = Expr::int("42", Span::new(8, 10), &bump);
     let decl_x = Decl::Bind {
         name: "x",
+        ty: None,
         value: val_x,
         span: Span::new(0, 10),
     };

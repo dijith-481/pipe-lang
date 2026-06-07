@@ -43,11 +43,6 @@ pub fn infer_expr<'a>(_env: &mut TypeEnv, expr: &Expr<'a>) -> Result<MonoType, T
                     // TODO: check both operands are Bool
                     Ok(MonoType::Bool)
                 }
-                BinOp::Cons => {
-                    // TODO: list cons — for now, return the right operand's type
-                    // (the head and tail are checked when we know the full list type).
-                    Ok(MonoType::Unit)
-                }
             }
         }
 
@@ -58,16 +53,10 @@ pub fn infer_expr<'a>(_env: &mut TypeEnv, expr: &Expr<'a>) -> Result<MonoType, T
             ..
         } => {
             let _cond = infer_expr(_env, condition)?;
-            // TODO: check cond is Bool
             let then_ty = infer_expr(_env, then_branch)?;
-            if let Some(else_expr) = else_branch {
-                let _else_ty = infer_expr(_env, else_expr)?;
-                // TODO: unify then_ty and else_ty
-                Ok(then_ty)
-            } else {
-                // TODO: if without else should be Unit
-                Ok(MonoType::Unit)
-            }
+            let _else_ty = infer_expr(_env, else_branch)?;
+            // TODO: unify then_ty and else_ty
+            Ok(then_ty)
         }
 
         _ => {
@@ -86,22 +75,12 @@ pub fn infer_decl<'a>(env: &mut TypeEnv, decl: &ast::ast::Decl<'a>) -> Result<Po
     match decl {
         ast::ast::Decl::Bind {
             name,
+            ty: _,
             value,
             span: _,
         } => {
             let ty = infer_expr(env, value)?;
             let poly = PolyType::mono(ty);
-            env.insert(*name, poly.clone());
-            Ok(poly)
-        }
-        ast::ast::Decl::TypeSig {
-            name,
-            ty: _,
-            span: _,
-        } => {
-            // TODO: Parse type expression and insert signature
-            // For now, return unit
-            let poly = PolyType::mono(MonoType::Unit);
             env.insert(*name, poly.clone());
             Ok(poly)
         }
@@ -117,23 +96,24 @@ pub fn infer_decl<'a>(env: &mut TypeEnv, decl: &ast::ast::Decl<'a>) -> Result<Po
             env.insert(*name, poly.clone());
             Ok(poly)
         }
-        ast::ast::Decl::Import { path, span: _ } => {
+        ast::ast::Decl::Use { path, span: _ } => {
             // Handle standard library imports
-            match *path {
-                "stdlib.io" => {
+            let path_str = path.join("::");
+            match path_str.as_str() {
+                "stdlib::io" => {
                     // IO module types would be loaded here
                     // For now, this is a no-op (IO builtins are registered at runtime)
                     Ok(PolyType::mono(MonoType::Unit))
                 }
-                "stdlib.list" => {
+                "stdlib::list" => {
                     // List module types would be loaded here
                     Ok(PolyType::mono(MonoType::Unit))
                 }
-                "stdlib.option" => {
+                "stdlib::option" => {
                     // Option module is already in prelude
                     Ok(PolyType::mono(MonoType::Unit))
                 }
-                "stdlib.result" => {
+                "stdlib::result" => {
                     // Result module is already in prelude
                     Ok(PolyType::mono(MonoType::Unit))
                 }
@@ -230,6 +210,7 @@ mod tests {
         let val = Expr::int("42", Span::new(8, 10), &bump);
         let decl = ast::ast::Decl::Bind {
             name: "x",
+            ty: None,
             value: val,
             span: Span::new(0, 10),
         };
@@ -240,9 +221,10 @@ mod tests {
     }
 
     #[test]
-    fn infer_decl_import_stdlib_io() {
-        let decl = ast::ast::Decl::Import {
-            path: "stdlib.io",
+    fn infer_decl_use_stdlib_io() {
+        let bump = Bump::new();
+        let decl = ast::ast::Decl::Use {
+            path: bumpalo::collections::Vec::from_iter_in(["stdlib", "io"], &bump),
             span: Span::new(0, 13),
         };
         let mut env = TypeEnv::new();
@@ -251,9 +233,10 @@ mod tests {
     }
 
     #[test]
-    fn infer_decl_import_unknown_module() {
-        let decl = ast::ast::Decl::Import {
-            path: "stdlib.nonexistent",
+    fn infer_decl_use_unknown_module() {
+        let bump = Bump::new();
+        let decl = ast::ast::Decl::Use {
+            path: bumpalo::collections::Vec::from_iter_in(["stdlib", "nonexistent"], &bump),
             span: Span::new(0, 20),
         };
         let mut env = TypeEnv::new();

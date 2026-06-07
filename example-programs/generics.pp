@@ -29,7 +29,7 @@ let mapResult = (result, f) => match result {
     Ok(v)   => Ok(f(v))
 }
 
-let main : () -> Effect<()> = do {
+let main = () => {
     // Using generic functions
     let x = id(42)
     let s = id(`hello`)

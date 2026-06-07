@@ -16,7 +16,7 @@ let row = (content, width) => {
 let box = (text, width) =>
     `${border(width)}\n${row(text, width)}\n${border(width)}`
 
-let main : () -> Effect<()> = do {
+let main = () => {
     println(box(`Hello!`, 20))
     println(``)
     println(box(`pipe-lang v0.1.0`, 30))

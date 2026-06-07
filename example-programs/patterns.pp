@@ -35,12 +35,10 @@ let handleMessage = (msg) => match msg {
     Ping              => `ping received`
 }
 
-let main : () -> Effect<()> = do {
+let main = () => {
     let shapes = [Circle(5.0), Rectangle(4.0, 6.0), Triangle(3.0, 4.0, 5.0)]
 
-    shapes.map((s) => {
-        println(`${describe(s)} has area ${area(s)}`)
-    })
+    shapes.map((s) => println(`${describe(s)} has area ${area(s)}`))
 
     println(``)
 

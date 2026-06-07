@@ -31,7 +31,7 @@ let runCounter = (n) => {
     snapshots
 }
 
-let main : () -> Effect<()> = do {
+let main = () => {
     println(`add5(10) = ${add5(10)}`)
     println(`add10(10) = ${add10(10)}`)
     println(`applyTwice(double, 3) = ${applyTwice(double, 3)}`)

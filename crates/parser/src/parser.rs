@@ -164,18 +164,16 @@ impl<'a> Parser<'a> {
         match &start_tok.kind {
             TokenKind::Use => {
                 self.advance();
-                let mut path = String::new();
+                let mut path = BumpVec::new_in(self.arena);
                 let first_ident = self.expect_ident()?;
-                path.push_str(first_ident.0);
+                path.push(first_ident.0);
                 while self.match_token(&TokenKind::PathSep) {
                     let next_ident = self.expect_ident()?;
-                    path.push('.');
-                    path.push_str(next_ident.0);
+                    path.push(next_ident.0);
                 }
-                let path_str = self.arena.alloc_str(&path);
                 let end_span = self.last_span;
-                decls.push(Decl::Import {
-                    path: path_str,
+                decls.push(Decl::Use {
+                    path,
                     span: Span::new(start_tok.span.start, end_span.end),
                 });
                 Ok(())
@@ -208,37 +206,36 @@ impl<'a> Parser<'a> {
             TokenKind::Let => {
                 self.advance();
                 let (name, name_span) = self.expect_ident()?;
-                let mut type_sig_opt = None;
+                let mut ty = None;
                 if self.match_token(&TokenKind::Colon) {
-                    let ty = self.parse_type_expr()?;
-                    let end_span = self.last_span;
-                    type_sig_opt = Some(Decl::TypeSig {
-                        name,
-                        ty,
-                        span: Span::new(start_tok.span.start, end_span.end),
-                    });
+                    ty = Some(self.parse_type_expr()?);
                 }
                 if self.match_token(&TokenKind::Assign) {
                     let value = self.parse_expr()?;
                     let end_span = self.last_span;
-                    if let Some(type_sig) = type_sig_opt {
-                        decls.push(type_sig);
-                    }
                     decls.push(Decl::Bind {
                         name,
+                        ty,
                         value,
                         span: Span::new(start_tok.span.start, end_span.end),
                     });
+                } else if ty.is_some() {
+                    let end_span = self.last_span;
+                    decls.push(Decl::Bind {
+                        name,
+                        ty,
+                        value: self.arena.alloc(Expr::Tuple {
+                            elems: BumpVec::new_in(self.arena),
+                            span: Span::empty(end_span.end),
+                        }),
+                        span: Span::new(start_tok.span.start, end_span.end),
+                    });
                 } else {
-                    if let Some(type_sig) = type_sig_opt {
-                        decls.push(type_sig);
-                    } else {
-                        return Err(ParseError::UnexpectedToken {
-                            expected: vec![":".to_string(), "=".to_string()],
-                            found: format!("{:?}", self.peek_kind()),
-                            span: name_span,
-                        });
-                    }
+                    return Err(ParseError::UnexpectedToken {
+                        expected: vec![":".to_string(), "=".to_string()],
+                        found: format!("{:?}", self.peek_kind()),
+                        span: name_span,
+                    });
                 }
                 Ok(())
             }
@@ -397,7 +394,7 @@ impl<'a> Parser<'a> {
                 }
                 let tok = self.advance();
                 let op = self.to_binop(&tok.kind);
-                let next_min_prec = if op == BinOp::Cons { prec } else { prec + 1 };
+                let next_min_prec = prec + 1;
                 let right = self.parse_expr_with_precedence(next_min_prec)?;
                 let end_span = self.last_span;
                 left = self.arena.alloc(Expr::Binary {
@@ -424,7 +421,6 @@ impl<'a> Parser<'a> {
             | TokenKind::Le
             | TokenKind::Gt
             | TokenKind::Ge => Some(3),
-            TokenKind::Colon => Some(4),
             TokenKind::Plus | TokenKind::Minus => Some(5),
             TokenKind::Star | TokenKind::Slash | TokenKind::Percent => Some(6),
             _ => None,
@@ -441,7 +437,6 @@ impl<'a> Parser<'a> {
             TokenKind::Le => BinOp::Le,
             TokenKind::Gt => BinOp::Gt,
             TokenKind::Ge => BinOp::Ge,
-            TokenKind::Colon => BinOp::Cons,
             TokenKind::Plus => BinOp::Add,
             TokenKind::Minus => BinOp::Sub,
             TokenKind::Star => BinOp::Mul,
@@ -477,34 +472,12 @@ impl<'a> Parser<'a> {
         })?;
 
         let expr = match &peeked.kind {
-            TokenKind::Let => {
-                let start_tok = self.advance();
-                let (name, _) = self.expect_ident()?;
-                self.expect(TokenKind::Assign)?;
-                let value = self.parse_expr()?;
-                self.expect(TokenKind::In)?;
-                let body = self.parse_expr()?;
-                let end_span = self.last_span;
-                self.arena.alloc(Expr::Let {
-                    name,
-                    value,
-                    body,
-                    span: Span::new(start_tok.span.start, end_span.end),
-                })
-            }
             TokenKind::If => {
                 let start_tok = self.advance();
                 let condition = self.parse_expr()?;
-                if !self.check(&TokenKind::OpenBrace) {
-                    self.expect(TokenKind::Then)?;
-                } else {
-                    self.match_token(&TokenKind::Then); // consume 'then' if it's there
-                }
                 let then_branch = self.parse_expr()?;
-                let mut else_branch = None;
-                if self.match_token(&TokenKind::Else) {
-                    else_branch = Some(self.parse_expr()?);
-                }
+                self.expect(TokenKind::Else)?;
+                let else_branch = self.parse_expr()?;
                 let end_span = self.last_span;
                 self.arena.alloc(Expr::If {
                     condition,
@@ -532,37 +505,6 @@ impl<'a> Parser<'a> {
                 self.arena.alloc(Expr::Match {
                     subject,
                     arms,
-                    span: Span::new(start_tok.span.start, end_tok.span.end),
-                })
-            }
-            TokenKind::Do => {
-                let start_tok = self.advance();
-                self.expect(TokenKind::OpenBrace)?;
-                let mut stmts = BumpVec::new_in(self.arena);
-
-                while !self.check(&TokenKind::CloseBrace) {
-                    if self.match_token(&TokenKind::Let) {
-                        let pattern = self.parse_pattern()?;
-                        self.expect(TokenKind::Assign)?;
-                        let value = self.parse_expr()?;
-                        stmts.push(DoStmt::Let { pattern, value });
-                        self.match_token(&TokenKind::Semicolon);
-                    } else if self.is_bind_statement() {
-                        let pattern = self.parse_pattern()?;
-                        self.expect(TokenKind::Bind)?;
-                        let value = self.parse_expr()?;
-                        stmts.push(DoStmt::Bind { pattern, value });
-                        self.match_token(&TokenKind::Semicolon);
-                    } else {
-                        let expr = self.parse_expr()?;
-                        stmts.push(DoStmt::Expr(expr));
-                        self.match_token(&TokenKind::Semicolon);
-                    }
-                }
-
-                let end_tok = self.expect(TokenKind::CloseBrace)?;
-                self.arena.alloc(Expr::Do {
-                    stmts,
                     span: Span::new(start_tok.span.start, end_tok.span.end),
                 })
             }
@@ -794,91 +736,6 @@ impl<'a> Parser<'a> {
         }
         false
     }
-    fn is_bind_statement(&mut self) -> bool {
-        let mut depth = 0;
-        let mut seen_ident_or_lit = false;
-        let mut seen_closed_group = false;
-        let mut i = 0;
-
-        while let Some(t) = self.peek_n(i) {
-            match &t.kind {
-                TokenKind::OpenBrace | TokenKind::OpenParen | TokenKind::OpenBracket => {
-                    depth += 1;
-                }
-                TokenKind::CloseBrace | TokenKind::CloseParen | TokenKind::CloseBracket => {
-                    if depth == 0 {
-                        break;
-                    }
-                    depth -= 1;
-                    if depth == 0 {
-                        seen_closed_group = true;
-                    }
-                }
-                TokenKind::Bind => {
-                    if depth == 0 {
-                        return true;
-                    }
-                }
-                TokenKind::Semicolon => {
-                    if depth == 0 {
-                        break;
-                    }
-                }
-                TokenKind::Assign
-                | TokenKind::Dot
-                | TokenKind::Arrow
-                | TokenKind::FuncArrow
-                | TokenKind::Type
-                | TokenKind::Let
-                | TokenKind::In
-                | TokenKind::If
-                | TokenKind::Then
-                | TokenKind::Else
-                | TokenKind::Match
-                | TokenKind::With
-                | TokenKind::Do
-                | TokenKind::Effect
-                | TokenKind::Return
-                | TokenKind::Use
-                | TokenKind::Plus
-                | TokenKind::Minus
-                | TokenKind::Star
-                | TokenKind::Slash
-                | TokenKind::Percent
-                | TokenKind::Eq
-                | TokenKind::Ne
-                | TokenKind::Lt
-                | TokenKind::Le
-                | TokenKind::Gt
-                | TokenKind::Ge
-                | TokenKind::And
-                | TokenKind::Or
-                | TokenKind::Not => {
-                    if depth == 0 {
-                        break;
-                    }
-                }
-                TokenKind::Ident(_)
-                | TokenKind::Underscore
-                | TokenKind::Int(_)
-                | TokenKind::Float(_)
-                | TokenKind::Str(_)
-                | TokenKind::True
-                | TokenKind::False => {
-                    if depth == 0 {
-                        if seen_ident_or_lit || seen_closed_group {
-                            break;
-                        }
-                        seen_ident_or_lit = true;
-                    }
-                }
-                _ => {}
-            }
-            i += 1;
-        }
-        false
-    }
-
     fn is_separated_by_newline(&mut self) -> bool {
         let start = self.last_span.end;
         if let Some(peeked) = self.peek() {
@@ -971,22 +828,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_pattern(&mut self) -> Result<&'a Pattern<'a>, ParseError> {
-        self.parse_pattern_cons()
-    }
-
-    fn parse_pattern_cons(&mut self) -> Result<&'a Pattern<'a>, ParseError> {
-        let left = self.parse_pattern_atom()?;
-        if self.match_token(&TokenKind::Colon) {
-            let right = self.parse_pattern_cons()?;
-            let span = Span::new(left.span().start, right.span().end);
-            Ok(self.arena.alloc(Pattern::Cons {
-                head: left,
-                tail: right,
-                span,
-            }))
-        } else {
-            Ok(left)
-        }
+        self.parse_pattern_atom()
     }
 
     fn parse_pattern_atom(&mut self) -> Result<&'a Pattern<'a>, ParseError> {
@@ -1087,21 +929,6 @@ impl<'a> Parser<'a> {
                     Ok(self.arena.alloc(Pattern::Binding(name, tok.span)))
                 }
             }
-            TokenKind::OpenBracket => {
-                let start_tok = self.advance();
-                let mut patterns = BumpVec::new_in(self.arena);
-                while !self.check(&TokenKind::CloseBracket) {
-                    patterns.push(self.parse_pattern()?.clone());
-                    if !self.check(&TokenKind::CloseBracket) {
-                        self.expect(TokenKind::Comma)?;
-                    }
-                }
-                let end_tok = self.expect(TokenKind::CloseBracket)?;
-                Ok(self.arena.alloc(Pattern::Array {
-                    patterns,
-                    span: Span::new(start_tok.span.start, end_tok.span.end),
-                }))
-            }
             TokenKind::OpenBrace => {
                 let start_tok = self.advance();
                 let mut fields = BumpVec::new_in(self.arena);
@@ -1164,13 +991,17 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_import() {
+    fn test_parse_use() {
         let bump = Bump::new();
         let program = parse("use stdlib::io", &bump).unwrap();
         assert_eq!(program.decls.len(), 1);
         match &program.decls[0] {
-            Decl::Import { path, .. } => assert_eq!(*path, "stdlib.io"),
-            _ => panic!("expected Import"),
+            Decl::Use { path, .. } => {
+                assert_eq!(path.len(), 2);
+                assert_eq!(path[0], "stdlib");
+                assert_eq!(path[1], "io");
+            }
+            _ => panic!("expected Use"),
         }
     }
 
@@ -1214,9 +1045,10 @@ mod tests {
         let program = parse("let factorial : (i32) -> i64", &bump).unwrap();
         assert_eq!(program.decls.len(), 1);
         match &program.decls[0] {
-            Decl::TypeSig { name, ty, .. } => {
+            Decl::Bind { name, ty, .. } => {
                 assert_eq!(*name, "factorial");
-                match ty {
+                assert!(ty.is_some());
+                match ty.unwrap() {
                     TypeExpr::Function { from, to, .. } => {
                         match &**from {
                             TypeExpr::Named(f, _) => assert_eq!(*f, "i32"),
@@ -1230,7 +1062,7 @@ mod tests {
                     _ => panic!("expected Function type"),
                 }
             }
-            _ => panic!("expected TypeSig"),
+            _ => panic!("expected Bind with type"),
         }
     }
 
@@ -1325,34 +1157,22 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_cons_operator() {
-        let bump = Bump::new();
-        let expr = parse_expr_helper("a : b : c", &bump);
-        // Cons is right-associative: a : (b : c)
-        match expr {
-            Expr::Binary {
-                op: BinOp::Cons,
-                left,
-                right,
-                ..
-            } => {
-                assert!(matches!(&**left, Expr::Ident("a", _)));
-                match &**right {
-                    Expr::Binary {
-                        op: BinOp::Cons, ..
-                    } => {}
-                    _ => panic!("expected right-associative Cons"),
-                }
-            }
-            _ => panic!("expected Cons binary"),
-        }
-    }
-
-    #[test]
     fn test_parse_if_expr() {
         let bump = Bump::new();
-        let expr = parse_expr_helper("if true then 1 else 2", &bump);
-        assert!(matches!(expr, Expr::If { .. }));
+        let expr = parse_expr_helper("if true { 1 } else { 2 }", &bump);
+        match expr {
+            Expr::If {
+                condition,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                assert!(matches!(&**condition, Expr::Bool(true, _)));
+                assert!(matches!(&**then_branch, Expr::Block { .. }));
+                assert!(matches!(&**else_branch, Expr::Block { .. }));
+            }
+            _ => panic!("expected If"),
+        }
     }
 
     #[test]
@@ -1409,21 +1229,6 @@ mod tests {
                 assert!(matches!(&**index, Expr::Ident("c", _)));
             }
             _ => panic!("expected nested Index"),
-        }
-    }
-
-    #[test]
-    fn test_parse_do_block() {
-        let bump = Bump::new();
-        let expr = parse_expr_helper("do { x <- m; let y = 2; println(x) }", &bump);
-        match expr {
-            Expr::Do { stmts, .. } => {
-                assert_eq!(stmts.len(), 3);
-                assert!(matches!(&stmts[0], DoStmt::Bind { .. }));
-                assert!(matches!(&stmts[1], DoStmt::Let { .. }));
-                assert!(matches!(&stmts[2], DoStmt::Expr(_)));
-            }
-            _ => panic!("expected Do block"),
         }
     }
 
@@ -1516,6 +1321,9 @@ mod tests {
         let bump = Bump::new();
         // Mismatched brace
         let result = parse("let x = { name: 1", &bump);
+        assert!(result.is_err());
+        // Missing else in if
+        let result = parse("if true { 1 }", &bump);
         assert!(result.is_err());
     }
 }

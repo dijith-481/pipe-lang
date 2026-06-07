@@ -16,8 +16,6 @@
 //! 4. **First-class closures.** `MakeClosure` + `CallIndirect` is the
 //!    only function-call shape; named builtins are reached through
 //!    `CallNamed`.
-//! 5. **Effects as data.** A `do` block is a single `EffectBind` chain.
-//!    The runtime executes it left-to-right.
 //!
 //! The IR is **not** validated here; validation is the lowerer's job.
 
@@ -84,11 +82,6 @@ pub enum IrType {
     Func(FuncType),
     Closure(Box<FuncType>),
     Tag(TagType),
-    /// An effectful computation producing a value of the inner type.
-    /// At runtime this is a fat pointer; the codegen does not see the
-    /// `Effect` distinction (it is erased by the lowerer when sequencing
-    /// `do` blocks).
-    Effect(Box<IrType>),
 }
 
 /// The type of a record: a name (for diagnostics) and an ordered
@@ -192,7 +185,6 @@ impl fmt::Display for IrType {
             IrType::Tag(t) => {
                 write!(f, "{}", t.name)
             }
-            IrType::Effect(inner) => write!(f, "Effect<{inner}>"),
         }
     }
 }
@@ -358,26 +350,6 @@ pub enum Instruction {
     /// `IrFunction` in the same module.
     CallNamed(Box<CallNamedData>),
 
-    // -- Effects --
-    /// Sequentially bind an effect to a name, then run `next` with
-    /// the bound value. Lowered from `do { x <- m; rest }`.
-    /// At runtime this is just a tail call to `m`, then a tail call
-    /// to a closure that runs `rest` with the captured result.
-    EffectBind {
-        effect: ValueId,
-        continuation: ValueId,
-    },
-    /// Construct an effect value (a `builtin + args` pair) without
-    /// running it yet. The codegen wraps this in a Cranelift
-    /// function pointer.
-    EffectValue {
-        builtin: SmolStr,
-        args: Vec<ValueId>,
-    },
-    /// Pure: do nothing, return Unit. Used at the end of an
-    /// expression-only `do` block.
-    EffectReturn(ValueId),
-
     // -- Strings --
     /// Concatenate a sequence of string fragments (from a template
     /// literal). Each fragment is either a `ConstStr` value or any
@@ -386,8 +358,8 @@ pub enum Instruction {
     StrConcat {
         parts: Vec<ValueId>,
     },
-    /// A `println(arg)` call. Sugar for
-    /// `Effect::bind(EffectValue("IO.println", [arg]), Effect::pure_unit)`.
+    /// A `println(arg)` call. Lowers to a call to the runtime's
+    /// IO println builtin.
     Println(ValueId),
 
     // -- Panic (for bounds checks, non-exhaustive match, etc.) --
@@ -501,21 +473,6 @@ impl fmt::Display for Instruction {
                 }
                 write!(f, ")")
             }
-            Instruction::EffectBind {
-                effect,
-                continuation,
-            } => write!(f, "effect_bind {effect} -> {continuation}"),
-            Instruction::EffectValue { builtin, args } => {
-                write!(f, "effect_value {builtin}(")?;
-                for (i, v) in args.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{v}")?;
-                }
-                write!(f, ")")
-            }
-            Instruction::EffectReturn(v) => write!(f, "effect_return {v}"),
             Instruction::StrConcat { parts } => {
                 write!(f, "str_concat(")?;
                 for (i, v) in parts.iter().enumerate() {

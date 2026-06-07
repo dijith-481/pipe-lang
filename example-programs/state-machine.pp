@@ -30,7 +30,7 @@ let stateToString = (state) => match state {
     Failed(msg)   => `Failed: ${msg}`
 }
 
-let main : () -> Effect<()> = do {
+let main = () => {
     // Simulate a series of events
     let events = [StartLoad, DataReceived(`user data`), Reset, StartLoad, ErrorOccured(`timeout`), Reset]
 

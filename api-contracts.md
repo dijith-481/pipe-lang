@@ -78,14 +78,22 @@ The AST is heavily lifetime-bound to an Arena (`bumpalo::Bump`) to ensure zero-c
 ### Lexer API
 ```rust
 // crates/lexer/src/lib.rs
-pub fn tokenize<'a>(source: &'a str) -> Result<Vec<Token<'a>>, Vec<CompilerError>>;
+pub struct Lexer<'a> { /* ... */ }
+
+impl<'a> Lexer<'a> {
+    pub fn new(source: &'a str) -> Self;
+}
+
+impl<'a> Iterator for Lexer<'a> {
+    type Item = Result<Token<'a>, LexError>;
+}
 
 pub struct Token<'a> {
     pub kind: TokenKind<'a>,
     pub span: Span,
 }
 
-// Minimalist TokenKind. Note: NO `do`, `yield`, `return`, `with`.
+// Minimalist TokenKind. Only 8 keywords: let, type, match, if, else, true, false, use.
 pub enum TokenKind<'a> {
     Let, Type, Match, If, Else, True, False, Use,
     Ident(&'a str),
@@ -120,30 +128,28 @@ pub enum Expr<'a> {
     Str(&'a str, Span),
     Bool(bool, Span),
     Ident(&'a str, Span),
-    
+
+    Application { func: &'a Expr<'a>, args: bumpalo::collections::Vec<'a, &'a Expr<'a>>, span: Span },
+    Lambda { params: bumpalo::collections::Vec<'a, Param<'a>>, return_type: Option<&'a TypeExpr<'a>>, body: &'a Expr<'a>, span: Span },
+    Binary { op: BinOp, left: &'a Expr<'a>, right: &'a Expr<'a>, span: Span },
+    Unary { op: UnaryOp, operand: &'a Expr<'a>, span: Span },
+
+    Match { subject: &'a Expr<'a>, arms: bumpalo::collections::Vec<'a, MatchArm<'a>>, span: Span },
+    Block { stmts: bumpalo::collections::Vec<'a, Stmt<'a>>, result: &'a Expr<'a>, span: Span },
+    If { condition: &'a Expr<'a>, then_branch: &'a Expr<'a>, else_branch: &'a Expr<'a>, span: Span },
+
+    Record { fields: bumpalo::collections::Vec<'a, RecordField<'a>>, span: Span },
+    FieldAccess { object: &'a Expr<'a>, field: &'a str, span: Span },
+    Tuple { elems: bumpalo::collections::Vec<'a, &'a Expr<'a>>, span: Span },
+    Array { elems: bumpalo::collections::Vec<'a, &'a Expr<'a>>, span: Span },
+    Index { array: &'a Expr<'a>, index: &'a Expr<'a>, span: Span },
+
     // String interpolation: `Hello ${name}`
     Template { parts: bumpalo::collections::Vec<'a, TemplatePart<'a>>, span: Span },
-    
-    // (a) => a + 1
-    Lambda { params: bumpalo::collections::Vec<'a, Param<'a>>, body: &'a Expr<'a>, span: Span },
-    
-    // f(x) or a.f()
-    App { func: &'a Expr<'a>, args: bumpalo::collections::Vec<'a, &'a Expr<'a>>, span: Span },
-    
-    // { stmt; stmt; expr }
-    Block { stmts: bumpalo::collections::Vec<'a, Stmt<'a>>, result: &'a Expr<'a>, span: Span },
-    
-    If { cond: &'a Expr<'a>, then_branch: &'a Expr<'a>, else_branch: &'a Expr<'a>, span: Span },
-    Match { subject: &'a Expr<'a>, arms: bumpalo::collections::Vec<'a, MatchArm<'a>>, span: Span },
-    
-    Record { fields: bumpalo::collections::Vec<'a, (&'a str, &'a Expr<'a>)>, span: Span },
-    FieldAccess { obj: &'a Expr<'a>, field: &'a str, span: Span },
-    
-    Binary { op: BinOp, left: &'a Expr<'a>, right: &'a Expr<'a>, span: Span },
 }
 
 pub enum Stmt<'a> {
-    Let { pattern: &'a Pattern<'a>, value: &'a Expr<'a>, span: Span },
+    Let { pattern: &'a Pattern<'a>, value: &'a Expr<'a> },
     Expr(&'a Expr<'a>),
 }
 ```
@@ -151,7 +157,7 @@ pub enum Stmt<'a> {
 ### Parser API
 ```rust
 // crates/parser/src/lib.rs
-pub fn parse<'a>(bump: &'a Bump, tokens: &[Token<'a>]) -> Result<&'a Program<'a>, Vec<CompilerError>>;
+pub fn parse<'a>(source: &'a str, arena: &'a Bump) -> Result<Program<'a>, ParseError>;
 ```
 
 ---

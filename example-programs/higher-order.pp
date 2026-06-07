@@ -15,7 +15,7 @@ let product = (xs) => xs.fold(1i64, (acc, x) => acc * x)
 // Find maximum
 let max = (xs) => xs.fold(None, (acc, x) => match acc {
     None    => Some(x)
-    Some(m) => if x > m then Some(x) else Some(m)
+    Some(m) => if x > m { Some(x) } else { Some(m) }
 })
 
 // Chain operations: sum of squares of even numbers
@@ -25,7 +25,7 @@ let sumOfSquaresOfEvens = (xs) =>
         .map((x) => x * x)
         .fold(0, (acc, x) => acc + x)
 
-let main : () -> Effect<()> = do {
+let main = () => {
     let data = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     println(`Original: ${data}`)
     println(`Doubled:  ${doubleAll(data)}`)

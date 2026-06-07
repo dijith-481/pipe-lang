@@ -12,16 +12,11 @@ pub struct Program<'a> {
 /// Top-level declarations.
 #[derive(Debug, Clone)]
 pub enum Decl<'a> {
-    /// A value binding: `let name = expr`
+    /// A value binding: `let name [: Type] = expr`
     Bind {
         name: &'a str,
+        ty: Option<&'a TypeExpr<'a>>,
         value: &'a Expr<'a>,
-        span: Span,
-    },
-    /// A type signature: `let name : Type`
-    TypeSig {
-        name: &'a str,
-        ty: &'a TypeExpr<'a>,
         span: Span,
     },
     /// A type alias: `type Name = TypeExpr`
@@ -31,8 +26,8 @@ pub enum Decl<'a> {
         rhs: &'a TypeExpr<'a>,
         span: Span,
     },
-    /// An import declaration: `use stdlib.io`
-    Import { path: &'a str, span: Span },
+    /// A use declaration: `use stdlib::io`
+    Use { path: Vec<'a, &'a str>, span: Span },
 }
 
 /// Expressions in the language.
@@ -83,14 +78,6 @@ pub enum Expr<'a> {
         span: Span,
     },
 
-    /// Let expression: `let x = e1 in e2`
-    Let {
-        name: &'a str,
-        value: &'a Expr<'a>,
-        body: &'a Expr<'a>,
-        span: Span,
-    },
-
     /// Match expression: `match subject { pattern => arm, ... }`
     Match {
         subject: &'a Expr<'a>,
@@ -124,17 +111,11 @@ pub enum Expr<'a> {
         span: Span,
     },
 
-    /// If expression: `if cond then a else b`
+    /// If expression: `if cond { then } else { else }`
     If {
         condition: &'a Expr<'a>,
         then_branch: &'a Expr<'a>,
-        else_branch: Option<&'a Expr<'a>>,
-        span: Span,
-    },
-
-    /// Do block for effectful computation: `do { x <- effect; ... }`
-    Do {
-        stmts: Vec<'a, DoStmt<'a>>,
+        else_branch: &'a Expr<'a>,
         span: Span,
     },
 
@@ -186,23 +167,6 @@ pub enum Stmt<'a> {
     Expr(&'a Expr<'a>),
 }
 
-/// A statement inside a do block.
-#[derive(Debug, Clone)]
-pub enum DoStmt<'a> {
-    /// A flag or bind: `pattern <- effect_expr`
-    Bind {
-        pattern: &'a Pattern<'a>,
-        value: &'a Expr<'a>,
-    },
-    /// A let binding: `let pattern = expr`
-    Let {
-        pattern: &'a Pattern<'a>,
-        value: &'a Expr<'a>,
-    },
-    /// An expression (side-effectful)
-    Expr(&'a Expr<'a>),
-}
-
 /// A match arm: `pattern => expression`
 #[derive(Debug, Clone)]
 pub struct MatchArm<'a> {
@@ -245,19 +209,6 @@ pub enum Pattern<'a> {
     /// Record pattern: `{ name, age }`
     Record {
         fields: Vec<'a, RecordPatternField<'a>>,
-        span: Span,
-    },
-
-    /// Array pattern: `[a, b, c]` or `[]`
-    Array {
-        patterns: Vec<'a, Pattern<'a>>,
-        span: Span,
-    },
-
-    /// Cons pattern: `head : tail`
-    Cons {
-        head: &'a Pattern<'a>,
-        tail: &'a Pattern<'a>,
         span: Span,
     },
 }
@@ -348,7 +299,6 @@ pub enum BinOp {
     Ge,
     And,
     Or,
-    Cons, // :
 }
 
 /// Unary operators.
@@ -439,14 +389,12 @@ impl<'a> Expr<'a> {
             | Expr::Lambda { span, .. }
             | Expr::Binary { span, .. }
             | Expr::Unary { span, .. }
-            | Expr::Let { span, .. }
             | Expr::Match { span, .. }
             | Expr::Block { span, .. }
             | Expr::Record { span, .. }
             | Expr::FieldAccess { span, .. }
             | Expr::Tuple { span, .. }
             | Expr::If { span, .. }
-            | Expr::Do { span, .. }
             | Expr::Array { span, .. }
             | Expr::Template { span, .. }
             | Expr::Index { span, .. } => *span,
@@ -479,9 +427,7 @@ impl<'a> Pattern<'a> {
             | Pattern::Constructor { span, .. }
             | Pattern::Binding(_, span)
             | Pattern::Tuple { span, .. }
-            | Pattern::Record { span, .. }
-            | Pattern::Array { span, .. }
-            | Pattern::Cons { span, .. } => *span,
+            | Pattern::Record { span, .. } => *span,
         }
     }
 }
@@ -533,12 +479,15 @@ mod tests {
 
         let decl = Decl::Bind {
             name: "add",
+            ty: None,
             value: &lambda,
             span: sp(0, 33),
         };
 
         match decl {
-            Decl::Bind { name, value, span } => {
+            Decl::Bind {
+                name, value, span, ..
+            } => {
                 assert_eq!(name, "add");
                 assert_eq!(span, sp(0, 33));
                 match value {
@@ -568,6 +517,7 @@ mod tests {
         let val = Expr::int("42", sp(13, 15), &bump);
         let decl = Decl::Bind {
             name: "x",
+            ty: None,
             value: val,
             span: sp(0, 15),
         };
@@ -587,6 +537,7 @@ mod tests {
         let val = Expr::float("3.14", sp(13, 17), &bump);
         let decl = Decl::Bind {
             name: "pi",
+            ty: None,
             value: val,
             span: sp(0, 17),
         };

@@ -17,10 +17,9 @@ let factorialAcc : (i32, i64) -> i64 = (n, acc) => match n {
 let factorialTail : (i32) -> i64 = (n) => factorialAcc(n, 1i64)
 
 // Compute factorials of 0 through 10
-let main : () -> Effect<()> = do {
-    let nums = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
-    nums.map((n) => {
-        let result = factorialTail(n)
-        println(`${n}! = ${result}`)
-    })
-}
+let main = () =>
+    [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        .map((n) => {
+            let result = factorialTail(n)
+            println(`${n}! = ${result}`)
+        })
