@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 
 use cli::session;
-use session::{CompilerSession, SessionConfig};
+use session::{CompileMode, CompilerSession, SessionConfig};
 
 /// The pipe-lang compiler and runtime.
 #[derive(Parser)]
@@ -48,17 +48,24 @@ fn main() {
             emit_ir,
             opt_level,
         } => {
+            let mode = if emit_ir {
+                CompileMode::EmitIr
+            } else {
+                CompileMode::Run
+            };
             let config = SessionConfig::new(std::path::PathBuf::from(&file))
-                .with_emit_ir(emit_ir)
+                .with_mode(mode)
                 .with_opt_level(opt_level);
             run_session(config)
         }
         Commands::Run { file } => {
-            let config = SessionConfig::new(std::path::PathBuf::from(&file));
+            let config =
+                SessionConfig::new(std::path::PathBuf::from(&file)).with_mode(CompileMode::Run);
             run_session(config)
         }
         Commands::Check { file } => {
-            let config = SessionConfig::new(std::path::PathBuf::from(&file));
+            let config =
+                SessionConfig::new(std::path::PathBuf::from(&file)).with_mode(CompileMode::Check);
             run_session(config)
         }
     };

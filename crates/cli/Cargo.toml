@@ -14,8 +14,11 @@ phase-c = []
 
 [dependencies]
 ast = { version = "0.1.0", path = "../ast" }
+bumpalo = "3"
 clap = { version = "4.6.1", features = ["derive"] }
 diagnostics = { version = "0.1.0", path = "../diagnostics" }
+ir = { version = "0.1.0", path = "../ir" }
 lexer = { version = "0.1.0", path = "../lexer" }
+parser = { version = "0.1.0", path = "../parser" }
 runtime = { version = "0.1.0", path = "../runtime" }
 typechecker = { version = "0.1.0", path = "../typechecker" }

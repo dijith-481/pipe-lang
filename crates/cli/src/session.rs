@@ -1,16 +1,28 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use bumpalo::Bump;
 use diagnostics::errors::{CompilerError, SourceDiagnostic};
-use lexer::{Lexer, TokenKind};
+use ir::lower;
+
+/// What the pipeline should do after typechecking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompileMode {
+    /// Typecheck only — no IR lowering or JIT.
+    Check,
+    /// Typecheck, lower to IR, emit IR to stdout.
+    EmitIr,
+    /// Full pipeline: typecheck, lower, JIT compile and run.
+    Run,
+}
 
 /// Configuration for a compilation session.
 #[derive(Debug, Clone)]
 pub struct SessionConfig {
     /// Path to the source file being compiled.
     pub file_path: PathBuf,
-    /// Whether to emit IR to stdout.
-    pub emit_ir: bool,
+    /// What to do after typechecking.
+    pub mode: CompileMode,
     /// Optimization level (0-3).
     pub opt_level: u8,
 }
@@ -21,15 +33,15 @@ impl SessionConfig {
     pub fn new(file_path: PathBuf) -> Self {
         Self {
             file_path,
-            emit_ir: false,
+            mode: CompileMode::Run,
             opt_level: 0,
         }
     }
 
-    /// Sets whether to emit IR.
+    /// Sets the compile mode.
     #[must_use]
-    pub fn with_emit_ir(mut self, emit_ir: bool) -> Self {
-        self.emit_ir = emit_ir;
+    pub fn with_mode(mut self, mode: CompileMode) -> Self {
+        self.mode = mode;
         self
     }
 
@@ -59,7 +71,7 @@ impl CompileResult {
     }
 }
 
-/// Orchestrates the compilation pipeline: lex → parse → typecheck.
+/// Orchestrates the compilation pipeline: lex → parse → typecheck → lower → JIT.
 ///
 /// The `CompilerSession` is the central entry point for driving compilation.
 /// It reads the source file, runs each pipeline stage, and collects diagnostics.
@@ -126,19 +138,19 @@ impl CompilerSession {
     ///
     /// # Errors
     ///
-    /// Returns errors from any pipeline stage (lex, parse, typecheck) wrapped in [`SourceDiagnostic`].
+    /// Returns errors from any pipeline stage (lex, parse, typecheck, lower)
+    /// wrapped in [`SourceDiagnostic`].
     pub fn run_pipeline(&mut self) -> Result<CompileResult, Box<SourceDiagnostic>> {
         let source_arc = self
             .source
             .clone()
             .expect("source must be loaded before running pipeline");
         let filename = self.config.file_path.to_string_lossy().to_string();
+        let source_ref: &str = &source_arc;
 
-        let diagnostics: Vec<SourceDiagnostic> = Vec::new();
-
-        // Stage 1: Lex
-        let lexer = Lexer::new(&source_arc);
-        let tokens: Vec<_> = lexer.collect::<Result<Vec<_>, _>>().map_err(|e| {
+        // Stage 1: Parse (parser handles lexing internally)
+        let arena = Bump::new();
+        let program = parser::parse(source_ref, &arena).map_err(|e| {
             Box::new(SourceDiagnostic::new(
                 filename.clone(),
                 source_arc.clone(),
@@ -146,31 +158,75 @@ impl CompilerSession {
             ))
         })?;
 
-        // Filter out whitespace/comment/newline for downstream stages.
-        let _significant_tokens: Vec<_> = tokens
-            .iter()
-            .filter(|t| {
-                !matches!(
-                    t.kind,
-                    TokenKind::Whitespace(_)
-                        | TokenKind::Comment(_)
-                        | TokenKind::Newline
-                        | TokenKind::Eof
-                )
-            })
-            .collect();
+        // Stage 2: Typecheck
+        let typed = typechecker::typecheck(&program).map_err(|errors| {
+            let first = errors.into_iter().next().expect("at least one type error");
+            let err = CompilerError::TypeError {
+                span: first.span(),
+                msg: first.to_string(),
+            };
+            Box::new(SourceDiagnostic::new(
+                filename.clone(),
+                source_arc.clone(),
+                err,
+            ))
+        })?;
 
-        // Stage 2: Parse (stub — not implemented yet)
-        // TODO: integrate parser when it exists
-        // let program = parser::parse(&tokens).map_err(|e| SourceDiagnostic::new(filename.clone(), source_arc.clone(), e))?;
+        // For `check` mode, stop here.
+        if self.config.mode == CompileMode::Check {
+            return Ok(CompileResult {
+                diagnostics: Vec::new(),
+                success: true,
+            });
+        }
 
-        // Stage 3: Typecheck (stub — not implemented yet)
-        // TODO: integrate typechecker when parser is ready
+        // Stage 3: Lower to IR
+        let ir_module = lower(&typed).map_err(|e| {
+            Box::new(SourceDiagnostic::new(
+                filename.clone(),
+                source_arc.clone(),
+                CompilerError::IrError {
+                    span: ast::span::Span::empty(0),
+                    msg: e.to_string(),
+                },
+            ))
+        })?;
 
-        Ok(CompileResult {
-            diagnostics,
-            success: true,
-        })
+        // For `emit_ir` mode, print IR and stop.
+        if self.config.mode == CompileMode::EmitIr {
+            println!("{ir_module}");
+            return Ok(CompileResult {
+                diagnostics: Vec::new(),
+                success: true,
+            });
+        }
+
+        // Stage 4: JIT compile and run
+        let compiled = runtime::compile_ir(&ir_module).map_err(|e| {
+            Box::new(SourceDiagnostic::new(
+                filename.clone(),
+                source_arc.clone(),
+                CompilerError::RuntimeError {
+                    span: None,
+                    msg: e.to_string(),
+                },
+            ))
+        })?;
+
+        match compiled.call_main() {
+            Ok(_exit_code) => Ok(CompileResult {
+                diagnostics: Vec::new(),
+                success: true,
+            }),
+            Err(e) => Err(Box::new(SourceDiagnostic::new(
+                filename.clone(),
+                source_arc.clone(),
+                CompilerError::RuntimeError {
+                    span: None,
+                    msg: e.to_string(),
+                },
+            ))),
+        }
     }
 }
 
@@ -186,16 +242,16 @@ mod tests {
     fn session_config_defaults() {
         let config = SessionConfig::new(PathBuf::from("test.pl"));
         assert_eq!(config.file_path, PathBuf::from("test.pl"));
-        assert!(!config.emit_ir);
+        assert_eq!(config.mode, CompileMode::Run);
         assert_eq!(config.opt_level, 0);
     }
 
     #[test]
     fn session_config_builder() {
         let config = SessionConfig::new(PathBuf::from("test.pl"))
-            .with_emit_ir(true)
+            .with_mode(CompileMode::Check)
             .with_opt_level(2);
-        assert!(config.emit_ir);
+        assert_eq!(config.mode, CompileMode::Check);
         assert_eq!(config.opt_level, 2);
     }
 
@@ -208,8 +264,16 @@ mod tests {
     }
 
     #[test]
-    fn run_pipeline_valid_lex() {
+    fn set_source_directly() {
         let config = SessionConfig::new(PathBuf::from("test.pl"));
+        let mut session = CompilerSession::new(config);
+        session.set_source("hello world");
+        assert_eq!(session.source(), Some("hello world"));
+    }
+
+    #[test]
+    fn pipeline_check_mode() {
+        let config = SessionConfig::new(PathBuf::from("test.pl")).with_mode(CompileMode::Check);
         let mut session = CompilerSession::new(config);
         session.set_source("let x = 42");
         let result = session.run_pipeline().unwrap();
@@ -218,10 +282,38 @@ mod tests {
     }
 
     #[test]
-    fn set_source_directly() {
-        let config = SessionConfig::new(PathBuf::from("test.pl"));
+    fn pipeline_emit_ir_mode() {
+        let config = SessionConfig::new(PathBuf::from("test.pl")).with_mode(CompileMode::EmitIr);
         let mut session = CompilerSession::new(config);
-        session.set_source("hello world");
-        assert_eq!(session.source(), Some("hello world"));
+        session.set_source("let x = 42");
+        let result = session.run_pipeline().unwrap();
+        assert!(result.success);
+    }
+
+    #[test]
+    fn pipeline_parse_error() {
+        let config = SessionConfig::new(PathBuf::from("test.pl")).with_mode(CompileMode::Check);
+        let mut session = CompilerSession::new(config);
+        session.set_source("let = ");
+        let result = session.run_pipeline();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn pipeline_type_error() {
+        let config = SessionConfig::new(PathBuf::from("test.pl")).with_mode(CompileMode::Check);
+        let mut session = CompilerSession::new(config);
+        session.set_source("let x = \"hello\" + 42");
+        let result = session.run_pipeline();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn pipeline_valid_program() {
+        let config = SessionConfig::new(PathBuf::from("test.pl")).with_mode(CompileMode::Check);
+        let mut session = CompilerSession::new(config);
+        session.set_source("let add = (a: i32, b: i32) => a + b");
+        let result = session.run_pipeline().unwrap();
+        assert!(result.success);
     }
 }
