@@ -1,6 +1,4 @@
-//! Intermediate representation for the pipe-lang compiler.
-//!
-//! IR is a flat, SSA-like representation. The plan is for the AST-to-IR
+//! Intermediate representation for the pipe-lang compiler. The plan is for the AST-to-IR
 //! lowering pass (Track A) to produce `IrModule`s, and the Cranelift
 //! backend (Track B) to consume them and emit native code.
 //!
@@ -22,6 +20,9 @@
 use std::fmt;
 
 use ast::SmolStr;
+
+pub mod lower;
+pub use crate::lower::{LowerError, lower};
 
 // ---------------------------------------------------------------------------
 // Identifiers

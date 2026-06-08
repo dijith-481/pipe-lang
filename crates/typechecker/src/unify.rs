@@ -95,16 +95,24 @@ impl Substitution {
             MonoType::Func { params, ret } => {
                 let params: Vec<_> = params.iter().map(|p| self.apply(p)).collect();
                 let ret = self.apply(ret);
-                MonoType::Func { params: Rc::from(params.as_slice()), ret: Rc::new(ret) }
+                MonoType::Func {
+                    params: Rc::from(params.as_slice()),
+                    ret: Rc::new(ret),
+                }
             }
             MonoType::Record(fields) => {
-                let fields: BTreeMap<_, _> =
-                    fields.iter().map(|(n, t)| (n.clone(), self.apply(t))).collect();
+                let fields: BTreeMap<_, _> = fields
+                    .iter()
+                    .map(|(n, t)| (n.clone(), self.apply(t)))
+                    .collect();
                 MonoType::Record(Rc::new(fields))
             }
             MonoType::Tag { name, payload } => {
                 let payload: Vec<_> = payload.iter().map(|t| self.apply(t)).collect();
-                MonoType::Tag { name: name.clone(), payload: Rc::from(payload.as_slice()) }
+                MonoType::Tag {
+                    name: name.clone(),
+                    payload: Rc::from(payload.as_slice()),
+                }
             }
             _ => ty.clone(),
         }
@@ -169,8 +177,14 @@ pub fn unify(sub: &mut Substitution, a: &MonoType, b: &MonoType) -> Result<(), T
         }
 
         (
-            MonoType::Func { params: ap, ret: ar },
-            MonoType::Func { params: bp, ret: br },
+            MonoType::Func {
+                params: ap,
+                ret: ar,
+            },
+            MonoType::Func {
+                params: bp,
+                ret: br,
+            },
         ) => {
             if ap.len() != bp.len() {
                 return Err(TypeError::ArityMismatch {
@@ -206,7 +220,16 @@ pub fn unify(sub: &mut Substitution, a: &MonoType, b: &MonoType) -> Result<(), T
             Ok(())
         }
 
-        (MonoType::Tag { name: an, payload: ap }, MonoType::Tag { name: bn, payload: bp }) => {
+        (
+            MonoType::Tag {
+                name: an,
+                payload: ap,
+            },
+            MonoType::Tag {
+                name: bn,
+                payload: bp,
+            },
+        ) => {
             if an != bn || ap.len() != bp.len() {
                 return Err(mismatch(&a, &b));
             }
@@ -338,7 +361,10 @@ mod tests {
             params: Rc::from([MonoType::I32, MonoType::Str]),
             ret: Rc::new(MonoType::Bool),
         };
-        assert!(matches!(unify(&mut sub, &a, &b), Err(TypeError::ArityMismatch { .. })));
+        assert!(matches!(
+            unify(&mut sub, &a, &b),
+            Err(TypeError::ArityMismatch { .. })
+        ));
     }
 
     #[test]
@@ -357,7 +383,10 @@ mod tests {
         let mut sub = Substitution::new();
         let v = fresh(&mut sub, 0);
         let arr = MonoType::Array(Rc::new(v.clone()));
-        assert!(matches!(unify(&mut sub, &v, &arr), Err(TypeError::InfiniteType { .. })));
+        assert!(matches!(
+            unify(&mut sub, &v, &arr),
+            Err(TypeError::InfiniteType { .. })
+        ));
     }
 
     #[test]
@@ -368,7 +397,12 @@ mod tests {
         fa.insert("x".into(), MonoType::I32);
         let mut fb = BTreeMap::new();
         fb.insert("x".into(), v.clone());
-        unify(&mut sub, &MonoType::Record(Rc::new(fa)), &MonoType::Record(Rc::new(fb))).unwrap();
+        unify(
+            &mut sub,
+            &MonoType::Record(Rc::new(fa)),
+            &MonoType::Record(Rc::new(fb)),
+        )
+        .unwrap();
         assert_eq!(sub.apply(&v), MonoType::I32);
     }
 
@@ -376,8 +410,14 @@ mod tests {
     fn unify_tags_same() {
         let mut sub = Substitution::new();
         let v = fresh(&mut sub, 0);
-        let a = MonoType::Tag { name: "Some".into(), payload: Rc::from([MonoType::I32]) };
-        let b = MonoType::Tag { name: "Some".into(), payload: Rc::from([v.clone()]) };
+        let a = MonoType::Tag {
+            name: "Some".into(),
+            payload: Rc::from([MonoType::I32]),
+        };
+        let b = MonoType::Tag {
+            name: "Some".into(),
+            payload: Rc::from([v.clone()]),
+        };
         unify(&mut sub, &a, &b).unwrap();
         assert_eq!(sub.apply(&v), MonoType::I32);
     }
@@ -385,8 +425,17 @@ mod tests {
     #[test]
     fn unify_tags_different_names_fails() {
         let mut sub = Substitution::new();
-        let a = MonoType::Tag { name: "Some".into(), payload: Rc::from([MonoType::I32]) };
-        let b = MonoType::Tag { name: "None".into(), payload: Rc::from([MonoType::I32]) };
-        assert!(matches!(unify(&mut sub, &a, &b), Err(TypeError::UnificationFailed { .. })));
+        let a = MonoType::Tag {
+            name: "Some".into(),
+            payload: Rc::from([MonoType::I32]),
+        };
+        let b = MonoType::Tag {
+            name: "None".into(),
+            payload: Rc::from([MonoType::I32]),
+        };
+        assert!(matches!(
+            unify(&mut sub, &a, &b),
+            Err(TypeError::UnificationFailed { .. })
+        ));
     }
 }

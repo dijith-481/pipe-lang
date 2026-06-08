@@ -74,6 +74,7 @@ impl<'a> Parser<'a> {
         self.peek().map(|t| t.kind)
     }
 
+    // TODO: remove expect
     fn advance(&mut self) -> Token<'a> {
         self.fill_lookahead(0);
         let tok = self
