@@ -1,0 +1,6 @@
+# This file defines who owns specific files and directories in the repository.
+# For more info: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# All files are owned by @dijith-481. 
+# Any pull request changing any file will require approval from @dijith-481.
+* @dijith-481
