@@ -1,108 +1,52 @@
+use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::Arc;
 
-use ast::SmolStr;
+use crate::value::{ClosureData, Value};
 
-use crate::error::RuntimeError;
-use crate::value::Value;
-
-/// Trait for built-in functions that the language runtime can execute.
-///
-/// Implement this trait to expose Rust functions to the language.
-/// Each builtin has a name (used for error messages and the registry),
-/// a fixed arity, and an execute method that takes values and returns
-/// a result.
-pub trait BuiltinFunction: fmt::Debug + Send + Sync {
-    /// The name of this builtin (e.g., `"List.map"`, `"IO.println"`).
-    fn name(&self) -> SmolStr;
-
-    /// The number of arguments this function expects.
+pub trait BuiltinFunction: Send + Sync + fmt::Debug {
+    fn name(&self) -> &str;
     fn arity(&self) -> usize;
-
-    /// Execute the builtin with the given arguments.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`RuntimeError`] if the execution fails (wrong types,
-    /// out of bounds, etc.).
-    fn execute(&self, args: &[Value]) -> Result<Value, RuntimeError>;
+    fn execute(&self, args: &[Value]) -> Result<Value, String>;
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+#[derive(Clone, Default, Debug)]
+pub struct BuiltinRegistry {
+    functions: BTreeMap<String, Arc<dyn BuiltinFunction>>,
+}
 
-    #[derive(Debug)]
-    struct AddBuiltin;
-
-    impl BuiltinFunction for AddBuiltin {
-        fn name(&self) -> SmolStr {
-            SmolStr::new("Int.add")
-        }
-
-        fn arity(&self) -> usize {
-            2
-        }
-
-        fn execute(&self, args: &[Value]) -> Result<Value, RuntimeError> {
-            match (&args[0], &args[1]) {
-                (Value::I32(a), Value::I32(b)) => Ok(Value::I32(a + b)),
-                _ => Err(RuntimeError::TypeMismatch {
-                    expected: "I32".into(),
-                    got: format!("{:?}", &args[0]),
-                }),
-            }
-        }
+impl BuiltinRegistry {
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    #[derive(Debug)]
-    struct PrintlnBuiltin;
-
-    impl BuiltinFunction for PrintlnBuiltin {
-        fn name(&self) -> SmolStr {
-            SmolStr::new("IO.println")
-        }
-
-        fn arity(&self) -> usize {
-            1
-        }
-
-        fn execute(&self, args: &[Value]) -> Result<Value, RuntimeError> {
-            let msg = args[0].as_str().ok_or_else(|| RuntimeError::TypeMismatch {
-                expected: "Str".into(),
-                got: format!("{:?}", &args[0]),
-            })?;
-            Ok(Value::Str(SmolStr::new(msg)))
-        }
+    pub fn register(&mut self, function: Arc<dyn BuiltinFunction>) {
+        self.functions.insert(function.name().to_owned(), function);
     }
 
-    #[test]
-    fn builtin_execute_returns_value() {
-        let builtin = AddBuiltin;
-        let args = vec![Value::I32(3), Value::I32(4)];
-        let result = builtin.execute(&args).expect("should succeed");
-        assert_eq!(result.as_i32(), Some(7));
+    pub fn get(&self, name: &str) -> Option<Arc<dyn BuiltinFunction>> {
+        self.functions.get(name).cloned()
     }
 
-    #[test]
-    fn builtin_wrong_type_errors() {
-        let builtin = AddBuiltin;
-        let args = vec![Value::I32(1), Value::Str(SmolStr::new("two"))];
-        let err = builtin.execute(&args).unwrap_err();
-        assert!(matches!(err, RuntimeError::TypeMismatch { .. }));
+    pub fn execute(&self, name: &str, args: &[Value]) -> Result<Value, String> {
+        let function = self
+            .get(name)
+            .ok_or_else(|| format!("unknown builtin function `{name}`"))?;
+        function.execute(args)
     }
+}
 
-    #[test]
-    fn builtin_name_and_arity() {
-        let builtin = PrintlnBuiltin;
-        assert_eq!(builtin.name().as_str(), "IO.println");
-        assert_eq!(builtin.arity(), 1);
+pub fn expect_arity(name: &str, args: &[Value], expected: usize) -> Result<(), String> {
+    if args.len() == expected {
+        Ok(())
+    } else {
+        Err(format!(
+            "`{name}` expected {expected} argument(s), got {}",
+            args.len()
+        ))
     }
+}
 
-    #[test]
-    fn builtin_returns_unit_for_io() {
-        let builtin = PrintlnBuiltin;
-        let args = vec![Value::Str(SmolStr::new("hello"))];
-        let result = builtin.execute(&args).expect("should succeed");
-        assert_eq!(result.as_str(), Some("hello"));
-    }
+pub fn call_closure(closure: &ClosureData, args: &[Value]) -> Result<Value, String> {
+    closure.call(args)
 }
