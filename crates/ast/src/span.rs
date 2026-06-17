@@ -71,7 +71,7 @@ impl std::fmt::Display for Span {
 #[cfg(feature = "miette")]
 impl From<Span> for miette::SourceSpan {
     fn from(span: Span) -> Self {
-        (span.start, span.end).into()
+        (span.start, span.len()).into()
     }
 }
 
