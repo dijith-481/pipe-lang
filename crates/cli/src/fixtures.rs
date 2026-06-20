@@ -205,14 +205,20 @@ mod tests {
     }
 
     #[test]
-    fn discover_fixtures_finds_14_example_programs() {
+    fn discover_fixtures_finds_20_example_programs() {
         let fixtures = discover_fixtures(&examples_dir()).expect("discover");
         let names: Vec<_> = fixtures.iter().map(|f| f.name.clone()).collect();
-        assert_eq!(fixtures.len(), 14, "found: {names:?}");
+        assert_eq!(fixtures.len(), 20, "found: {names:?}");
         assert!(names.contains(&"hello".to_string()));
         assert!(names.contains(&"factorial".to_string()));
         assert!(names.contains(&"io-effects".to_string()));
         assert!(names.contains(&"state-machine".to_string()));
+        assert!(names.contains(&"expression-evaluator".to_string()));
+        assert!(names.contains(&"csv-query".to_string()));
+        assert!(names.contains(&"json-parser".to_string()));
+        assert!(names.contains(&"pathfinding-bfs".to_string()));
+        assert!(names.contains(&"tiny-repl".to_string()));
+        assert!(names.contains(&"markdown-renderer".to_string()));
     }
 
     #[test]
@@ -234,16 +240,18 @@ mod tests {
     }
 
     #[test]
-    fn missing_golden_file_yields_none() {
+    fn golden_files_exist_for_known_programs() {
         let fixtures = discover_fixtures(&examples_dir()).expect("discover");
-        for f in &fixtures {
-            // We haven't created .expected.txt files yet.
-            assert!(
-                f.read_expected().expect("read").is_none(),
-                "{} has an unexpected .expected.txt",
-                f.name
-            );
-        }
+        let with_golden: Vec<_> = fixtures
+            .iter()
+            .filter(|f| f.read_expected().expect("read").is_some())
+            .map(|f| f.name.clone())
+            .collect();
+        // hello.pp, factorial.pp, fibonacci.pp now have golden files
+        assert!(
+            with_golden.contains(&"hello".to_string()),
+            "hello should have golden"
+        );
     }
 
     #[test]
