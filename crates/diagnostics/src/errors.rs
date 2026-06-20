@@ -49,12 +49,20 @@ pub enum CompilerError {
     /// Error produced during runtime execution.
     #[error("runtime error: {msg}")]
     #[diagnostic(code(pipe_lang::runtime))]
-    RuntimeError { span: Option<Span>, msg: String },
+    RuntimeError {
+        #[label]
+        span: Option<Span>,
+        msg: String,
+    },
 
     /// Error during effect execution.
     #[error("effect error: {msg}")]
     #[diagnostic(code(pipe_lang::effect))]
-    EffectError { span: Option<Span>, msg: String },
+    EffectError {
+        #[label]
+        span: Option<Span>,
+        msg: String,
+    },
 
     /// I/O error (file not found, permission denied, etc.).
     #[error("io error: {0}")]
@@ -64,7 +72,11 @@ pub enum CompilerError {
     /// Multiple errors collected together (for error recovery).
     #[error("encountered {count} error(s)")]
     #[diagnostic(code(pipe_lang::multiple))]
-    Multiple { count: usize, span: Option<Span> },
+    Multiple {
+        count: usize,
+        #[label]
+        span: Option<Span>,
+    },
 }
 
 /// The top-level diagnostic wrapper that pairs an error with the source code.
