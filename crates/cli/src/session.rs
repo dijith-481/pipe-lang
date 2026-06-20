@@ -6,7 +6,7 @@ use diagnostics::errors::{CompilerError, SourceDiagnostic};
 use ir::lower;
 use runtime::{BuiltinRegistry, init_global_registry};
 use stdlib::prelude::prelude_builtins;
-use typechecker::TypeError;
+
 
 /// What the pipeline should do after typechecking.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -189,7 +189,7 @@ impl CompilerSession {
                 return Ok(failure_from_errors(
                     &filename,
                     &source_arc,
-                    errors.into_iter().map(|e| CompilerError::from(e)),
+                    errors.into_iter().map(CompilerError::from),
                 ));
             }
         };

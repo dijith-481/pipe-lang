@@ -38,6 +38,8 @@ pub enum Commands {
         /// Path to the source file
         file: String,
     },
+    /// Start the language server
+    Lsp,
 }
 
 fn main() {
@@ -68,8 +70,22 @@ fn main() {
                 SessionConfig::new(std::path::PathBuf::from(&file)).with_mode(CompileMode::Check);
             run_session(config)
         }
+        Commands::Lsp => {
+            launch_lsp();
+            0
+        }
     };
     std::process::exit(exit_code);
+}
+
+fn launch_lsp() {
+    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+    rt.block_on(async {
+        let stdin = tokio::io::stdin();
+        let stdout = tokio::io::stdout();
+        let (service, socket) = tower_lsp::LspService::new(pipe_lang_lsp::Backend::new);
+        tower_lsp::Server::new(stdin, stdout, socket).serve(service).await;
+    });
 }
 
 fn run_session(config: SessionConfig) -> i32 {
