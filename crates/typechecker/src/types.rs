@@ -56,6 +56,9 @@ pub enum MonoType {
     },
     Unit,
 
+    // -- Effect type (deferred computation, IO boundary) --
+    Effect(Box<MonoType>),
+
     // -- Type variable (unresolved) --
     Var(TypeId),
 }
@@ -77,6 +80,7 @@ impl fmt::Display for MonoType {
             MonoType::Bool => write!(f, "bool"),
             MonoType::Str => write!(f, "str"),
             MonoType::Unit => write!(f, "()"),
+            MonoType::Effect(inner) => write!(f, "Effect<{inner}>"),
             MonoType::Var(id) => write!(f, "{id}"),
             MonoType::Array(inner) => write!(f, "[{inner}]"),
             MonoType::Func { params, ret } => {
@@ -129,6 +133,7 @@ impl MonoType {
             }
             MonoType::Record(fields) => fields.iter().all(|(_, t)| t.is_concrete()),
             MonoType::Tag { payload, .. } => payload.iter().all(|t| t.is_concrete()),
+            MonoType::Effect(inner) => inner.is_concrete(),
             _ => true,
         }
     }

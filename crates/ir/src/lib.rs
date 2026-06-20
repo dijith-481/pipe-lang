@@ -84,6 +84,8 @@ pub enum IrType {
     Func(FuncType),
     Closure(Box<FuncType>),
     Tag(TagType),
+    /// A deferred effectful computation — always heap-allocated (Arc).
+    Effect(Box<IrType>),
 }
 
 /// The type of a record: a name (for diagnostics) and an ordered
@@ -148,6 +150,7 @@ impl IrType {
                 | IrType::Record(_)
                 | IrType::Closure(_)
                 | IrType::Tag(_)
+                | IrType::Effect(_)
                 | IrType::Str
         )
     }
@@ -187,6 +190,7 @@ impl fmt::Display for IrType {
             IrType::Tag(t) => {
                 write!(f, "{}", t.name)
             }
+            IrType::Effect(inner) => write!(f, "Effect<{inner}>"),
         }
     }
 }
@@ -236,6 +240,7 @@ pub struct CallIndirectData {
 pub struct CallNamedData {
     pub name: SmolStr,
     pub args: Vec<ValueId>,
+    pub return_type: IrType,
 }
 
 /// A single SSA instruction.
@@ -784,6 +789,7 @@ pub fn lookup_type(types: &HashMap<ValueId, IrType>, value_id: ValueId) -> Optio
 ///
 /// `fn_return_types` maps callee names to their return types and is
 /// used for `CallNamed` instructions.
+#[allow(unused_variables)]
 pub fn infer_instruction_type(
     inst: &Instruction,
     types: &HashMap<ValueId, IrType>,
@@ -819,7 +825,7 @@ pub fn infer_instruction_type(
         | Instruction::And(_, _)
         | Instruction::Or(_, _)
         | Instruction::Not(_) => Some(IrType::Bool),
-        Instruction::CallNamed(data) => fn_return_types.get(data.name.as_str()).cloned(),
+        Instruction::CallNamed(data) => Some(data.return_type.clone()),
         Instruction::StrConcat { .. } => Some(IrType::Str),
         _ => None,
     }

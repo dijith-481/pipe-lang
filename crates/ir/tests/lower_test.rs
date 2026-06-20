@@ -269,17 +269,25 @@ fn fix_type_alias_lowering() {
 /// Match discriminants for literal patterns use the literal value, not ordinal position.
 #[test]
 fn fix_match_literal_discriminant() {
-    // match on bool: true arm should get discriminant 1, not 0.
+    // match on bool: true arm should get ConstBool(true) or ConstI32(1), not ConstI64(1).
     let m = lower_src("let describe = (b) => match b { true => 1 false => 0 }");
     let f = m.function("describe").unwrap();
     // Primitive match now uses cascading Branch, not Switch.
-    // Find a ConstI64(1) used in an Eq comparison for the true arm.
-    let has_true_check = f.blocks.iter().any(|b| {
+    // Verify we NEVER emit ConstI64(1) for the true arm — the old bug.
+    let has_bad_i64 = f.blocks.iter().any(|b| {
         b.instructions
             .iter()
             .any(|(_, inst)| matches!(inst, Instruction::ConstI64(1)))
     });
-    assert!(has_true_check, "true literal should map to value 1");
+    assert!(!has_bad_i64, "should never emit ConstI64(1) — type dispatch must produce type-appropriate constant");
+    // Find the true literal reference — either ConstBool(true) or ConstI32(1).
+    let has_correct = f.blocks.iter().any(|b| {
+        b.instructions.iter().any(|(_, inst)| {
+            matches!(inst, Instruction::ConstBool(true))
+                || matches!(inst, Instruction::ConstI32(1))
+        })
+    });
+    assert!(has_correct, "true literal should map to type-appropriate constant");
 }
 
 #[test]

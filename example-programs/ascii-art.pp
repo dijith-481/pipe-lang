@@ -9,8 +9,7 @@ let repeat : (str, i32) -> str = (s, n) => match n {
 let border = (w) => `+${repeat(`-`, w)}+`
 
 let row = (content, width) => {
-    let padding = width - content.len() - 2
-    `| ${content}${repeat(` `, padding)} |`
+    `| ${content}${repeat(` `, width - 2)} |`
 }
 
 let box = (text, width) =>

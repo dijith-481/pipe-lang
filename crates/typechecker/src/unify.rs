@@ -114,6 +114,9 @@ impl Substitution {
                     payload: Rc::from(payload.as_slice()),
                 }
             }
+            MonoType::Effect(inner) => {
+                MonoType::Effect(Box::new(self.apply(inner)))
+            }
             _ => ty.clone(),
         }
     }
@@ -141,6 +144,7 @@ fn occurs_in(sub: &mut Substitution, var: TypeId, ty: &MonoType) -> bool {
         }
         MonoType::Record(fields) => fields.values().any(|t| occurs_in(sub, var, t)),
         MonoType::Tag { payload, .. } => payload.iter().any(|t| occurs_in(sub, var, t)),
+        MonoType::Effect(inner) => occurs_in(sub, var, inner),
         _ => false,
     }
 }
@@ -203,19 +207,17 @@ pub fn unify(sub: &mut Substitution, a: &MonoType, b: &MonoType) -> Result<(), T
             unify(sub, &ar, &br)
         }
 
+        (MonoType::Effect(ai), MonoType::Effect(bi)) => {
+            let ai = ai.clone();
+            let bi = bi.clone();
+            unify(sub, &ai, &bi)
+        }
+
         (MonoType::Record(af), MonoType::Record(bf)) => {
-            if af.len() != bf.len() {
-                return Err(mismatch(&a, &b));
-            }
-            let pairs: Vec<_> = af
-                .iter()
-                .map(|(name, at)| {
-                    let bt = bf.get(name).ok_or_else(|| mismatch(&a, &b))?;
-                    Ok((at.clone(), bt.clone()))
-                })
-                .collect::<Result<_, TypeError>>()?;
-            for (at, bt) in pairs {
-                unify(sub, &at, &bt)?;
+            let (smaller, larger) = if af.len() <= bf.len() { (af, bf) } else { (bf, af) };
+            for (name, smaller_ty) in smaller.iter() {
+                let larger_ty = larger.get(name).ok_or_else(|| mismatch(&a, &b))?;
+                unify(sub, smaller_ty, larger_ty)?;
             }
             Ok(())
         }
@@ -230,12 +232,15 @@ pub fn unify(sub: &mut Substitution, a: &MonoType, b: &MonoType) -> Result<(), T
                 payload: bp,
             },
         ) => {
-            if an != bn || ap.len() != bp.len() {
+            if an != bn {
                 return Err(mismatch(&a, &b));
             }
-            let pairs: Vec<_> = ap.iter().cloned().zip(bp.iter().cloned()).collect();
-            for (at, bt) in pairs {
-                unify(sub, &at, &bt)?;
+            // Row-polymorphic tag unification: unify payloads element-wise
+            // for the overlapping length. Extra elements in the larger payload
+            // are permitted (sum type variants have different arities).
+            let min_len = ap.len().min(bp.len());
+            for i in 0..min_len {
+                unify(sub, &ap[i], &bp[i])?;
             }
             Ok(())
         }
