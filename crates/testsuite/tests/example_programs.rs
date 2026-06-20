@@ -13,9 +13,12 @@ fn get_fixture(name: &str) -> Fixture {
 fn assert_fixture_ok(name: &str) {
     let fixture = get_fixture(name);
     let result = run_fixture(&fixture);
-    assert_eq!(result.exit_code, 0, "{} failed: stderr={}", name, result.stderr);
-    assert_stdout_matches(&fixture, &result.stdout)
-        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        result.exit_code, 0,
+        "{} failed: stderr={}",
+        name, result.stderr
+    );
+    assert_stdout_matches(&fixture, &result.stdout).unwrap_or_else(|e| panic!("{e}"));
 }
 
 // ---------------------------------------------------------------------------

@@ -15,8 +15,8 @@
 
 use ast::SmolStr;
 use ir::{
-    BasicBlock, Instruction, IrDecl, IrFunction, IrModule, IrType,
-    MakeClosureData, RecordAllocData, TagConstructData, Terminator, ValueId,
+    BasicBlock, Instruction, IrDecl, IrFunction, IrModule, IrType, MakeClosureData,
+    RecordAllocData, TagConstructData, Terminator, ValueId,
 };
 use runtime::{JitError, compile_ir};
 
@@ -281,14 +281,20 @@ fn jit_array_alloc_and_get() {
             let init = push_inst(func, entry, Instruction::ConstI32(42));
             let arr = push_inst(func, entry, Instruction::ArrayAlloc { len, init });
             let idx = push_inst(func, entry, Instruction::ConstI32(1));
-            push_inst(func, entry, Instruction::ArrayGet { array: arr, index: idx })
+            push_inst(
+                func,
+                entry,
+                Instruction::ArrayGet {
+                    array: arr,
+                    index: idx,
+                },
+            )
         });
         compile_ir(&module)
     });
     if let Ok(Err(JitError::UnimplementedInstruction { instruction, .. })) = &_result
         && instruction.contains("ArrayAlloc")
-    {
-    }
+    {}
 }
 
 #[ignore = "Member 1: implement ArraySet instruction in JIT"]
@@ -301,8 +307,23 @@ fn jit_array_set() {
             let arr = push_inst(func, entry, Instruction::ArrayAlloc { len, init });
             let zero = push_inst(func, entry, Instruction::ConstI32(0));
             let val = push_inst(func, entry, Instruction::ConstI32(99));
-            let _set = push_inst(func, entry, Instruction::ArraySet { array: arr, index: zero, value: val });
-            push_inst(func, entry, Instruction::ArrayGet { array: arr, index: zero })
+            let _set = push_inst(
+                func,
+                entry,
+                Instruction::ArraySet {
+                    array: arr,
+                    index: zero,
+                    value: val,
+                },
+            );
+            push_inst(
+                func,
+                entry,
+                Instruction::ArrayGet {
+                    array: arr,
+                    index: zero,
+                },
+            )
         });
         compile_ir(&module)
     });
@@ -334,11 +355,23 @@ fn jit_record_alloc_and_get() {
         let module = make_main(IrType::I32, |func, entry| {
             let name = push_inst(func, entry, Instruction::ConstStr(SmolStr::new("Alice")));
             let age = push_inst(func, entry, Instruction::ConstI32(30));
-            let rec = push_inst(func, entry, Instruction::RecordAlloc(Box::new(RecordAllocData {
-                type_name: SmolStr::new("Person"),
-                fields: vec![name, age],
-            })));
-            push_inst(func, entry, Instruction::RecordGet { record: rec, field: SmolStr::new("age"), field_index: 1 })
+            let rec = push_inst(
+                func,
+                entry,
+                Instruction::RecordAlloc(Box::new(RecordAllocData {
+                    type_name: SmolStr::new("Person"),
+                    fields: vec![name, age],
+                })),
+            );
+            push_inst(
+                func,
+                entry,
+                Instruction::RecordGet {
+                    record: rec,
+                    field: SmolStr::new("age"),
+                    field_index: 1,
+                },
+            )
         });
         compile_ir(&module)
     });
@@ -354,12 +387,16 @@ fn jit_tag_construct_and_discriminant() {
     let _result = std::panic::catch_unwind(|| {
         let module = make_main(IrType::U32, |func, entry| {
             let payload = push_inst(func, entry, Instruction::ConstI32(42));
-            let tag = push_inst(func, entry, Instruction::TagConstruct(Box::new(TagConstructData {
-                type_name: SmolStr::new("Option"),
-                variant: SmolStr::new("Some"),
-                discriminant: 1,
-                payload: vec![payload],
-            })));
+            let tag = push_inst(
+                func,
+                entry,
+                Instruction::TagConstruct(Box::new(TagConstructData {
+                    type_name: SmolStr::new("Option"),
+                    variant: SmolStr::new("Some"),
+                    discriminant: 1,
+                    payload: vec![payload],
+                })),
+            );
             push_inst(func, entry, Instruction::TagDiscriminant(tag))
         });
         compile_ir(&module)
@@ -372,13 +409,24 @@ fn jit_tag_get_payload() {
     let _result = std::panic::catch_unwind(|| {
         let module = make_main(IrType::I32, |func, entry| {
             let payload = push_inst(func, entry, Instruction::ConstI32(99));
-            let tag = push_inst(func, entry, Instruction::TagConstruct(Box::new(TagConstructData {
-                type_name: SmolStr::new("Option"),
-                variant: SmolStr::new("Some"),
-                discriminant: 1,
-                payload: vec![payload],
-            })));
-            push_inst(func, entry, Instruction::TagGet { value: tag, index: 0 })
+            let tag = push_inst(
+                func,
+                entry,
+                Instruction::TagConstruct(Box::new(TagConstructData {
+                    type_name: SmolStr::new("Option"),
+                    variant: SmolStr::new("Some"),
+                    discriminant: 1,
+                    payload: vec![payload],
+                })),
+            );
+            push_inst(
+                func,
+                entry,
+                Instruction::TagGet {
+                    value: tag,
+                    index: 0,
+                },
+            )
         });
         compile_ir(&module)
     });
@@ -404,10 +452,14 @@ fn jit_make_closure() {
         let entry_id = func.alloc_block();
         let mut entry = BasicBlock::new(entry_id);
         let captured = push_inst(&mut func, &mut entry, Instruction::ConstI32(99));
-        let _closure = push_inst(&mut func, &mut entry, Instruction::MakeClosure(Box::new(MakeClosureData {
-            func_name: helper_name,
-            captures: vec![captured],
-        })));
+        let _closure = push_inst(
+            &mut func,
+            &mut entry,
+            Instruction::MakeClosure(Box::new(MakeClosureData {
+                func_name: helper_name,
+                captures: vec![captured],
+            })),
+        );
         let ret = push_inst(&mut func, &mut entry, Instruction::ConstI32(0));
         entry.terminator = Terminator::Return(ret);
         func.blocks.push(entry);
@@ -428,7 +480,13 @@ fn jit_make_closure() {
 fn jit_panic_traps() {
     let _result = std::panic::catch_unwind(|| {
         let module = make_main(IrType::I32, |func, entry| {
-            let _panic = push_inst(func, entry, Instruction::Panic { msg: SmolStr::new("test panic") });
+            let _panic = push_inst(
+                func,
+                entry,
+                Instruction::Panic {
+                    msg: SmolStr::new("test panic"),
+                },
+            );
             entry.terminator = Terminator::Unreachable;
             push_inst(func, entry, Instruction::ConstI32(0))
         });
@@ -448,7 +506,10 @@ fn jit_tail_call_terminator() {
         let entry_id = func.alloc_block();
         let mut entry = BasicBlock::new(entry_id);
         let arg = push_inst(&mut func, &mut entry, Instruction::ConstI32(5));
-        entry.terminator = Terminator::TailCall { callee: arg, args: vec![] };
+        entry.terminator = Terminator::TailCall {
+            callee: arg,
+            args: vec![],
+        };
         func.blocks.push(entry);
 
         let mut module = IrModule::new();

@@ -9,9 +9,14 @@ use parser::parse;
 fn typecheck_src(src: &str) -> Result<(), Vec<diagnostics::CompilerError>> {
     let arena = Bump::new();
     let program = parse(src, &arena).map_err(|e| vec![diagnostics::CompilerError::from(e)])?;
-    typechecker::typecheck(&program).map(|_| ()).map_err(|errors| {
-        errors.into_iter().map(diagnostics::CompilerError::from).collect()
-    })
+    typechecker::typecheck(&program)
+        .map(|_| ())
+        .map_err(|errors| {
+            errors
+                .into_iter()
+                .map(diagnostics::CompilerError::from)
+                .collect()
+        })
 }
 
 #[test]
@@ -19,8 +24,13 @@ fn typecheck_arity_mismatch_too_many_args() {
     let src = "let f = (x: i32) => x\nlet main = f(1, 2)";
     let result = typecheck_src(src);
     let errors = result.expect_err("should fail with arity mismatch");
-    let all_arity = errors.iter().all(|e| e.to_string().contains("arity") || e.to_string().contains("type mismatch"));
-    assert!(all_arity, "expected arity or type mismatch errors, got: {errors:?}");
+    let all_arity = errors
+        .iter()
+        .all(|e| e.to_string().contains("arity") || e.to_string().contains("type mismatch"));
+    assert!(
+        all_arity,
+        "expected arity or type mismatch errors, got: {errors:?}"
+    );
 }
 
 #[test]
@@ -55,7 +65,10 @@ fn typecheck_field_not_found() {
 fn typecheck_field_not_found_on_nested() {
     let src = "let r = { inner: { a: 1 } }\nlet main = r.inner.b";
     let result = typecheck_src(src);
-    assert!(result.is_err(), "should fail: field `b` not found on inner record");
+    assert!(
+        result.is_err(),
+        "should fail: field `b` not found on inner record"
+    );
 }
 
 #[test]
@@ -88,8 +101,13 @@ fn typecheck_unbound_variable() {
     let src = "let main = undefinedVar";
     let result = typecheck_src(src);
     let errors = result.expect_err("should fail with unbound variable");
-    let has_unbound = errors.iter().any(|e| e.to_string().contains("unbound") || e.to_string().contains("not found"));
-    assert!(has_unbound, "expected unbound variable error, got: {errors:?}");
+    let has_unbound = errors
+        .iter()
+        .any(|e| e.to_string().contains("unbound") || e.to_string().contains("not found"));
+    assert!(
+        has_unbound,
+        "expected unbound variable error, got: {errors:?}"
+    );
 }
 
 #[test]

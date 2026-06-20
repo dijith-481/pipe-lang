@@ -10,7 +10,11 @@ use std::process::Command;
 fn pipe_lang_bin() -> Option<String> {
     std::env::var("CARGO_BIN_EXE_pipe-lang").ok().or_else(|| {
         let p = workspace_root().join("target/debug/pipe-lang");
-        if p.exists() { Some(p.to_string_lossy().to_string()) } else { None }
+        if p.exists() {
+            Some(p.to_string_lossy().to_string())
+        } else {
+            None
+        }
     })
 }
 

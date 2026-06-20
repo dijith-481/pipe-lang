@@ -14,14 +14,18 @@ use runtime::{BuiltinFunction, BuiltinRegistry, Value};
 #[test]
 fn builtin_id() {
     let registry = full_registry();
-    let result = registry.execute("id", &[Value::I32(42)]).expect("id should work");
+    let result = registry
+        .execute("id", &[Value::I32(42)])
+        .expect("id should work");
     assert_eq!(result, Value::I32(42));
 }
 
 #[test]
 fn builtin_id_polymorphic() {
     let registry = full_registry();
-    let result = registry.execute("id", &[Value::str("hello")]).expect("id should work");
+    let result = registry
+        .execute("id", &[Value::str("hello")])
+        .expect("id should work");
     assert_eq!(result, Value::str("hello"));
 }
 
@@ -29,7 +33,8 @@ fn builtin_id_polymorphic() {
 fn builtin_const_returns_closure() {
     let registry = full_registry();
     // `const` is curried: const(x) returns a closure that always returns x
-    let result = registry.execute("const", &[Value::I32(42)])
+    let result = registry
+        .execute("const", &[Value::I32(42)])
         .expect("const should return a closure");
     match result {
         Value::Closure(_) => {} // expected
@@ -79,10 +84,11 @@ fn builtin_array_map() {
 fn builtin_array_len() {
     let registry = full_registry();
     let arr = Value::array(vec![Value::I32(1), Value::I32(2), Value::I32(3)]);
-    let _ = registry.execute("len_array", &[arr]).unwrap_or_else(|_|
-        registry.execute("len", &[Value::array(vec![Value::I32(1), Value::I32(2)])])
+    let _ = registry.execute("len_array", &[arr]).unwrap_or_else(|_| {
+        registry
+            .execute("len", &[Value::array(vec![Value::I32(1), Value::I32(2)])])
             .expect("len should work with any name")
-    );
+    });
 }
 
 #[test]
@@ -90,7 +96,9 @@ fn builtin_array_head_empty() {
     let registry = full_registry();
     let empty: Vec<Value> = vec![];
     let arr = Value::array(empty);
-    let result = registry.execute("head", &[arr]).expect("head on empty should return None");
+    let result = registry
+        .execute("head", &[arr])
+        .expect("head on empty should return None");
     match result {
         Value::Tag { tag: 0, .. } => {} // None variant
         other => panic!("expected None tag (0), got {other:?}"),
@@ -101,7 +109,9 @@ fn builtin_array_head_empty() {
 fn builtin_array_head_nonempty() {
     let registry = full_registry();
     let arr = Value::array(vec![Value::I32(42), Value::I32(99)]);
-    let result = registry.execute("head", &[arr]).expect("head on non-empty should return Some");
+    let result = registry
+        .execute("head", &[arr])
+        .expect("head on non-empty should return Some");
     match result {
         Value::Tag { tag: 1, payload } => {
             assert_eq!(payload.len(), 1);
@@ -132,7 +142,9 @@ fn closure_builtins_are_registered() {
 #[test]
 fn builtin_drop_returns_unit() {
     let registry = full_registry();
-    let result = registry.execute("drop", &[Value::I32(42)]).expect("drop should work");
+    let result = registry
+        .execute("drop", &[Value::I32(42)])
+        .expect("drop should work");
     assert_eq!(result, Value::Unit);
 }
 
@@ -140,8 +152,15 @@ fn builtin_drop_returns_unit() {
 #[test]
 fn builtin_take_first_n() {
     let registry = full_registry();
-    let arr = Value::array(vec![Value::I32(1), Value::I32(2), Value::I32(3), Value::I32(4)]);
-    let result = registry.execute("take", &[arr, Value::I32(2)]).expect("take should work");
+    let arr = Value::array(vec![
+        Value::I32(1),
+        Value::I32(2),
+        Value::I32(3),
+        Value::I32(4),
+    ]);
+    let result = registry
+        .execute("take", &[arr, Value::I32(2)])
+        .expect("take should work");
     match result {
         Value::Array(elems) => {
             assert_eq!(elems.len(), 2);
@@ -157,7 +176,9 @@ fn builtin_take_first_n() {
 fn builtin_take_zero_returns_empty() {
     let registry = full_registry();
     let arr = Value::array(vec![Value::I32(1), Value::I32(2)]);
-    let result = registry.execute("take", &[arr, Value::I32(0)]).expect("take with 0 should work");
+    let result = registry
+        .execute("take", &[arr, Value::I32(0)])
+        .expect("take with 0 should work");
     match result {
         Value::Array(elems) => assert_eq!(elems.len(), 0),
         other => panic!("expected empty Array, got {other:?}"),
@@ -168,7 +189,9 @@ fn builtin_take_zero_returns_empty() {
 #[test]
 fn builtin_sqrt_positive() {
     let registry = full_registry();
-    let result = registry.execute("sqrt", &[Value::F64(9.0)]).expect("sqrt should work");
+    let result = registry
+        .execute("sqrt", &[Value::F64(9.0)])
+        .expect("sqrt should work");
     assert_eq!(result, Value::F64(3.0));
 }
 
@@ -176,7 +199,9 @@ fn builtin_sqrt_positive() {
 #[test]
 fn builtin_sqrt_zero() {
     let registry = full_registry();
-    let result = registry.execute("sqrt", &[Value::F64(0.0)]).expect("sqrt should work");
+    let result = registry
+        .execute("sqrt", &[Value::F64(0.0)])
+        .expect("sqrt should work");
     assert_eq!(result, Value::F64(0.0));
 }
 
@@ -185,7 +210,9 @@ fn builtin_sqrt_zero() {
 fn builtin_unwrap_some() {
     let registry = full_registry();
     let some = Value::tag(1, vec![Value::I32(42)]);
-    let result = registry.execute("unwrap", &[some]).expect("unwrap Some should work");
+    let result = registry
+        .execute("unwrap", &[some])
+        .expect("unwrap Some should work");
     assert_eq!(result, Value::I32(42));
 }
 
@@ -232,8 +259,12 @@ fn builtin_effect_flat_map_chains() {
 struct EchoBuiltin;
 
 impl BuiltinFunction for EchoBuiltin {
-    fn name(&self) -> &str { "echo" }
-    fn arity(&self) -> usize { 1 }
+    fn name(&self) -> &str {
+        "echo"
+    }
+    fn arity(&self) -> usize {
+        1
+    }
     fn execute(&self, args: &[Value]) -> Result<Value, String> {
         runtime::expect_arity(self.name(), args, self.arity())?;
         Ok(args[0].clone())

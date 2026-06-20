@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use ast::span::Span;
-use diagnostics::errors::SourceDiagnostic;
 use diagnostics::CompilerError;
+use diagnostics::errors::SourceDiagnostic;
 
 // ---------------------------------------------------------------------------
 // Error construction

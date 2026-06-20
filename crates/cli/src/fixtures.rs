@@ -248,7 +248,10 @@ mod tests {
             .map(|f| f.name.clone())
             .collect();
         // hello.pp, factorial.pp, fibonacci.pp now have golden files
-        assert!(with_golden.contains(&"hello".to_string()), "hello should have golden");
+        assert!(
+            with_golden.contains(&"hello".to_string()),
+            "hello should have golden"
+        );
     }
 
     #[test]
