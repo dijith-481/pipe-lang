@@ -7,7 +7,6 @@ use ir::lower;
 use runtime::{BuiltinRegistry, init_global_registry};
 use stdlib::prelude::prelude_builtins;
 
-
 /// What the pipeline should do after typechecking.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompileMode {

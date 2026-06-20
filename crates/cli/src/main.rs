@@ -84,7 +84,9 @@ fn launch_lsp() {
         let stdin = tokio::io::stdin();
         let stdout = tokio::io::stdout();
         let (service, socket) = tower_lsp::LspService::new(pipe_lang_lsp::Backend::new);
-        tower_lsp::Server::new(stdin, stdout, socket).serve(service).await;
+        tower_lsp::Server::new(stdin, stdout, socket)
+            .serve(service)
+            .await;
     });
 }
 
