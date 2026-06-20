@@ -6,271 +6,219 @@ use ast::SmolStr;
 
 use crate::bridge::BuiltinFunction;
 
-/// Runtime values in the language.
+/// A runtime value in pipe-lang.
 ///
-/// All values are immutable and reference-counted for safe sharing
-/// without a garbage collector. Heap allocations use `Arc` for
-/// deterministic cleanup.
+/// All heap data is behind an [`Arc`] for deterministic, GC-free memory
+/// management. Because the language is immutable, reference cycles are
+/// structurally impossible, so `Arc` never leaks.
+#[repr(C)]
 #[derive(Clone)]
 pub enum Value {
-    // -- Signed integers --
-    /// 8-bit signed integer.
-    I8(i8),
-    /// 16-bit signed integer.
-    I16(i16),
-    /// 32-bit signed integer.
+    /// A 32-bit signed integer.
     I32(i32),
-    /// 64-bit signed integer.
+    /// A 64-bit signed integer.
     I64(i64),
-
-    // -- Unsigned integers --
-    /// 8-bit unsigned integer.
-    U8(u8),
-    /// 16-bit unsigned integer.
-    U16(u16),
-    /// 32-bit unsigned integer.
-    U32(u32),
-    /// 64-bit unsigned integer.
-    U64(u64),
-    /// Platform-dependent unsigned integer (used for indexing/sizes).
-    Usize(usize),
-
-    // -- Floats --
-    /// 32-bit IEEE 754 float.
-    F32(f32),
-    /// 64-bit IEEE 754 float.
+    /// A 64-bit floating point number.
     F64(f64),
-
-    // -- Other primitives --
-    /// Boolean value.
+    /// A boolean.
     Bool(bool),
-    /// Immutable string, reference-counted for cheap cloning.
-    Str(SmolStr),
-
-    // -- Compound --
-    /// Immutable array, reference-counted.
-    Array(Arc<[Value]>),
-    /// Record with named fields.
-    Record(Arc<RecordData>),
-    /// Closure capturing an environment.
-    Closure(Arc<ClosureData>),
-    /// A tagged union variant (sum type).
-    Tag { tag: u32, payload: Arc<[Value]> },
-    /// An effectful computation (IO, etc.) wrapping a builtin.
-    Effect(Arc<dyn BuiltinFunction>),
-    /// Unit value (empty tuple).
+    /// The unit value, `()`.
     Unit,
+    /// A reference-counted UTF-8 string.
+    Str(Arc<str>),
+    /// A reference-counted immutable array.
+    Array(Arc<[Value]>),
+    /// A reference-counted record (product type).
+    Record(Arc<RecordData>),
+    /// A reference-counted closure.
+    Closure(Arc<ClosureData>),
+    /// A tagged-union value (sum type).
+    Tag { tag: u32, payload: Arc<[Value]> },
+    /// A deferred effectful computation (IO, etc.).
+    Effect(Arc<dyn BuiltinFunction>),
 }
 
-/// Data for a record value.
-#[derive(Debug, Clone, PartialEq)]
-pub struct RecordData {
-    pub fields: BTreeMap<SmolStr, Value>,
-}
-
-/// Data for a closure value.
-#[derive(Debug, Clone)]
-pub struct ClosureData {
-    pub func: FuncPtr,
-    pub captures: Arc<[Value]>,
-    pub arity: usize,
-}
-
-/// A pointer to a function (either a builtin or a JIT-compiled function).
-#[derive(Debug, Clone)]
-pub enum FuncPtr {
-    /// A built-in function implemented in Rust.
-    Builtin(Arc<dyn BuiltinFunction>),
-    /// A JIT-compiled function pointer (address + metadata).
-    Jit { address: usize, arity: usize },
-}
+// ---------------------------------------------------------------------------
+// Constructor helpers
+// ---------------------------------------------------------------------------
 
 impl Value {
-    /// Returns true if this value is the unit value.
+    /// Creates a string runtime value.
     #[must_use]
-    pub fn is_unit(&self) -> bool {
-        matches!(self, Value::Unit)
+    pub fn str(s: impl Into<Arc<str>>) -> Self {
+        Self::Str(s.into())
     }
 
-    /// Returns true if this value is truthy (for boolean contexts).
+    /// Creates an immutable array runtime value.
+    #[must_use]
+    pub fn array(values: Vec<Value>) -> Self {
+        Self::Array(Arc::from(values.into_boxed_slice()))
+    }
+
+    /// Creates a record runtime value.
+    #[must_use]
+    pub fn record(fields: BTreeMap<SmolStr, Value>) -> Self {
+        Self::Record(Arc::new(RecordData { fields }))
+    }
+
+    /// Creates a tagged-union runtime value.
+    #[must_use]
+    pub fn tag(tag: u32, payload: Vec<Value>) -> Self {
+        Self::Tag {
+            tag,
+            payload: Arc::from(payload.into_boxed_slice()),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Accessors
+// ---------------------------------------------------------------------------
+
+impl Value {
+    /// Returns `true` if this is the unit value.
+    #[must_use]
+    pub fn is_unit(&self) -> bool {
+        matches!(self, Self::Unit)
+    }
+
+    /// Returns `true` if this value is truthy in a boolean context.
     ///
-    /// Numeric types are truthy if non-zero. Strings are truthy if non-empty.
-    /// Arrays are truthy if non-empty. Unit is falsy. Closures, tags, and
-    /// effects are always truthy.
+    /// Numeric types are truthy if non-zero. Strings and arrays are truthy
+    /// if non-empty. Unit is falsy. Tags, closures, records, and effects
+    /// are always truthy.
     #[must_use]
     pub fn is_truthy(&self) -> bool {
         match self {
-            Value::Bool(b) => *b,
-            Value::I8(n) => *n != 0,
-            Value::I16(n) => *n != 0,
-            Value::I32(n) => *n != 0,
-            Value::I64(n) => *n != 0,
-            Value::U8(n) => *n != 0,
-            Value::U16(n) => *n != 0,
-            Value::U32(n) => *n != 0,
-            Value::U64(n) => *n != 0,
-            Value::Usize(n) => *n != 0,
-            Value::F32(f) => *f != 0.0,
-            Value::F64(f) => *f != 0.0,
-            Value::Str(s) => !s.is_empty(),
-            Value::Array(a) => !a.is_empty(),
-            Value::Unit => false,
-            _ => true,
+            Self::Bool(b) => *b,
+            Self::I32(n) => *n != 0,
+            Self::I64(n) => *n != 0,
+            Self::F64(f) => *f != 0.0,
+            Self::Str(s) => !s.is_empty(),
+            Self::Array(a) => !a.is_empty(),
+            Self::Unit => false,
+            Self::Record(_) | Self::Closure(_) | Self::Tag { .. } | Self::Effect(_) => true,
         }
     }
 
-    /// Attempt to extract a 32-bit signed integer value.
+    /// Returns `true` if this value is a numeric type.
+    #[must_use]
+    pub fn is_numeric(&self) -> bool {
+        matches!(self, Self::I32(_) | Self::I64(_) | Self::F64(_))
+    }
+
+    /// Returns the contained `i32`, if this is [`Value::I32`].
     #[must_use]
     pub fn as_i32(&self) -> Option<i32> {
         match self {
-            Value::I32(n) => Some(*n),
+            Self::I32(value) => Some(*value),
             _ => None,
         }
     }
 
-    /// Attempt to extract a 64-bit signed integer value.
+    /// Returns the contained `i64`, if this is [`Value::I64`].
     #[must_use]
     pub fn as_i64(&self) -> Option<i64> {
         match self {
-            Value::I64(n) => Some(*n),
+            Self::I64(value) => Some(*value),
             _ => None,
         }
     }
 
-    /// Attempt to extract a 64-bit float value.
+    /// Returns the contained `f64`, if this is [`Value::F64`].
     #[must_use]
     pub fn as_f64(&self) -> Option<f64> {
         match self {
-            Value::F64(f) => Some(*f),
+            Self::F64(value) => Some(*value),
             _ => None,
         }
     }
 
-    /// Attempt to extract a boolean value.
+    /// Returns the contained `bool`, if this is [`Value::Bool`].
     #[must_use]
     pub fn as_bool(&self) -> Option<bool> {
         match self {
-            Value::Bool(b) => Some(*b),
+            Self::Bool(value) => Some(*value),
             _ => None,
         }
     }
 
-    /// Attempt to extract a string slice.
+    /// Returns the contained string slice, if this is [`Value::Str`].
     #[must_use]
     pub fn as_str(&self) -> Option<&str> {
         match self {
-            Value::Str(s) => Some(s),
+            Self::Str(value) => Some(value),
             _ => None,
         }
     }
 
-    /// Attempt to extract an array slice.
+    /// Returns the contained array slice, if this is [`Value::Array`].
     #[must_use]
     pub fn as_array(&self) -> Option<&[Value]> {
         match self {
-            Value::Array(a) => Some(a),
+            Self::Array(values) => Some(values),
             _ => None,
         }
     }
 
-    /// Attempt to extract a tag variant and payload.
+    /// Returns the tag discriminant and payload, if this is [`Value::Tag`].
     #[must_use]
     pub fn as_tag(&self) -> Option<(u32, &[Value])> {
         match self {
-            Value::Tag { tag, payload } => Some((*tag, payload)),
+            Self::Tag { tag, payload } => Some((*tag, payload)),
             _ => None,
         }
     }
-
-    /// Returns true if this value is a numeric type of any width.
-    #[must_use]
-    pub fn is_numeric(&self) -> bool {
-        matches!(
-            self,
-            Value::I8(_)
-                | Value::I16(_)
-                | Value::I32(_)
-                | Value::I64(_)
-                | Value::U8(_)
-                | Value::U16(_)
-                | Value::U32(_)
-                | Value::U64(_)
-                | Value::Usize(_)
-                | Value::F32(_)
-                | Value::F64(_)
-        )
-    }
-
-    /// Create an array value from a vector.
-    pub fn array(values: Vec<Value>) -> Self {
-        Value::Array(Arc::from(values))
-    }
-
-    /// Create a tag value.
-    pub fn tag(tag: u32, payload: Vec<Value>) -> Self {
-        Value::Tag {
-            tag,
-            payload: Arc::from(payload),
-        }
-    }
-
-    /// Create a record value from a map of fields.
-    pub fn record(fields: BTreeMap<SmolStr, Value>) -> Self {
-        Value::Record(Arc::new(RecordData { fields }))
-    }
 }
+
+// ---------------------------------------------------------------------------
+// PartialEq — deep equality
+// ---------------------------------------------------------------------------
 
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Value::I8(a), Value::I8(b)) => a == b,
-            (Value::I16(a), Value::I16(b)) => a == b,
-            (Value::I32(a), Value::I32(b)) => a == b,
-            (Value::I64(a), Value::I64(b)) => a == b,
-            (Value::U8(a), Value::U8(b)) => a == b,
-            (Value::U16(a), Value::U16(b)) => a == b,
-            (Value::U32(a), Value::U32(b)) => a == b,
-            (Value::U64(a), Value::U64(b)) => a == b,
-            (Value::Usize(a), Value::Usize(b)) => a == b,
-            (Value::F32(a), Value::F32(b)) => a == b,
-            (Value::F64(a), Value::F64(b)) => a == b,
-            (Value::Bool(a), Value::Bool(b)) => a == b,
-            (Value::Str(a), Value::Str(b)) => a == b,
-            (Value::Array(a), Value::Array(b)) => a == b,
-            (Value::Unit, Value::Unit) => true,
-            (Value::Record(a), Value::Record(b)) => a == b,
+            (Self::I32(a), Self::I32(b)) => a == b,
+            (Self::I64(a), Self::I64(b)) => a == b,
+            (Self::F64(a), Self::F64(b)) => a == b,
+            (Self::Bool(a), Self::Bool(b)) => a == b,
+            (Self::Unit, Self::Unit) => true,
+            (Self::Str(a), Self::Str(b)) => a == b,
+            (Self::Array(a), Self::Array(b)) => a == b,
+            (Self::Record(a), Self::Record(b)) => a == b,
             (
-                Value::Tag {
+                Self::Tag {
                     tag: t1,
                     payload: p1,
                 },
-                Value::Tag {
+                Self::Tag {
                     tag: t2,
                     payload: p2,
                 },
             ) => t1 == t2 && p1 == p2,
+            // Closures and Effects are compared by identity (pointer equality).
+            // Trait objects cannot implement PartialEq safely.
+            (Self::Closure(a), Self::Closure(b)) => Arc::ptr_eq(a, b),
+            (Self::Effect(_), Self::Effect(_)) => false,
             _ => false,
         }
     }
 }
 
+// ---------------------------------------------------------------------------
+// Debug
+// ---------------------------------------------------------------------------
+
 impl fmt::Debug for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Value::I8(n) => write!(f, "{n}i8"),
-            Value::I16(n) => write!(f, "{n}i16"),
-            Value::I32(n) => write!(f, "{n}"),
-            Value::I64(n) => write!(f, "{n}i64"),
-            Value::U8(n) => write!(f, "{n}u8"),
-            Value::U16(n) => write!(f, "{n}u16"),
-            Value::U32(n) => write!(f, "{n}u32"),
-            Value::U64(n) => write!(f, "{n}u64"),
-            Value::Usize(n) => write!(f, "{n}usize"),
-            Value::F32(n) => write!(f, "{n}f32"),
-            Value::F64(n) => write!(f, "{n}"),
-            Value::Bool(b) => write!(f, "{b}"),
-            Value::Str(s) => write!(f, "\"{s}\""),
-            Value::Array(arr) => {
+            Self::I32(n) => write!(f, "{n}"),
+            Self::I64(n) => write!(f, "{n}i64"),
+            Self::F64(n) => write!(f, "{n}"),
+            Self::Bool(b) => write!(f, "{b}"),
+            Self::Unit => write!(f, "()"),
+            Self::Str(s) => write!(f, "\"{s}\""),
+            Self::Array(arr) => {
                 write!(f, "[")?;
                 for (i, v) in arr.iter().enumerate() {
                     if i > 0 {
@@ -280,7 +228,7 @@ impl fmt::Debug for Value {
                 }
                 write!(f, "]")
             }
-            Value::Record(r) => {
+            Self::Record(r) => {
                 write!(f, "{{ ")?;
                 for (i, (name, val)) in r.fields.iter().enumerate() {
                     if i > 0 {
@@ -290,29 +238,63 @@ impl fmt::Debug for Value {
                 }
                 write!(f, " }}")
             }
-            Value::Closure(c) => {
-                write!(f, "<closure/{}>", c.arity)
-            }
-            Value::Tag { tag, payload } => {
+            Self::Closure(c) => write!(f, "<closure/{}>", c.arity),
+            Self::Tag { tag, payload } => {
                 write!(f, "Tag({tag}")?;
                 for v in payload.iter() {
                     write!(f, ", {v:?}")?;
                 }
                 write!(f, ")")
             }
-            Value::Effect(_) => write!(f, "<effect>"),
-            Value::Unit => write!(f, "()"),
+            Self::Effect(_) => write!(f, "<effect>"),
         }
     }
 }
 
+// ---------------------------------------------------------------------------
+// Display
+// ---------------------------------------------------------------------------
+
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Value::Str(s) => write!(f, "{s}"),
+            Self::Str(s) => write!(f, "{s}"),
             other => write!(f, "{other:?}"),
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Supporting types
+// ---------------------------------------------------------------------------
+
+/// Data stored by a record value.
+#[repr(C)]
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RecordData {
+    /// Record fields keyed by source-level field name.
+    pub fields: BTreeMap<SmolStr, Value>,
+}
+
+/// A pointer to a function that can be called by the runtime.
+#[derive(Debug, Clone)]
+pub enum FuncPtr {
+    /// A built-in function implemented in Rust.
+    Builtin(Arc<dyn BuiltinFunction>),
+    /// A JIT-compiled native function.
+    Jit { address: usize, arity: usize },
+}
+
+/// Data stored by a closure value.
+#[repr(C)]
+#[derive(Debug, Clone)]
+pub struct ClosureData {
+    /// The function pointer (builtin or JIT).
+    pub func: FuncPtr,
+    /// Values captured by the closure environment.
+    pub captures: Arc<[Value]>,
+    /// Number of arguments expected by the closure.
+    pub arity: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -323,183 +305,325 @@ impl fmt::Display for Value {
 mod tests {
     use super::*;
 
+    // -- Constructor tests --
+
     #[test]
-    fn i32_value_roundtrip() {
-        let v = Value::I32(42);
-        assert_eq!(v.as_i32(), Some(42));
-        assert_eq!(v.as_f64(), None);
+    fn value_str_constructor_stores_text() {
+        let value = Value::str("hello");
+        assert_eq!(value.as_str(), Some("hello"));
     }
 
     #[test]
-    fn i64_value_roundtrip() {
-        let v = Value::I64(42);
-        assert_eq!(v.as_i64(), Some(42));
+    fn value_array_constructor_stores_values() {
+        let value = Value::array(vec![Value::I32(1), Value::I32(2)]);
+        assert_eq!(
+            value.as_array(),
+            Some([Value::I32(1), Value::I32(2)].as_slice())
+        );
     }
 
     #[test]
-    fn f64_value_roundtrip() {
-        let v = Value::F64(3.15);
-        assert_eq!(v.as_f64(), Some(3.15));
-        assert_eq!(v.as_i32(), None);
+    fn value_tag_constructor_stores_tag_and_payload() {
+        let value = Value::tag(1, vec![Value::Bool(true)]);
+        let (tag, payload) = value.as_tag().unwrap();
+        assert_eq!(tag, 1);
+        assert_eq!(payload, [Value::Bool(true)].as_slice());
     }
 
     #[test]
-    fn f32_value_roundtrip() {
-        let v = Value::F32(2.71);
-        match v {
-            Value::F32(f) => assert!((f - 2.71).abs() < f32::EPSILON),
-            _ => panic!("expected F32"),
-        }
-    }
-
-    #[test]
-    fn bool_value_roundtrip() {
-        let v = Value::Bool(true);
-        assert_eq!(v.as_bool(), Some(true));
-        assert!(v.is_truthy());
-
-        let v = Value::Bool(false);
-        assert_eq!(v.as_bool(), Some(false));
-        assert!(!v.is_truthy());
-    }
-
-    #[test]
-    fn str_value_roundtrip() {
-        let v = Value::Str(SmolStr::new("hello"));
-        assert_eq!(v.as_str(), Some("hello"));
-        assert!(v.is_truthy());
-    }
-
-    #[test]
-    fn empty_str_is_falsy() {
-        let v = Value::Str(SmolStr::new(""));
-        assert!(!v.is_truthy());
-    }
-
-    #[test]
-    fn array_value_operations() {
-        let v = Value::array(vec![Value::I32(1), Value::I32(2), Value::I32(3)]);
-        assert_eq!(v.as_array().unwrap().len(), 3);
-        assert!(v.is_truthy());
-    }
-
-    #[test]
-    fn empty_array_is_falsy() {
-        let v = Value::array(vec![]);
-        assert!(!v.is_truthy());
-    }
-
-    #[test]
-    fn unit_is_falsy() {
-        let v = Value::Unit;
-        assert!(v.is_unit());
-        assert!(!v.is_truthy());
-    }
-
-    #[test]
-    fn tag_value_roundtrip() {
-        let v = Value::tag(0, vec![Value::I32(42)]);
-        let (tag, payload) = v.as_tag().unwrap();
-        assert_eq!(tag, 0);
-        assert_eq!(payload[0].as_i32(), Some(42));
-    }
-
-    #[test]
-    fn record_value_fields() {
+    fn value_record_constructor_stores_fields() {
         let mut fields = BTreeMap::new();
-        fields.insert(SmolStr::new("name"), Value::Str(SmolStr::new("Alice")));
-        fields.insert(SmolStr::new("age"), Value::I32(30));
-        let v = Value::record(fields);
-        match v {
-            Value::Record(r) => {
-                assert_eq!(r.fields.len(), 2);
-                assert!(r.fields.contains_key("name"));
+        fields.insert(SmolStr::new("answer"), Value::I32(42));
+        let value = Value::record(fields);
+        match value {
+            Value::Record(ref record) => {
+                assert_eq!(record.fields.get("answer"), Some(&Value::I32(42)));
             }
             _ => panic!("expected Record"),
         }
     }
 
+    // -- Accessor tests --
+
     #[test]
-    fn value_equality_i32() {
+    fn primitive_accessors_match_kept_types() {
+        assert_eq!(Value::I32(1).as_i32(), Some(1));
+        assert_eq!(Value::I64(2).as_i64(), Some(2));
+        assert_eq!(Value::F64(3.5).as_f64(), Some(3.5));
+        assert_eq!(Value::Bool(false).as_bool(), Some(false));
+        assert_eq!(Value::Unit.as_i32(), None);
+    }
+
+    #[test]
+    fn as_str_returns_none_for_non_string() {
+        assert_eq!(Value::I32(0).as_str(), None);
+        assert_eq!(Value::Unit.as_str(), None);
+    }
+
+    #[test]
+    fn as_array_returns_none_for_non_array() {
+        assert_eq!(Value::I32(0).as_array(), None);
+    }
+
+    #[test]
+    fn as_tag_returns_none_for_non_tag() {
+        assert_eq!(Value::Unit.as_tag(), None);
+    }
+
+    // -- Unit tests --
+
+    #[test]
+    fn is_unit_true_for_unit() {
+        assert!(Value::Unit.is_unit());
+    }
+
+    #[test]
+    fn is_unit_false_for_other_values() {
+        assert!(!Value::I32(0).is_unit());
+        assert!(!Value::Bool(true).is_unit());
+    }
+
+    // -- Truthiness tests --
+
+    #[test]
+    fn zero_i32_is_falsy() {
+        assert!(!Value::I32(0).is_truthy());
+    }
+
+    #[test]
+    fn nonzero_i32_is_truthy() {
+        assert!(Value::I32(1).is_truthy());
+    }
+
+    #[test]
+    fn zero_i64_is_falsy() {
+        assert!(!Value::I64(0).is_truthy());
+    }
+
+    #[test]
+    fn nonzero_i64_is_truthy() {
+        assert!(Value::I64(1).is_truthy());
+    }
+
+    #[test]
+    fn zero_f64_is_falsy() {
+        assert!(!Value::F64(0.0).is_truthy());
+    }
+
+    #[test]
+    fn nonzero_f64_is_truthy() {
+        assert!(Value::F64(1.5).is_truthy());
+    }
+
+    #[test]
+    fn bool_is_its_truthiness() {
+        assert!(Value::Bool(true).is_truthy());
+        assert!(!Value::Bool(false).is_truthy());
+    }
+
+    #[test]
+    fn unit_is_falsy() {
+        assert!(!Value::Unit.is_truthy());
+    }
+
+    #[test]
+    fn empty_str_is_falsy() {
+        assert!(!Value::str("").is_truthy());
+    }
+
+    #[test]
+    fn nonempty_str_is_truthy() {
+        assert!(Value::str("hi").is_truthy());
+    }
+
+    #[test]
+    fn empty_array_is_falsy() {
+        assert!(!Value::array(vec![]).is_truthy());
+    }
+
+    #[test]
+    fn nonempty_array_is_truthy() {
+        assert!(Value::array(vec![Value::I32(1)]).is_truthy());
+    }
+
+    #[test]
+    fn record_is_always_truthy() {
+        assert!(Value::record(BTreeMap::new()).is_truthy());
+    }
+
+    #[test]
+    fn tag_is_always_truthy() {
+        assert!(Value::tag(0, vec![]).is_truthy());
+    }
+
+    // -- Numeric check tests --
+
+    #[test]
+    fn is_numeric_true_for_numbers() {
+        assert!(Value::I32(0).is_numeric());
+        assert!(Value::I64(0).is_numeric());
+        assert!(Value::F64(0.0).is_numeric());
+    }
+
+    #[test]
+    fn is_numeric_false_for_non_numbers() {
+        assert!(!Value::Bool(true).is_numeric());
+        assert!(!Value::str("hi").is_numeric());
+        assert!(!Value::Unit.is_numeric());
+        assert!(!Value::array(vec![]).is_numeric());
+    }
+
+    // -- Equality tests --
+
+    #[test]
+    fn same_values_are_equal() {
         assert_eq!(Value::I32(5), Value::I32(5));
+    }
+
+    #[test]
+    fn different_values_are_not_equal() {
         assert_ne!(Value::I32(5), Value::I32(6));
     }
 
     #[test]
-    fn value_equality_cross_type() {
-        // Different numeric types are not equal
+    fn cross_type_values_are_not_equal() {
         assert_ne!(Value::I32(5), Value::F64(5.0));
         assert_ne!(Value::I32(0), Value::Bool(false));
         assert_ne!(Value::I32(5), Value::I64(5));
     }
 
     #[test]
-    fn value_clone_is_cheap() {
-        let v = Value::Str(SmolStr::new("hello"));
+    fn unit_is_only_equal_to_unit() {
+        assert_eq!(Value::Unit, Value::Unit);
+        assert_ne!(Value::Unit, Value::I32(0));
+    }
+
+    #[test]
+    fn str_equality_is_deep() {
+        assert_eq!(Value::str("hello"), Value::str("hello"));
+        assert_ne!(Value::str("hello"), Value::str("world"));
+    }
+
+    #[test]
+    fn array_equality_is_deep() {
+        assert_eq!(
+            Value::array(vec![Value::I32(1), Value::I32(2)]),
+            Value::array(vec![Value::I32(1), Value::I32(2)]),
+        );
+        assert_ne!(
+            Value::array(vec![Value::I32(1)]),
+            Value::array(vec![Value::I32(2)]),
+        );
+    }
+
+    // -- Debug formatting tests --
+
+    #[test]
+    fn debug_i32_shows_number() {
+        assert_eq!(format!("{:?}", Value::I32(42)), "42");
+    }
+
+    #[test]
+    fn debug_i64_shows_suffix() {
+        assert_eq!(format!("{:?}", Value::I64(42)), "42i64");
+    }
+
+    #[test]
+    fn debug_f64_shows_number() {
+        assert_eq!(format!("{:?}", Value::F64(2.71)), "2.71");
+    }
+
+    #[test]
+    fn debug_bool_shows_keyword() {
+        assert_eq!(format!("{:?}", Value::Bool(true)), "true");
+    }
+
+    #[test]
+    fn debug_unit_shows_parens() {
+        assert_eq!(format!("{:?}", Value::Unit), "()");
+    }
+
+    #[test]
+    fn debug_str_shows_quoted() {
+        assert_eq!(format!("{:?}", Value::str("hello")), "\"hello\"");
+    }
+
+    #[test]
+    fn debug_array_shows_bracketed() {
+        assert_eq!(
+            format!("{:?}", Value::array(vec![Value::I32(1), Value::I32(2)])),
+            "[1, 2]",
+        );
+    }
+
+    #[test]
+    fn debug_closure_shows_arity() {
+        let data = ClosureData {
+            func: FuncPtr::Jit {
+                address: 0,
+                arity: 3,
+            },
+            captures: Arc::from([]),
+            arity: 3,
+        };
+        assert_eq!(
+            format!("{:?}", Value::Closure(Arc::new(data))),
+            "<closure/3>"
+        );
+    }
+
+    #[test]
+    fn debug_effect_shows_label() {
+        #[derive(Debug)]
+        struct TestEffect;
+        impl BuiltinFunction for TestEffect {
+            fn name(&self) -> &str {
+                "test"
+            }
+            fn arity(&self) -> usize {
+                0
+            }
+            fn execute(&self, _: &[Value]) -> Result<Value, String> {
+                Ok(Value::Unit)
+            }
+        }
+        assert_eq!(
+            format!("{:?}", Value::Effect(Arc::new(TestEffect))),
+            "<effect>",
+        );
+    }
+
+    // -- Display tests --
+
+    #[test]
+    fn display_str_shows_content() {
+        assert_eq!(format!("{}", Value::str("hello")), "hello");
+    }
+
+    #[test]
+    fn display_non_str_uses_debug() {
+        assert_eq!(format!("{}", Value::I32(42)), "42");
+    }
+
+    // -- Clone tests --
+
+    #[test]
+    fn clone_is_cheap() {
+        let v = Value::str("hello");
         let v2 = v.clone();
         assert_eq!(v, v2);
     }
 
-    #[test]
-    fn value_display_str() {
-        let v = Value::Str(SmolStr::new("hello"));
-        assert_eq!(format!("{v}"), "hello");
-    }
+    // -- Edge case: deeply nested array drops cleanly --
 
     #[test]
-    fn value_debug_i32() {
-        let v = Value::I32(42);
-        assert_eq!(format!("{v:?}"), "42");
-    }
-
-    #[test]
-    fn value_debug_i64() {
-        let v = Value::I64(42);
-        assert_eq!(format!("{v:?}"), "42i64");
-    }
-
-    #[test]
-    fn value_debug_u8() {
-        let v = Value::U8(255);
-        assert_eq!(format!("{v:?}"), "255u8");
-    }
-
-    #[test]
-    fn value_debug_f32() {
-        let v = Value::F32(1.5);
-        assert_eq!(format!("{v:?}"), "1.5f32");
-    }
-
-    #[test]
-    fn value_debug_array() {
-        let v = Value::array(vec![Value::I32(1), Value::I32(2)]);
-        assert_eq!(format!("{v:?}"), "[1, 2]");
-    }
-
-    #[test]
-    fn zero_i32_is_falsy() {
-        let v = Value::I32(0);
-        assert!(!v.is_truthy());
-    }
-
-    #[test]
-    fn nonzero_i32_is_truthy() {
-        let v = Value::I32(1);
-        assert!(v.is_truthy());
-    }
-
-    #[test]
-    fn is_numeric_true() {
-        assert!(Value::I32(0).is_numeric());
-        assert!(Value::F64(0.0).is_numeric());
-        assert!(Value::U8(0).is_numeric());
-        assert!(Value::Usize(0).is_numeric());
-    }
-
-    #[test]
-    fn is_numeric_false() {
-        assert!(!Value::Bool(true).is_numeric());
-        assert!(!Value::Str(SmolStr::new("hi")).is_numeric());
-        assert!(!Value::Unit.is_numeric());
+    fn deeply_nested_array_drops_without_stack_overflow() {
+        let mut v = Value::I32(42);
+        for _ in 0..5_000 {
+            v = Value::array(vec![v]);
+        }
+        // If Arc drops recurse too deeply this will stack overflow.
+        // 5,000 levels is enough to catch that.
+        drop(v);
     }
 }

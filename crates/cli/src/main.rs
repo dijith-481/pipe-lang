@@ -80,12 +80,8 @@ fn run_session(config: SessionConfig) -> i32 {
     }
     match session.run_pipeline() {
         Ok(result) => {
-            if result.success {
-                0
-            } else {
-                result.eprint_to_stderr();
-                1
-            }
+            result.eprint_to_stderr();
+            if result.success { result.exit_code } else { 1 }
         }
         Err(e) => {
             eprintln!("{e}");
