@@ -231,7 +231,10 @@ mod tests {
     fn value_array_constructor_stores_values() {
         let value = Value::array(vec![Value::I32(1), Value::I32(2)]);
 
-        assert_eq!(value.as_array(), Some([Value::I32(1), Value::I32(2)].as_slice()));
+        assert_eq!(
+            value.as_array(),
+            Some([Value::I32(1), Value::I32(2)].as_slice())
+        );
     }
 
     #[test]
