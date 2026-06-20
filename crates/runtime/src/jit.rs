@@ -1950,7 +1950,11 @@ mod tests {
         let mut func = IrFunction::new(SmolStr::new("main"), IrType::I32);
         let entry_id = func.alloc_block();
         let mut entry = BasicBlock::new(entry_id);
-        let val = push_inst(&mut func, &mut entry, ir::Instruction::ConstF64(std::f64::consts::PI));
+        let val = push_inst(
+            &mut func,
+            &mut entry,
+            ir::Instruction::ConstF64(std::f64::consts::PI),
+        );
         entry
             .instructions
             .push((None, ir::Instruction::Println(val)));
