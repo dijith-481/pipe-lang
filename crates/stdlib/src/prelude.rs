@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
-use runtime::{BuiltinFunction, ClosureData, Value, expect_arity};
+use runtime::{BuiltinFunction, ClosureData, FuncPtr, Value, expect_arity};
 
-use crate::closure::{ClosureThunk, call_closure};
-use crate::{array, io, str as string};
+use crate::closure::call_closure;
+use crate::{array, io, numeric, option, result as rslt, str as string};
 
 // ---------------------------------------------------------------------------
 // Prelude type definitions (for the typechecker)
@@ -31,31 +31,73 @@ pub fn prelude_type_names() -> Vec<&'static str> {
 #[must_use]
 pub fn prelude_builtins() -> Vec<Arc<dyn BuiltinFunction>> {
     vec![
+        // Core utility functions
         Arc::new(Id),
         Arc::new(Const),
         Arc::new(Flip),
         Arc::new(Compose),
         Arc::new(Pipe),
         Arc::new(Apply),
+        // Array operations
         Arc::new(array::ArrayMap),
         Arc::new(array::ArrayFilter),
         Arc::new(array::ArrayFold),
+        Arc::new(array::ArrayFlatMap),
         Arc::new(array::ArrayConcat),
+        Arc::new(array::ArrayPrepend),
         Arc::new(array::ArrayLen),
         Arc::new(array::ArrayHead),
         Arc::new(array::ArrayTail),
+        // String operations
         Arc::new(string::StrConcat),
         Arc::new(string::StrLen),
         Arc::new(string::StrSplit),
+        Arc::new(string::StrTrim),
+        Arc::new(string::StrParseI32),
+        // IO
         Arc::new(io::IoPrintln),
         Arc::new(io::IoPrint),
         Arc::new(io::IoReadLine),
+        Arc::new(io::IoReadFile),
+        // Option combinators
+        Arc::new(option::OptionMap),
+        Arc::new(option::OptionFlatMap),
+        Arc::new(option::OptionUnwrapOr),
+        // Result combinators
+        Arc::new(rslt::ResultMap),
+        Arc::new(rslt::ResultFlatMap),
+        // Numeric conversions
+        Arc::new(numeric::ToI64),
+        Arc::new(numeric::ToI32),
+        Arc::new(numeric::ToF64),
+        Arc::new(numeric::ToStr),
     ]
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+fn closure_value(builtin: Arc<dyn BuiltinFunction>, arity: usize) -> Value {
+    Value::Closure(Arc::new(ClosureData {
+        func: FuncPtr::Builtin(builtin),
+        captures: Arc::from([]),
+        arity,
+    }))
+}
+
+fn expect_closure(name: &str, value: &Value) -> Result<Arc<ClosureData>, String> {
+    match value {
+        Value::Closure(closure) => Ok(Arc::clone(closure)),
+        actual => Err(format!("`{name}` expected Closure, got {actual:?}")),
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Builtin implementations
 // ---------------------------------------------------------------------------
+
+// -- Id --
 
 #[derive(Clone, Copy, Debug, Default)]
 struct Id;
@@ -75,6 +117,8 @@ impl BuiltinFunction for Id {
     }
 }
 
+// -- Const --
+
 #[derive(Clone, Copy, Debug, Default)]
 struct Const;
 
@@ -89,9 +133,29 @@ impl BuiltinFunction for Const {
 
     fn execute(&self, args: &[Value]) -> Result<Value, String> {
         expect_arity(self.name(), args, self.arity())?;
-        Ok(closure_value(const_inner, vec![args[0].clone()], 1))
+        Ok(closure_value(Arc::new(ConstInner(args[0].clone())), 1))
     }
 }
+
+/// Inner closure returned by `const`: ignores its argument, returns captured value.
+#[derive(Debug, Clone)]
+struct ConstInner(Value);
+
+impl BuiltinFunction for ConstInner {
+    fn name(&self) -> &str {
+        "const.closure"
+    }
+
+    fn arity(&self) -> usize {
+        1
+    }
+
+    fn execute(&self, _args: &[Value]) -> Result<Value, String> {
+        Ok(self.0.clone())
+    }
+}
+
+// -- Flip --
 
 #[derive(Clone, Copy, Debug, Default)]
 struct Flip;
@@ -107,10 +171,37 @@ impl BuiltinFunction for Flip {
 
     fn execute(&self, args: &[Value]) -> Result<Value, String> {
         expect_arity(self.name(), args, self.arity())?;
-        expect_closure(self.name(), &args[0])?;
-        Ok(closure_value(flip_inner, vec![args[0].clone()], 2))
+        let func = expect_closure(self.name(), &args[0])?.clone();
+        Ok(closure_value(Arc::new(FlipInner(func)), 2))
     }
 }
+
+/// Inner closure returned by `flip`: swaps arguments and calls original.
+#[derive(Debug, Clone)]
+struct FlipInner(Arc<ClosureData>);
+
+impl BuiltinFunction for FlipInner {
+    fn name(&self) -> &str {
+        "flip.closure"
+    }
+
+    fn arity(&self) -> usize {
+        2
+    }
+
+    fn execute(&self, args: &[Value]) -> Result<Value, String> {
+        if args.len() < 2 {
+            return Err(format!(
+                "flip.closure expected 2 arguments, got {}",
+                args.len()
+            ));
+        }
+        let swapped = vec![args[1].clone(), args[0].clone()];
+        call_closure(&self.0, &swapped)
+    }
+}
+
+// -- Compose --
 
 #[derive(Clone, Copy, Debug, Default)]
 struct Compose;
@@ -126,15 +217,32 @@ impl BuiltinFunction for Compose {
 
     fn execute(&self, args: &[Value]) -> Result<Value, String> {
         expect_arity(self.name(), args, self.arity())?;
-        expect_closure(self.name(), &args[0])?;
-        expect_closure(self.name(), &args[1])?;
-        Ok(closure_value(
-            compose_inner,
-            vec![args[0].clone(), args[1].clone()],
-            1,
-        ))
+        let f = expect_closure(self.name(), &args[0])?.clone();
+        let g = expect_closure(self.name(), &args[1])?.clone();
+        Ok(closure_value(Arc::new(ComposeInner(f, g)), 1))
     }
 }
+
+/// Inner closure for compose: applies g then f.
+#[derive(Debug, Clone)]
+struct ComposeInner(Arc<ClosureData>, Arc<ClosureData>);
+
+impl BuiltinFunction for ComposeInner {
+    fn name(&self) -> &str {
+        "compose.closure"
+    }
+
+    fn arity(&self) -> usize {
+        1
+    }
+
+    fn execute(&self, args: &[Value]) -> Result<Value, String> {
+        let g_result = call_closure(&self.1, args)?;
+        call_closure(&self.0, &[g_result])
+    }
+}
+
+// -- Pipe --
 
 #[derive(Clone, Copy, Debug, Default)]
 struct Pipe;
@@ -150,15 +258,32 @@ impl BuiltinFunction for Pipe {
 
     fn execute(&self, args: &[Value]) -> Result<Value, String> {
         expect_arity(self.name(), args, self.arity())?;
-        expect_closure(self.name(), &args[0])?;
-        expect_closure(self.name(), &args[1])?;
-        Ok(closure_value(
-            pipe_inner,
-            vec![args[0].clone(), args[1].clone()],
-            1,
-        ))
+        let f = expect_closure(self.name(), &args[0])?.clone();
+        let g = expect_closure(self.name(), &args[1])?.clone();
+        Ok(closure_value(Arc::new(PipeInner(f, g)), 1))
     }
 }
+
+/// Inner closure for pipe: applies f then g.
+#[derive(Debug, Clone)]
+struct PipeInner(Arc<ClosureData>, Arc<ClosureData>);
+
+impl BuiltinFunction for PipeInner {
+    fn name(&self) -> &str {
+        "pipe.closure"
+    }
+
+    fn arity(&self) -> usize {
+        1
+    }
+
+    fn execute(&self, args: &[Value]) -> Result<Value, String> {
+        let f_result = call_closure(&self.0, args)?;
+        call_closure(&self.1, &[f_result])
+    }
+}
+
+// -- Apply --
 
 #[derive(Clone, Copy, Debug, Default)]
 struct Apply;
@@ -175,75 +300,7 @@ impl BuiltinFunction for Apply {
     fn execute(&self, args: &[Value]) -> Result<Value, String> {
         expect_arity(self.name(), args, self.arity())?;
         let function = expect_closure(self.name(), &args[0])?;
-        call_closure(function, std::slice::from_ref(&args[1]))
-    }
-}
-
-fn expect_closure<'a>(name: &str, value: &'a Value) -> Result<&'a ClosureData, String> {
-    match value {
-        Value::Closure(closure) => Ok(closure),
-        actual => Err(format!("`{name}` expected Closure, got {actual:?}")),
-    }
-}
-
-fn closure_value(function: ClosureThunk, captures: Vec<Value>, arity: usize) -> Value {
-    Value::Closure(Arc::new(ClosureData {
-        func_ptr: function as usize,
-        captures: Arc::from(captures.into_boxed_slice()),
-        arity,
-    }))
-}
-
-unsafe extern "C" fn const_inner(args: *const u8, ret: *mut u8) -> i32 {
-    let values = unsafe { std::slice::from_raw_parts(args.cast::<Value>(), 2) };
-    unsafe {
-        std::ptr::write(ret.cast::<Value>(), values[0].clone());
-    }
-    0
-}
-
-unsafe extern "C" fn flip_inner(args: *const u8, ret: *mut u8) -> i32 {
-    let values = unsafe { std::slice::from_raw_parts(args.cast::<Value>(), 3) };
-    let Value::Closure(function) = &values[0] else {
-        return 1;
-    };
-    let swapped = [values[2].clone(), values[1].clone()];
-    write_call_result(function, &swapped, ret)
-}
-
-unsafe extern "C" fn compose_inner(args: *const u8, ret: *mut u8) -> i32 {
-    let values = unsafe { std::slice::from_raw_parts(args.cast::<Value>(), 3) };
-    let (Value::Closure(first), Value::Closure(second)) = (&values[0], &values[1]) else {
-        return 1;
-    };
-    let second_result = match call_closure(second, std::slice::from_ref(&values[2])) {
-        Ok(value) => value,
-        Err(_) => return 1,
-    };
-    write_call_result(first, &[second_result], ret)
-}
-
-unsafe extern "C" fn pipe_inner(args: *const u8, ret: *mut u8) -> i32 {
-    let values = unsafe { std::slice::from_raw_parts(args.cast::<Value>(), 3) };
-    let (Value::Closure(first), Value::Closure(second)) = (&values[0], &values[1]) else {
-        return 1;
-    };
-    let first_result = match call_closure(first, std::slice::from_ref(&values[2])) {
-        Ok(value) => value,
-        Err(_) => return 1,
-    };
-    write_call_result(second, &[first_result], ret)
-}
-
-fn write_call_result(closure: &ClosureData, args: &[Value], ret: *mut u8) -> i32 {
-    match call_closure(closure, args) {
-        Ok(value) => {
-            unsafe {
-                std::ptr::write(ret.cast::<Value>(), value);
-            }
-            0
-        }
-        Err(_) => 1,
+        call_closure(&function, std::slice::from_ref(&args[1]))
     }
 }
 
@@ -255,41 +312,68 @@ fn write_call_result(closure: &ClosureData, args: &[Value], ret: *mut u8) -> i32
 mod tests {
     use super::*;
 
-    unsafe extern "C" fn add_one(args: *const u8, ret: *mut u8) -> i32 {
-        let values = unsafe { std::slice::from_raw_parts(args.cast::<Value>(), 1) };
-        match &values[0] {
-            Value::I32(value) => unsafe {
-                std::ptr::write(ret.cast::<Value>(), Value::I32(*value + 1));
-                0
-            },
-            _ => 1,
+    #[derive(Debug)]
+    struct AddOne;
+
+    impl BuiltinFunction for AddOne {
+        fn name(&self) -> &str {
+            "add_one"
+        }
+
+        fn arity(&self) -> usize {
+            1
+        }
+
+        fn execute(&self, args: &[Value]) -> Result<Value, String> {
+            match &args[0] {
+                Value::I32(n) => Ok(Value::I32(n + 1)),
+                actual => Err(format!("AddOne expected I32, got {actual:?}")),
+            }
         }
     }
 
-    unsafe extern "C" fn double(args: *const u8, ret: *mut u8) -> i32 {
-        let values = unsafe { std::slice::from_raw_parts(args.cast::<Value>(), 1) };
-        match &values[0] {
-            Value::I32(value) => unsafe {
-                std::ptr::write(ret.cast::<Value>(), Value::I32(*value * 2));
-                0
-            },
-            _ => 1,
+    #[derive(Debug)]
+    struct Double;
+
+    impl BuiltinFunction for Double {
+        fn name(&self) -> &str {
+            "double"
+        }
+
+        fn arity(&self) -> usize {
+            1
+        }
+
+        fn execute(&self, args: &[Value]) -> Result<Value, String> {
+            match &args[0] {
+                Value::I32(n) => Ok(Value::I32(n * 2)),
+                actual => Err(format!("Double expected I32, got {actual:?}")),
+            }
         }
     }
 
-    unsafe extern "C" fn subtract(args: *const u8, ret: *mut u8) -> i32 {
-        let values = unsafe { std::slice::from_raw_parts(args.cast::<Value>(), 2) };
-        match (&values[0], &values[1]) {
-            (Value::I32(left), Value::I32(right)) => unsafe {
-                std::ptr::write(ret.cast::<Value>(), Value::I32(*left - *right));
-                0
-            },
-            _ => 1,
+    #[derive(Debug)]
+    struct Subtract;
+
+    impl BuiltinFunction for Subtract {
+        fn name(&self) -> &str {
+            "subtract"
+        }
+
+        fn arity(&self) -> usize {
+            2
+        }
+
+        fn execute(&self, args: &[Value]) -> Result<Value, String> {
+            match (&args[0], &args[1]) {
+                (Value::I32(a), Value::I32(b)) => Ok(Value::I32(a - b)),
+                actual => Err(format!("Subtract expected I32, I32, got {actual:?}")),
+            }
         }
     }
 
-    fn test_closure(function: ClosureThunk, arity: usize) -> Value {
-        closure_value(function, Vec::new(), arity)
+    fn test_closure(builtin: Arc<dyn BuiltinFunction>, arity: usize) -> Value {
+        closure_value(builtin, arity)
     }
 
     #[test]
@@ -320,9 +404,23 @@ mod tests {
         assert!(names.contains(&"Str.concat"));
         assert!(names.contains(&"Str.len"));
         assert!(names.contains(&"Str.split"));
+        assert!(names.contains(&"Str.trim"));
+        assert!(names.contains(&"Str.parse_i32"));
         assert!(names.contains(&"println"));
         assert!(names.contains(&"print"));
         assert!(names.contains(&"read_line"));
+        assert!(names.contains(&"readFile"));
+        assert!(names.contains(&"flatMap"));
+        assert!(names.contains(&"prepend"));
+        assert!(names.contains(&"Option.map"));
+        assert!(names.contains(&"Option.flatMap"));
+        assert!(names.contains(&"Option.unwrapOr"));
+        assert!(names.contains(&"Result.map"));
+        assert!(names.contains(&"Result.flatMap"));
+        assert!(names.contains(&"to_i64"));
+        assert!(names.contains(&"to_i32"));
+        assert!(names.contains(&"to_f64"));
+        assert!(names.contains(&"to_str"));
     }
 
     #[test]
@@ -350,7 +448,7 @@ mod tests {
     #[test]
     fn apply_calls_function() {
         let result = Apply
-            .execute(&[test_closure(add_one, 1), Value::I32(5)])
+            .execute(&[test_closure(Arc::new(AddOne), 1), Value::I32(5)])
             .expect("apply should call closures");
 
         assert_eq!(result, Value::I32(6));
@@ -368,13 +466,11 @@ mod tests {
     #[test]
     fn flip_swaps_arguments() {
         let flipped = Flip
-            .execute(&[test_closure(subtract, 2)])
+            .execute(&[test_closure(Arc::new(Subtract), 2)])
             .expect("flip should return a closure");
-        let result = call_closure(
-            expect_closure("test", &flipped).expect("flip should produce a closure"),
-            &[Value::I32(3), Value::I32(10)],
-        )
-        .expect("flipped closure should execute");
+        let closure = expect_closure("flip", &flipped).expect("flip should return a closure");
+        let result = call_closure(&closure, &[Value::I32(3), Value::I32(10)])
+            .expect("flipped closure should execute");
 
         assert_eq!(result, Value::I32(7));
     }
@@ -382,7 +478,10 @@ mod tests {
     #[test]
     fn compose_applies_second_then_first() {
         let composed = Compose
-            .execute(&[test_closure(add_one, 1), test_closure(double, 1)])
+            .execute(&[
+                test_closure(Arc::new(AddOne), 1),
+                test_closure(Arc::new(Double), 1),
+            ])
             .expect("compose should return a closure");
         let result = Apply
             .execute(&[composed, Value::I32(5)])
@@ -394,12 +493,51 @@ mod tests {
     #[test]
     fn pipe_applies_first_then_second() {
         let piped = Pipe
-            .execute(&[test_closure(add_one, 1), test_closure(double, 1)])
+            .execute(&[
+                test_closure(Arc::new(AddOne), 1),
+                test_closure(Arc::new(Double), 1),
+            ])
             .expect("pipe should return a closure");
         let result = Apply
             .execute(&[piped, Value::I32(5)])
             .expect("piped closure should execute");
 
         assert_eq!(result, Value::I32(12));
+    }
+
+    #[test]
+    fn flip_rejects_non_closure() {
+        let error = Flip
+            .execute(&[Value::Unit])
+            .expect_err("flip should reject non-closures");
+
+        assert!(error.contains("expected Closure"));
+    }
+
+    #[test]
+    fn compose_rejects_non_closure_first() {
+        let error = Compose
+            .execute(&[Value::Unit, test_closure(Arc::new(AddOne), 1)])
+            .expect_err("compose should reject non-closure first arg");
+
+        assert!(error.contains("expected Closure"));
+    }
+
+    #[test]
+    fn compose_rejects_non_closure_second() {
+        let error = Compose
+            .execute(&[test_closure(Arc::new(AddOne), 1), Value::Unit])
+            .expect_err("compose should reject non-closure second arg");
+
+        assert!(error.contains("expected Closure"));
+    }
+
+    #[test]
+    fn pipe_rejects_non_closure() {
+        let error = Pipe
+            .execute(&[Value::Unit, test_closure(Arc::new(AddOne), 1)])
+            .expect_err("pipe should reject non-closures");
+
+        assert!(error.contains("expected Closure"));
     }
 }

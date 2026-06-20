@@ -4,6 +4,8 @@ use std::sync::Arc;
 use bumpalo::Bump;
 use diagnostics::errors::{CompilerError, SourceDiagnostic};
 use ir::lower;
+use runtime::{BuiltinRegistry, init_global_registry};
+use stdlib::prelude::prelude_builtins;
 
 /// What the pipeline should do after typechecking.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -205,7 +207,14 @@ impl CompilerSession {
             });
         }
 
-        // Stage 4: JIT compile and run
+        // Stage 4a: Initialize builtin registry for JIT name resolution
+        let mut registry = BuiltinRegistry::new();
+        for builtin in prelude_builtins() {
+            registry.register(builtin);
+        }
+        init_global_registry(registry);
+
+        // Stage 4b: JIT compile and run
         let compiled = runtime::compile_ir(&ir_module).map_err(|e| {
             Box::new(SourceDiagnostic::new(
                 filename.clone(),

@@ -14,6 +14,11 @@ pub struct IoPrint;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct IoReadLine;
 
+/// Reads an entire file into a string: `readFile(path)`.
+/// Returns `Ok(content)` on success, `Err(error)` on failure.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct IoReadFile;
+
 impl BuiltinFunction for IoPrintln {
     fn name(&self) -> &str {
         "println"
@@ -44,7 +49,7 @@ impl BuiltinFunction for IoPrint {
         expect_arity(self.name(), args, self.arity())?;
         let message = expect_str(self.name(), &args[0])?;
         print!("{message}");
-        io::stdout().flush().map_err(|error| error.to_string())?;
+        io::stdout().flush().map_err(|e| e.to_string())?;
         Ok(Value::Unit)
     }
 }
@@ -63,8 +68,27 @@ impl BuiltinFunction for IoReadLine {
         let mut buffer = String::new();
         io::stdin()
             .read_line(&mut buffer)
-            .map_err(|error| error.to_string())?;
+            .map_err(|e| e.to_string())?;
         Ok(Value::str(buffer))
+    }
+}
+
+impl BuiltinFunction for IoReadFile {
+    fn name(&self) -> &str {
+        "readFile"
+    }
+
+    fn arity(&self) -> usize {
+        1
+    }
+
+    fn execute(&self, args: &[Value]) -> Result<Value, String> {
+        expect_arity(self.name(), args, self.arity())?;
+        let path = expect_str(self.name(), &args[0])?;
+        match std::fs::read_to_string(path) {
+            Ok(content) => Ok(Value::tag(1, vec![Value::str(content)])), // Ok(content)
+            Err(e) => Ok(Value::tag(0, vec![Value::str(e.to_string())])), // Err(error)
+        }
     }
 }
 
@@ -122,5 +146,26 @@ mod tests {
             .expect_err("read_line should reject arguments");
 
         assert!(error.contains("expected 0 argument"));
+    }
+
+    #[test]
+    fn read_file_rejects_non_string() {
+        let error = IoReadFile
+            .execute(&[Value::Unit])
+            .expect_err("readFile should reject non-strings");
+
+        assert!(error.contains("expected Str"));
+    }
+
+    #[test]
+    fn read_file_returns_err_for_nonexistent() {
+        let result = IoReadFile
+            .execute(&[Value::str("/nonexistent/path")])
+            .expect("readFile should handle missing files");
+
+        match result {
+            Value::Tag { tag: 0, .. } => {} // Err variant
+            _ => panic!("expected Err tag for missing file"),
+        }
     }
 }

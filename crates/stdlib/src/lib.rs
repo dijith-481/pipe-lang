@@ -6,7 +6,10 @@
 pub mod array;
 mod closure;
 pub mod io;
+pub mod numeric;
+pub mod option;
 pub mod prelude;
+pub mod result;
 pub mod str;
 
 pub fn version() -> &'static str {
