@@ -62,6 +62,7 @@ fn mono_to_ir_inner(ty: &MonoType, tag_variants: Option<&TagVariants>) -> IrType
                 .map(|(k, v)| (k.clone(), mono_to_ir_inner(v, tag_variants)))
                 .collect(),
         }),
+        MonoType::Effect(inner) => IrType::Effect(Box::new(mono_to_ir_inner(inner, tag_variants))),
         MonoType::Tag { name, payload } => {
             if let Some(variants) = tag_variants.and_then(|tv| tv.get(name.as_str())) {
                 let mut offset = 0;
@@ -501,7 +502,19 @@ fn lower_expr<'src>(
                 for (disc, block_id) in literal_arms.into_iter().rev() {
                     let check_block = fb.alloc_block();
                     fb.set_current(check_block);
-                    let lit_v = fb.emit(Instruction::ConstI64(disc));
+                    let lit_v = fb.emit(match subj_ty {
+                        IrType::I8 => Instruction::ConstI8(disc as i8),
+                        IrType::I16 => Instruction::ConstI16(disc as i16),
+                        IrType::I32 => Instruction::ConstI32(disc as i32),
+                        IrType::I64 => Instruction::ConstI64(disc),
+                        IrType::U8 => Instruction::ConstU8(disc as u8),
+                        IrType::U16 => Instruction::ConstU16(disc as u16),
+                        IrType::U32 => Instruction::ConstU32(disc as u32),
+                        IrType::U64 => Instruction::ConstU64(disc as u64),
+                        IrType::Usize => Instruction::ConstUsize(disc as usize),
+                        IrType::Bool => Instruction::ConstBool(disc != 0),
+                        _ => Instruction::ConstI64(disc),
+                    });
                     let eq_v = fb.emit(Instruction::Eq(subj_v, lit_v));
                     let else_target = cascade_target.unwrap_or_else(|| {
                         let trap = fb.alloc_block();
@@ -542,15 +555,21 @@ fn lower_expr<'src>(
             Ok(result_v)
         }
 
-        Expr::Array { elems, .. } => {
+        Expr::Array { elems, span } => {
             let elem_vals: Vec<ValueId> = elems
                 .iter()
                 .map(|e| lower_expr(fb, e, hoisted))
                 .collect::<Result<_, _>>()?;
+            let return_type = fb
+                .type_map
+                .get(span)
+                .map(mono_to_ir)
+                .unwrap_or(IrType::Unit);
             Ok(
                 fb.emit(Instruction::CallNamed(Box::new(crate::CallNamedData {
                     name: "array_literal".into(),
                     args: elem_vals,
+                    return_type,
                 }))),
             )
         }
@@ -674,16 +693,22 @@ fn lower_expr<'src>(
             }))))
         }
 
-        Expr::Application { func, args, .. } => {
+        Expr::Application { func, args, span } => {
             let arg_vals: Vec<ValueId> = args
                 .iter()
                 .map(|a| lower_expr(fb, a, hoisted))
                 .collect::<Result<_, _>>()?;
+            let return_type = fb
+                .type_map
+                .get(span)
+                .map(mono_to_ir)
+                .unwrap_or(IrType::Unit);
             match func {
                 Expr::Ident(name, _) => Ok(fb.emit(Instruction::CallNamed(Box::new(
                     crate::CallNamedData {
                         name: (*name).into(),
                         args: arg_vals,
+                        return_type,
                     },
                 )))),
                 _ => {

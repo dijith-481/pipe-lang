@@ -3,8 +3,8 @@
 type Cell = bool
 
 let step : (Array<Array<Cell>>) -> Array<Array<Cell>> = (grid) => {
-    let h = grid.len()
-    let w = grid[0].len()
+    let h = grid.len().to_i32()
+    let w = grid[0usize].len().to_i32()
 
     // Count neighbors for a cell at (row, col)
     let countNeighbors = (row, col) => {

@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 
+use ast::SmolStr;
 use ast::ast::{BinOp, Decl, Expr, LiteralPattern, MatchArm, Pattern, Stmt, TypeExpr, UnaryOp};
 use ast::span::Span;
 
@@ -25,6 +26,7 @@ fn free_vars_mono(ty: &MonoType, out: &mut HashSet<TypeId>) {
         }
         MonoType::Record(fields) => fields.values().for_each(|t| free_vars_mono(t, out)),
         MonoType::Tag { payload, .. } => payload.iter().for_each(|t| free_vars_mono(t, out)),
+        MonoType::Effect(inner) => free_vars_mono(inner, out),
         _ => {}
     }
 }
@@ -88,6 +90,7 @@ fn apply_mapping(ty: &MonoType, m: &HashMap<TypeId, MonoType>) -> MonoType {
             name: name.clone(),
             payload: payload.iter().map(|t| apply_mapping(t, m)).collect(),
         },
+        MonoType::Effect(inner) => MonoType::Effect(Box::new(apply_mapping(inner, m))),
         _ => ty.clone(),
     }
 }
@@ -96,39 +99,99 @@ fn apply_mapping(ty: &MonoType, m: &HashMap<TypeId, MonoType>) -> MonoType {
 // TypeExpr → MonoType
 // ---------------------------------------------------------------------------
 
-/// Converts a syntax-level type annotation into a [`MonoType`].
-///
-/// # Errors
-///
-/// Returns [`TypeError::UnboundVariable`] for unknown type names.
-pub fn type_expr_to_mono(te: &TypeExpr<'_>) -> Result<MonoType, TypeError> {
+/// Collects generic type parameter names from a type expression.
+/// Recognizes single lowercase letter names as generic params.
+fn collect_generic_names<'a>(te: &'a TypeExpr<'a>, names: &mut Vec<&'a str>) {
     match te {
-        TypeExpr::Named(name, span) => match *name {
-            "i8" => Ok(MonoType::I8),
-            "i16" => Ok(MonoType::I16),
-            "i32" => Ok(MonoType::I32),
-            "i64" => Ok(MonoType::I64),
-            "u8" => Ok(MonoType::U8),
-            "u16" => Ok(MonoType::U16),
-            "u32" => Ok(MonoType::U32),
-            "u64" => Ok(MonoType::U64),
-            "usize" => Ok(MonoType::Usize),
-            "f32" => Ok(MonoType::F32),
-            "f64" => Ok(MonoType::F64),
-            "bool" => Ok(MonoType::Bool),
-            "str" => Ok(MonoType::Str),
-            "()" => Ok(MonoType::Unit),
-            _ => Err(TypeError::UnboundVariable {
-                name: (*name).to_string(),
-                span: *span,
-            }),
-        },
-        TypeExpr::Function { from, to, .. } => Ok(MonoType::Func {
-            params: Rc::from([type_expr_to_mono(from)?]),
-            ret: Rc::new(type_expr_to_mono(to)?),
-        }),
+        TypeExpr::Named(name, _) => {
+            if name.len() == 1 && name.chars().all(|c| c.is_ascii_lowercase()) {
+                names.push(*name);
+            }
+        }
+        TypeExpr::Function { from, to, .. } => {
+            collect_generic_names(from, names);
+            collect_generic_names(to, names);
+        }
+        TypeExpr::Tuple { types, .. } => {
+            for t in types {
+                collect_generic_names(t, names);
+            }
+        }
+        TypeExpr::Record { fields, .. } => {
+            for f in fields {
+                collect_generic_names(f.ty, names);
+            }
+        }
+        TypeExpr::Apply { func, arg, .. } => {
+            collect_generic_names(func, names);
+            collect_generic_names(arg, names);
+        }
+        TypeExpr::Sum { variants, .. } => {
+            for v in variants {
+                for f in &v.fields {
+                    collect_generic_names(f, names);
+                }
+            }
+        }
+    }
+}
+
+/// Internal annotation resolver with generic param support.
+fn type_expr_to_mono_inner(
+    env: &TypeEnv,
+    te: &TypeExpr<'_>,
+    generics: &HashMap<SmolStr, MonoType>,
+) -> Result<MonoType, TypeError> {
+    match te {
+        TypeExpr::Named(name, span) => {
+            if let Some(subst) = generics.get(*name) {
+                return Ok(subst.clone());
+            }
+            match *name {
+                "i8" => Ok(MonoType::I8),
+                "i16" => Ok(MonoType::I16),
+                "i32" => Ok(MonoType::I32),
+                "i64" => Ok(MonoType::I64),
+                "u8" => Ok(MonoType::U8),
+                "u16" => Ok(MonoType::U16),
+                "u32" => Ok(MonoType::U32),
+                "u64" => Ok(MonoType::U64),
+                "usize" => Ok(MonoType::Usize),
+                "f32" => Ok(MonoType::F32),
+                "f64" => Ok(MonoType::F64),
+                "bool" => Ok(MonoType::Bool),
+                "str" => Ok(MonoType::Str),
+                "()" => Ok(MonoType::Unit),
+                _ => {
+                    // Try to resolve user-defined type from env
+                    if let Some(poly) = env.lookup(name) {
+                        Ok(poly.body.clone())
+                    } else {
+                        Err(TypeError::UnboundVariable {
+                            name: (*name).to_string(),
+                            span: *span,
+                        })
+                    }
+                }
+            }
+        }
+        TypeExpr::Function { from, to, .. } => {
+            let from_resolved = type_expr_to_mono_inner(env, from, generics)?;
+            // Multi-param fix: unwrap Tuple into individual params
+            let params = match &from_resolved {
+                MonoType::Tag { name, payload } if name.as_str() == "Tuple" => payload.to_vec(),
+                _ => vec![from_resolved],
+            };
+            Ok(MonoType::Func {
+                params: Rc::from(params),
+                ret: Rc::new(type_expr_to_mono_inner(env, to, generics)?),
+            })
+        }
         TypeExpr::Tuple { types, span: _ } => {
-            let payload: Result<Vec<MonoType>, _> = types.iter().map(type_expr_to_mono).collect();
+            let payload: Result<Vec<MonoType>, _> = types
+                .iter()
+                .map(|t| type_expr_to_mono_inner(env, t, generics))
+                .collect();
             Ok(MonoType::Tag {
                 name: "Tuple".into(),
                 payload: Rc::from(payload?.as_slice()),
@@ -137,13 +200,12 @@ pub fn type_expr_to_mono(te: &TypeExpr<'_>) -> Result<MonoType, TypeError> {
         TypeExpr::Record { fields, .. } => {
             let mut map = BTreeMap::new();
             for f in fields {
-                map.insert(f.name.into(), type_expr_to_mono(f.ty)?);
+                map.insert(f.name.into(), type_expr_to_mono_inner(env, f.ty, generics)?);
             }
             Ok(MonoType::Record(Rc::new(map)))
         }
         TypeExpr::Apply { func, arg, span } => {
-            // Collect the chain of applications: Result<i32, str> = Apply(Apply(Result, i32), str)
-            let mut args = vec![type_expr_to_mono(arg)?];
+            let mut args = vec![type_expr_to_mono_inner(env, arg, generics)?];
             let mut current = func;
             let base_name = loop {
                 match current {
@@ -153,7 +215,7 @@ pub fn type_expr_to_mono(te: &TypeExpr<'_>) -> Result<MonoType, TypeError> {
                         arg: inner_arg,
                         ..
                     } => {
-                        args.push(type_expr_to_mono(inner_arg)?);
+                        args.push(type_expr_to_mono_inner(env, inner_arg, generics)?);
                         current = inner;
                     }
                     _ => {
@@ -165,16 +227,59 @@ pub fn type_expr_to_mono(te: &TypeExpr<'_>) -> Result<MonoType, TypeError> {
                 }
             };
             args.reverse();
-            Ok(MonoType::Tag {
-                name: base_name.into(),
-                payload: Rc::from(args.as_slice()),
-            })
+            if base_name == "Array" && args.len() == 1 {
+                Ok(MonoType::Array(Rc::new(args.into_iter().next().unwrap())))
+            } else if base_name == "Effect" && args.len() == 1 {
+                Ok(MonoType::Effect(Box::new(args.into_iter().next().unwrap())))
+            } else {
+                Ok(MonoType::Tag {
+                    name: base_name.into(),
+                    payload: Rc::from(args.as_slice()),
+                })
+            }
         }
         TypeExpr::Sum { span, .. } => Err(TypeError::UnboundVariable {
             name: "anonymous sum type".to_string(),
             span: *span,
         }),
     }
+}
+
+/// Converts a syntax-level type annotation into a [`MonoType`], resolving
+/// user-defined type names from the environment.
+///
+/// # Errors
+///
+/// Returns [`TypeError::UnboundVariable`] for unknown type names.
+pub fn type_expr_to_mono_with_env(env: &TypeEnv, te: &TypeExpr<'_>) -> Result<MonoType, TypeError> {
+    type_expr_to_mono_inner(env, te, &HashMap::new())
+}
+
+/// Resolves a type expression, auto-detecting single-letter generic type
+/// variables (e.g. `a`, `b`) and binding them to fresh type variables.
+pub fn type_expr_to_mono_with_generics(
+    env: &mut TypeEnv,
+    te: &TypeExpr<'_>,
+) -> Result<MonoType, TypeError> {
+    let mut names = Vec::new();
+    collect_generic_names(te, &mut names);
+    names.sort();
+    names.dedup();
+    let mut generics = HashMap::new();
+    for name in &names {
+        let v = env.fresh_var();
+        generics.insert(SmolStr::from(*name), MonoType::Var(v));
+    }
+    type_expr_to_mono_inner(env, te, &generics)
+}
+
+/// Legacy wrapper — only resolves hardcoded primitive names.
+/// Fails with [`TypeError::UnboundVariable`] for user-defined types.
+///
+/// Prefer [`type_expr_to_mono_with_env`] going forward.
+pub fn type_expr_to_mono(te: &TypeExpr<'_>) -> Result<MonoType, TypeError> {
+    let empty_env = TypeEnv::new();
+    type_expr_to_mono_with_env(&empty_env, te)
 }
 
 // ---------------------------------------------------------------------------
@@ -200,7 +305,7 @@ fn bind_pattern<'a>(
             Ok(ty)
         }
         Pattern::Literal(lit, _span) => match lit {
-            LiteralPattern::Int(_) => Ok(MonoType::I32),
+            LiteralPattern::Int(text) => Ok(int_literal_type(text)),
             LiteralPattern::Float(_) => Ok(MonoType::F64),
             LiteralPattern::Str(_) => Ok(MonoType::Str),
             LiteralPattern::Bool(_) => Ok(MonoType::Bool),
@@ -375,7 +480,7 @@ fn infer_inner<'a>(
                 .iter()
                 .map(|p| {
                     let ty = if let Some(ann) = p.ty {
-                        type_expr_to_mono(ann)?
+                        type_expr_to_mono_with_env(env, ann)?
                     } else {
                         let v = env.fresh_var();
                         sub.ensure_key(v);
@@ -390,7 +495,7 @@ fn infer_inner<'a>(
             env.pop_scope();
 
             let ret_ty = if let Some(ann) = return_type {
-                let ann_ty = type_expr_to_mono(ann)?;
+                let ann_ty = type_expr_to_mono_with_env(env, ann)?;
                 let body_applied = sub.apply(&body_ty);
                 unify(sub, &body_applied, &ann_ty)?;
                 sub.apply(&ann_ty)
@@ -736,6 +841,23 @@ fn infer_arm<'a>(
     Ok(())
 }
 
+/// Resolve a TypeExpr to MonoType, substituting generic param names with their type vars.
+fn resolve_type_expr_with_env<'a>(
+    env: &TypeEnv,
+    te: &TypeExpr<'a>,
+    params: &HashMap<&str, MonoType>,
+) -> Result<MonoType, TypeError> {
+    match te {
+        TypeExpr::Named(name, _span) => {
+            if let Some(subst) = params.get(*name) {
+                return Ok(subst.clone());
+            }
+            type_expr_to_mono_with_env(env, te)
+        }
+        _ => type_expr_to_mono_with_env(env, te),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Public entry points
 // ---------------------------------------------------------------------------
@@ -775,7 +897,7 @@ pub fn infer_decl_with_map<'a>(
             let inferred = sub.apply(&inferred);
 
             if let Some(ann) = annotation {
-                let ann_ty = type_expr_to_mono(ann)?;
+                let ann_ty = type_expr_to_mono_with_generics(env, ann)?;
                 let ia = sub.apply(&inferred);
                 unify(&mut sub, &ia, &ann_ty).map_err(|_| TypeError::AnnotationConflict {
                     annotation: ann_ty.clone(),
@@ -795,10 +917,75 @@ pub fn infer_decl_with_map<'a>(
             Ok(poly)
         }
 
-        Decl::TypeAlias { name, .. } => {
-            let poly = PolyType::mono(MonoType::Unit);
-            env.insert(*name, poly.clone());
-            Ok(poly)
+        Decl::TypeAlias {
+            name, params, rhs, ..
+        } => {
+            // Create fresh type variables for generic params
+            let param_vars: Vec<TypeId> = params.iter().map(|_| env.fresh_var()).collect();
+            let param_map: HashMap<&str, MonoType> = params
+                .iter()
+                .zip(param_vars.iter())
+                .map(|(p, &v)| (*p, MonoType::Var(v)))
+                .collect();
+
+            match rhs {
+                TypeExpr::Sum { variants, .. } => {
+                    // Register each variant as a constructor function
+                    let mut tag_info = Vec::new();
+                    for variant in variants {
+                        let payload_tys: Result<Vec<MonoType>, _> = variant
+                            .fields
+                            .iter()
+                            .map(|f| resolve_type_expr_with_env(env, f, &param_map))
+                            .collect();
+                        let payload_tys = payload_tys?;
+
+                        let ctor_type = if payload_tys.is_empty() {
+                            // Nullary constructor: bare tag value
+                            PolyType::poly(
+                                param_vars.clone(),
+                                MonoType::Tag {
+                                    name: SmolStr::from(*name),
+                                    payload: Rc::from([]),
+                                },
+                            )
+                        } else {
+                            // Constructor with payload: (T1, T2, ...) -> TagType
+                            PolyType::poly(
+                                param_vars.clone(),
+                                MonoType::Func {
+                                    params: Rc::from(payload_tys.clone()),
+                                    ret: Rc::new(MonoType::Tag {
+                                        name: SmolStr::from(*name),
+                                        payload: Rc::from(payload_tys.clone()),
+                                    }),
+                                },
+                            )
+                        };
+                        env.insert(variant.name, ctor_type);
+                        tag_info.push((SmolStr::from(variant.name), payload_tys));
+                    }
+
+                    env.tag_variants.insert(SmolStr::from(*name), tag_info);
+
+                    let poly = PolyType::poly(
+                        param_vars,
+                        MonoType::Tag {
+                            name: SmolStr::from(*name),
+                            payload: Rc::from([]),
+                        },
+                    );
+                    env.insert(*name, poly.clone());
+                    Ok(poly)
+                }
+                _ => {
+                    // Simple alias: resolve RHS and register
+                    let resolved = resolve_type_expr_with_env(env, rhs, &param_map)?;
+                    let poly = PolyType::poly(param_vars, resolved);
+                    env.insert(*name, poly.clone());
+                    Ok(poly)
+                }
+            }
         }
 
         Decl::Use { .. } => Ok(PolyType::mono(MonoType::Unit)),
