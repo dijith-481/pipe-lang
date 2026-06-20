@@ -1,30 +1,143 @@
+use std::collections::HashMap;
 use std::fmt;
+use std::sync::{Arc, OnceLock};
 
-use ast::SmolStr;
-
-use crate::error::RuntimeError;
 use crate::value::Value;
 
-/// Trait for built-in functions that the language runtime can execute.
-///
-/// Implement this trait to expose Rust functions to the language.
-/// Each builtin has a name (used for error messages and the registry),
-/// a fixed arity, and an execute method that takes values and returns
-/// a result.
-pub trait BuiltinFunction: fmt::Debug + Send + Sync {
-    /// The name of this builtin (e.g., `"List.map"`, `"IO.println"`).
-    fn name(&self) -> SmolStr;
+static GLOBAL_REGISTRY: OnceLock<BuiltinRegistry> = OnceLock::new();
 
-    /// The number of arguments this function expects.
+/// A native function exposed to pipe-lang programs.
+///
+/// Builtins are registered by source-level name and called by the JIT when it
+/// lowers an [`ir::Instruction::CallNamed`] instruction.
+pub trait BuiltinFunction: Send + Sync + fmt::Debug {
+    /// Returns the source-level name used to register this builtin.
+    fn name(&self) -> &str;
+
+    /// Returns the number of arguments expected by this builtin.
     fn arity(&self) -> usize;
 
-    /// Execute the builtin with the given arguments.
+    /// Executes the builtin with runtime values.
+    ///
+    /// # Arguments
+    ///
+    /// * `args` - Runtime arguments supplied by the caller.
+    ///
+    /// # Returns
+    ///
+    /// The builtin's runtime result.
     ///
     /// # Errors
     ///
-    /// Returns [`RuntimeError`] if the execution fails (wrong types,
-    /// out of bounds, etc.).
-    fn execute(&self, args: &[Value]) -> Result<Value, RuntimeError>;
+    /// Returns a descriptive string for arity, type, IO, or user-code failures.
+    fn execute(&self, args: &[Value]) -> Result<Value, String>;
+}
+
+/// Registry of native builtins addressable by source-level name.
+#[derive(Clone, Default, Debug)]
+pub struct BuiltinRegistry {
+    functions: HashMap<String, Arc<dyn BuiltinFunction>>,
+}
+
+impl BuiltinRegistry {
+    /// Creates an empty builtin registry.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Registers a builtin, replacing any existing builtin with the same name.
+    ///
+    /// # Arguments
+    ///
+    /// * `function` - The builtin implementation to register.
+    pub fn register(&mut self, function: Arc<dyn BuiltinFunction>) {
+        self.functions.insert(function.name().to_owned(), function);
+    }
+
+    /// Looks up a builtin by source-level name.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The builtin name emitted by lowering.
+    ///
+    /// # Returns
+    ///
+    /// A cloned [`Arc`] to the builtin implementation, if present.
+    #[must_use]
+    pub fn get(&self, name: &str) -> Option<Arc<dyn BuiltinFunction>> {
+        self.functions.get(name).cloned()
+    }
+
+    /// Executes a builtin by source-level name.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The builtin name emitted by lowering.
+    /// * `args` - Runtime arguments supplied by the caller.
+    ///
+    /// # Returns
+    ///
+    /// The builtin's runtime result.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the builtin is unknown or execution fails.
+    pub fn execute(&self, name: &str, args: &[Value]) -> Result<Value, String> {
+        let function = self
+            .get(name)
+            .ok_or_else(|| format!("unknown builtin function `{name}`"))?;
+        function.execute(args)
+    }
+}
+
+/// Checks that a builtin received the expected number of arguments.
+///
+/// # Arguments
+///
+/// * `name` - The builtin's source-level name.
+/// * `args` - Runtime arguments supplied by the caller.
+/// * `expected` - Required argument count.
+///
+/// # Errors
+///
+/// Returns an error when `args.len()` does not match `expected`.
+pub fn expect_arity(name: &str, args: &[Value], expected: usize) -> Result<(), String> {
+    if args.len() == expected {
+        Ok(())
+    } else {
+        Err(format!(
+            "`{name}` expected {expected} argument(s), got {}",
+            args.len()
+        ))
+    }
+}
+
+/// Initializes the process-wide builtin registry.
+///
+/// # Arguments
+///
+/// * `registry` - The complete builtin registry for JIT name resolution.
+///
+/// # Panics
+///
+/// Panics if the global registry was already initialized.
+pub fn init_global_registry(registry: BuiltinRegistry) {
+    GLOBAL_REGISTRY
+        .set(registry)
+        .expect("global registry already initialized");
+}
+
+/// Returns the process-wide builtin registry.
+///
+/// # Panics
+///
+/// Panics when [`init_global_registry`] has not been called yet.
+#[must_use]
+pub fn global_registry() -> &'static BuiltinRegistry {
+    GLOBAL_REGISTRY
+        .get()
+        .expect("global registry not initialized - call init_global_registry() first")
 }
 
 #[cfg(test)]
@@ -32,77 +145,51 @@ mod tests {
     use super::*;
 
     #[derive(Debug)]
-    struct AddBuiltin;
+    struct Echo;
 
-    impl BuiltinFunction for AddBuiltin {
-        fn name(&self) -> SmolStr {
-            SmolStr::new("Int.add")
-        }
-
-        fn arity(&self) -> usize {
-            2
-        }
-
-        fn execute(&self, args: &[Value]) -> Result<Value, RuntimeError> {
-            match (&args[0], &args[1]) {
-                (Value::I32(a), Value::I32(b)) => Ok(Value::I32(a + b)),
-                _ => Err(RuntimeError::TypeMismatch {
-                    expected: "I32".into(),
-                    got: format!("{:?}", &args[0]),
-                }),
-            }
-        }
-    }
-
-    #[derive(Debug)]
-    struct PrintlnBuiltin;
-
-    impl BuiltinFunction for PrintlnBuiltin {
-        fn name(&self) -> SmolStr {
-            SmolStr::new("IO.println")
+    impl BuiltinFunction for Echo {
+        fn name(&self) -> &str {
+            "echo"
         }
 
         fn arity(&self) -> usize {
             1
         }
 
-        fn execute(&self, args: &[Value]) -> Result<Value, RuntimeError> {
-            let msg = args[0].as_str().ok_or_else(|| RuntimeError::TypeMismatch {
-                expected: "Str".into(),
-                got: format!("{:?}", &args[0]),
-            })?;
-            Ok(Value::Str(SmolStr::new(msg)))
+        fn execute(&self, args: &[Value]) -> Result<Value, String> {
+            expect_arity(self.name(), args, self.arity())?;
+            Ok(args[0].clone())
         }
     }
 
     #[test]
-    fn builtin_execute_returns_value() {
-        let builtin = AddBuiltin;
-        let args = vec![Value::I32(3), Value::I32(4)];
-        let result = builtin.execute(&args).expect("should succeed");
-        assert_eq!(result.as_i32(), Some(7));
+    fn registry_executes_registered_builtin() {
+        let mut registry = BuiltinRegistry::new();
+        registry.register(Arc::new(Echo));
+
+        let result = registry
+            .execute("echo", &[Value::I32(42)])
+            .expect("registered builtin should execute");
+
+        assert_eq!(result, Value::I32(42));
     }
 
     #[test]
-    fn builtin_wrong_type_errors() {
-        let builtin = AddBuiltin;
-        let args = vec![Value::I32(1), Value::Str(SmolStr::new("two"))];
-        let err = builtin.execute(&args).unwrap_err();
-        assert!(matches!(err, RuntimeError::TypeMismatch { .. }));
+    fn registry_errors_for_unknown_builtin() {
+        let registry = BuiltinRegistry::new();
+
+        let error = registry
+            .execute("missing", &[])
+            .expect_err("unknown builtin should error");
+
+        assert!(error.contains("unknown builtin function `missing`"));
     }
 
     #[test]
-    fn builtin_name_and_arity() {
-        let builtin = PrintlnBuiltin;
-        assert_eq!(builtin.name().as_str(), "IO.println");
-        assert_eq!(builtin.arity(), 1);
-    }
+    fn expect_arity_reports_mismatch() {
+        let error =
+            expect_arity("echo", &[Value::Unit, Value::Unit], 1).expect_err("arity must fail");
 
-    #[test]
-    fn builtin_returns_unit_for_io() {
-        let builtin = PrintlnBuiltin;
-        let args = vec![Value::Str(SmolStr::new("hello"))];
-        let result = builtin.execute(&args).expect("should succeed");
-        assert_eq!(result.as_str(), Some("hello"));
+        assert_eq!(error, "`echo` expected 1 argument(s), got 2");
     }
 }
