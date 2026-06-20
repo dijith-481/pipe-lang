@@ -62,7 +62,9 @@ fn mono_to_ir_inner(ty: &MonoType, tag_variants: Option<&TagVariants>) -> IrType
                 .map(|(k, v)| (k.clone(), mono_to_ir_inner(v, tag_variants)))
                 .collect(),
         }),
-        MonoType::Effect(inner) => IrType::Effect(Box::new(mono_to_ir_inner(inner, tag_variants))),
+        MonoType::Effect(inner) => {
+            IrType::Effect(Box::new(mono_to_ir_inner(inner, tag_variants)))
+        }
         MonoType::Tag { name, payload } => {
             if let Some(variants) = tag_variants.and_then(|tv| tv.get(name.as_str())) {
                 let mut offset = 0;
@@ -693,7 +695,9 @@ fn lower_expr<'src>(
             }))))
         }
 
-        Expr::Application { func, args, span } => {
+        Expr::Application {
+            func, args, span
+        } => {
             let arg_vals: Vec<ValueId> = args
                 .iter()
                 .map(|a| lower_expr(fb, a, hoisted))

@@ -487,9 +487,7 @@ fn compile_function_body(
             .module
             .declare_data_in_func(params.call_builtin_ptr_data_id, f)
     };
-    let call_builtin_fn_ptr_addr = builder
-        .ins()
-        .global_value(types::I64, call_builtin_fn_ptr_gv);
+    let call_builtin_fn_ptr_addr = builder.ins().global_value(types::I64, call_builtin_fn_ptr_gv);
     let call_builtin_fn_ptr =
         builder
             .ins()
@@ -512,12 +510,13 @@ fn compile_function_body(
                 if params.name_to_func.contains_key(&name_str) {
                     continue;
                 }
-                let data_id = params.builtin_name_data_ids.get(&name_str).ok_or_else(|| {
-                    JitError::UnimplementedInstruction {
+                let data_id = params
+                    .builtin_name_data_ids
+                    .get(&name_str)
+                    .ok_or_else(|| JitError::UnimplementedInstruction {
                         instruction: format!("builtin name data not found for {name_str}"),
                         function: func.name.to_string(),
-                    }
-                })?;
+                    })?;
                 let gv = {
                     let f: &mut Function = builder.func;
                     params.module.declare_data_in_func(*data_id, f)
@@ -965,12 +964,13 @@ fn compile_call_named(
 
     // Try local function first.
     if let Some(func_ref) = ctx.callee_funcs.get(callee_name).copied() {
-        let ret_type = ctx.fn_return_types.get(callee_name).ok_or_else(|| {
-            JitError::UnimplementedInstruction {
-                instruction: format!("CallNamed: no return type for {callee_name}"),
-                function: ctx.func_name.to_string(),
-            }
-        })?;
+        let ret_type =
+            ctx.fn_return_types
+                .get(callee_name)
+                .ok_or_else(|| JitError::UnimplementedInstruction {
+                    instruction: format!("CallNamed: no return type for {callee_name}"),
+                    function: ctx.func_name.to_string(),
+                })?;
 
         let total_size: u32 = data
             .args
@@ -1039,12 +1039,13 @@ fn compile_builtin_call(
     let args_buf = builder.ins().stack_addr(types::I64, arg_slot, 0);
 
     // Store name pointer from the pre-declared data object.
-    let name_gv = ctx.builtin_name_globals.get(callee_name).ok_or_else(|| {
-        JitError::UnimplementedInstruction {
+    let name_gv = ctx
+        .builtin_name_globals
+        .get(callee_name)
+        .ok_or_else(|| JitError::UnimplementedInstruction {
             instruction: format!("CallNamed builtin: no name data for {callee_name}"),
             function: ctx.func_name.to_string(),
-        }
-    })?;
+        })?;
     let name_ptr = builder.ins().global_value(types::I64, *name_gv);
     builder
         .ins()
@@ -1093,15 +1094,16 @@ fn compile_builtin_call(
     }
 
     // Allocate 12-byte return buffer [val: i64, tag: u32].
-    let ret_slot =
-        builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 12, 0));
+    let ret_slot = builder.create_sized_stack_slot(StackSlotData::new(
+        StackSlotKind::ExplicitSlot,
+        12,
+        0,
+    ));
     let ret_buf = builder.ins().stack_addr(types::I64, ret_slot, 0);
 
-    builder.ins().call_indirect(
-        ctx.call_builtin_sig,
-        ctx.call_builtin_fn_ptr,
-        &[args_buf, ret_buf],
-    );
+    builder
+        .ins()
+        .call_indirect(ctx.call_builtin_sig, ctx.call_builtin_fn_ptr, &[args_buf, ret_buf]);
 
     let result = load_primitive_value(builder, ret_buf, 0, ret_type, ctx.func_name)?;
     Ok(result)
@@ -1468,11 +1470,7 @@ fn storage_type(ty: &IrType, func_name: &str) -> Result<Type, JitError> {
         IrType::Bool => Ok(types::I8),
         IrType::Str => Ok(types::I64),
         IrType::Unit => Ok(I32),
-        IrType::Array(_)
-        | IrType::Record(_)
-        | IrType::Closure(_)
-        | IrType::Tag(_)
-        | IrType::Effect(_) => Ok(types::I64),
+        IrType::Array(_) | IrType::Record(_) | IrType::Closure(_) | IrType::Tag(_) | IrType::Effect(_) => Ok(types::I64),
         _ => Err(unsupported_type(func_name, ty)),
     }
 }
@@ -1483,11 +1481,7 @@ fn storage_size(ty: &IrType, func_name: &str) -> Result<i32, JitError> {
         IrType::I16 | IrType::U16 => Ok(2),
         IrType::I32 | IrType::U32 | IrType::F32 | IrType::Unit => Ok(4),
         IrType::I64 | IrType::U64 | IrType::Usize | IrType::F64 | IrType::Str => Ok(8),
-        IrType::Array(_)
-        | IrType::Record(_)
-        | IrType::Closure(_)
-        | IrType::Tag(_)
-        | IrType::Effect(_) => Ok(8),
+        IrType::Array(_) | IrType::Record(_) | IrType::Closure(_) | IrType::Tag(_) | IrType::Effect(_) => Ok(8),
         _ => Err(unsupported_type(func_name, ty)),
     }
 }
@@ -1693,8 +1687,7 @@ unsafe extern "C" fn pipe_rt_call_builtin(args: *const u8, ret: *mut u8) -> i32 
     let name_len = unsafe { std::ptr::read_unaligned(args.add(8) as *const u32) } as usize;
     let arg_count = unsafe { std::ptr::read_unaligned(args.add(12) as *const u32) } as usize;
 
-    let name_bytes =
-        unsafe { std::slice::from_raw_parts((name_ptr as *const u8).add(4), name_len) };
+    let name_bytes = unsafe { std::slice::from_raw_parts((name_ptr as *const u8).add(4), name_len) };
     let name = unsafe { std::str::from_utf8_unchecked(name_bytes) };
 
     let mut vals = Vec::with_capacity(arg_count);
