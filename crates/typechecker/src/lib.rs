@@ -4,7 +4,7 @@ pub mod infer;
 pub mod types;
 pub mod unify;
 
-pub use crate::env::TypeEnv;
+pub use crate::env::{TagVariants, TypeEnv};
 pub use crate::error::TypeError;
 pub use crate::infer::{infer_decl, infer_expr};
 pub use crate::types::{MonoType, PolyType, TypeId};
@@ -21,6 +21,9 @@ pub struct TypedProgram<'a> {
     pub env: TypeEnv,
     /// Maps every expression span (and decl span) to its fully-resolved type.
     pub type_map: HashMap<Span, MonoType>,
+    /// Maps tag type names (e.g. "Option", "Result") to their variant info.
+    /// Populated from the prelude and user-defined type declarations.
+    pub tag_variants: TagVariants,
 }
 
 /// Typechecks a parsed program, returning a [`TypedProgram`] with a complete
@@ -49,7 +52,13 @@ pub fn typecheck<'a>(ast: &'a Program<'a>) -> Result<TypedProgram<'a>, Vec<TypeE
     }
 
     if errors.is_empty() {
-        Ok(TypedProgram { ast, env, type_map })
+        let tag_variants = env.tag_variants.clone();
+        Ok(TypedProgram {
+            ast,
+            env,
+            type_map,
+            tag_variants,
+        })
     } else {
         Err(errors)
     }

@@ -2,7 +2,10 @@ use std::collections::HashMap;
 
 use ast::SmolStr;
 
-use crate::types::{PolyType, TypeId};
+use crate::types::{MonoType, PolyType, TypeId};
+
+/// Maps a tag type name to its variant definitions: (variant_name, payload_types).
+pub type TagVariants = std::collections::HashMap<SmolStr, Vec<(SmolStr, Vec<MonoType>)>>;
 
 /// A scoped type environment for tracking type bindings.
 ///
@@ -12,6 +15,8 @@ use crate::types::{PolyType, TypeId};
 pub struct TypeEnv {
     scopes: Vec<HashMap<SmolStr, PolyType>>,
     next_type_id: u32,
+    /// Full variant structure for each tag type (e.g. Option → [None, Some(T)]).
+    pub tag_variants: TagVariants,
 }
 
 impl TypeEnv {
@@ -21,6 +26,7 @@ impl TypeEnv {
         Self {
             scopes: vec![HashMap::new()],
             next_type_id: 0,
+            tag_variants: HashMap::new(),
         }
     }
 
@@ -172,6 +178,22 @@ impl TypeEnv {
             },
         );
         self.insert("Err", err_type);
+
+        // Populate tag variant info for sum types.
+        self.tag_variants.insert(
+            "Option".into(),
+            vec![
+                ("None".into(), vec![]),
+                ("Some".into(), vec![MonoType::Var(opt_a)]),
+            ],
+        );
+        self.tag_variants.insert(
+            "Result".into(),
+            vec![
+                ("Ok".into(), vec![MonoType::Var(res_t)]),
+                ("Err".into(), vec![MonoType::Var(res_e)]),
+            ],
+        );
 
         // Load core utility function types
         // id : <a>(a) -> a

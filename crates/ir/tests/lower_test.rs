@@ -272,23 +272,14 @@ fn fix_match_literal_discriminant() {
     // match on bool: true arm should get discriminant 1, not 0.
     let m = lower_src("let describe = (b) => match b { true => 1 false => 0 }");
     let f = m.function("describe").unwrap();
-    // Find the Switch terminator.
-    let switch = f
-        .blocks
-        .iter()
-        .find_map(|b| {
-            if let Terminator::Switch { arms, .. } = &b.terminator {
-                Some(arms.clone())
-            } else {
-                None
-            }
-        })
-        .expect("Switch terminator");
-    // true → discriminant 1
-    assert!(
-        switch.iter().any(|(d, _, _)| *d == 1),
-        "true literal should map to discriminant 1"
-    );
+    // Primitive match now uses cascading Branch, not Switch.
+    // Find a ConstI64(1) used in an Eq comparison for the true arm.
+    let has_true_check = f.blocks.iter().any(|b| {
+        b.instructions
+            .iter()
+            .any(|(_, inst)| matches!(inst, Instruction::ConstI64(1)))
+    });
+    assert!(has_true_check, "true literal should map to value 1");
 }
 
 #[test]
@@ -499,11 +490,13 @@ fn lower_polymorphic_identity() {
 fn lower_match_binding_pattern() {
     let m = lower_src("let unwrap = (opt) => match opt { x => x }");
     let f = m.function("unwrap").unwrap();
-    let has_switch = f
+    // Single binding arm on a primitive type: no Switch needed.
+    // We expect a Jump from the entry to the arm (or merge) block.
+    let has_jump = f
         .blocks
         .iter()
-        .any(|b| matches!(b.terminator, Terminator::Switch { .. }));
-    assert!(has_switch, "expected Switch terminator for match");
+        .any(|b| matches!(b.terminator, Terminator::Jump { .. }));
+    assert!(has_jump, "single-arm match should emit Jump, not Switch");
 }
 
 // ---------------------------------------------------------------------------
