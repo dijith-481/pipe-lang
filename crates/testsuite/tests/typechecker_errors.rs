@@ -40,7 +40,6 @@ fn typecheck_arity_mismatch_too_few_args() {
     assert!(result.is_err(), "should fail with arity mismatch");
 }
 
-#[ignore = "Dijith: implement exhaustiveness checking in typechecker"]
 #[test]
 fn typecheck_non_exhaustive_match() {
     let src = r#"

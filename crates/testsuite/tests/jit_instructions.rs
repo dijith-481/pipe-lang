@@ -294,7 +294,8 @@ fn jit_array_alloc_and_get() {
     });
     if let Ok(Err(JitError::UnimplementedInstruction { instruction, .. })) = &_result
         && instruction.contains("ArrayAlloc")
-    {}
+    {
+    }
 }
 
 #[ignore = "Member 1: implement ArraySet instruction in JIT"]
