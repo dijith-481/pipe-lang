@@ -4,7 +4,6 @@ use std::sync::Arc;
 use bumpalo::Bump;
 use diagnostics::errors::{CompilerError, SourceDiagnostic};
 use ir::lower;
-use typechecker::TypeError;
 
 /// What the pipeline should do after typechecking.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,10 +63,10 @@ pub struct CompileResult {
 }
 
 impl CompileResult {
-    /// Prints all diagnostics to stderr.
+    /// Prints all diagnostics to stderr using miette formatting.
     pub fn eprint_to_stderr(&self) {
         for diag in &self.diagnostics {
-            eprintln!("{diag:?}");
+            eprintln!("{:?}", miette::Report::new(diag.clone()));
         }
     }
 }
@@ -84,52 +83,6 @@ fn failure_from_errors(
     CompileResult {
         diagnostics,
         success: false,
-    }
-}
-
-fn compiler_error_from_type_error(error: TypeError) -> CompilerError {
-    match error {
-        TypeError::UnificationFailed {
-            expected,
-            got,
-            span,
-        } => CompilerError::type_error(
-            span,
-            format!("type mismatch: expected {expected}, got {got}"),
-        ),
-        TypeError::UnboundVariable { name, span } => {
-            CompilerError::type_error(span, format!("unbound variable `{name}`"))
-        }
-        TypeError::ArityMismatch {
-            expected,
-            got,
-            span,
-        } => CompilerError::type_error(
-            span,
-            format!("arity mismatch: expected {expected} arguments, got {got}"),
-        ),
-        TypeError::InfiniteType { var, ty, span } => {
-            CompilerError::type_error(span, format!("infinite type: {var} occurs in {ty}"))
-        }
-        TypeError::AnnotationConflict {
-            annotation,
-            inferred,
-            span,
-        } => {
-            let msg = format!(
-                "type annotation conflict: annotation says {annotation}, inferred {inferred}"
-            );
-            CompilerError::type_error(span, msg)
-        }
-        TypeError::NonExhaustiveMatch { span } => {
-            CompilerError::type_error(span, "non-exhaustive match")
-        }
-        TypeError::FieldNotFound { field, span } => {
-            CompilerError::type_error(span, format!("field `{field}` not found on record"))
-        }
-        TypeError::NumericOverflow { ty, span } => {
-            CompilerError::type_error(span, format!("numeric literal overflows type `{ty}`"))
-        }
     }
 }
 
@@ -230,7 +183,7 @@ impl CompilerSession {
                 return Ok(failure_from_errors(
                     &filename,
                     &source_arc,
-                    errors.into_iter().map(compiler_error_from_type_error),
+                    errors.into_iter().map(CompilerError::from),
                 ));
             }
         };

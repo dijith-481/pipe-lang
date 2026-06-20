@@ -1,4 +1,5 @@
 use ast::span::Span;
+use diagnostics::CompilerError;
 
 use crate::types::{MonoType, TypeId};
 
@@ -67,6 +68,54 @@ impl TypeError {
             | TypeError::NonExhaustiveMatch { span }
             | TypeError::FieldNotFound { span, .. }
             | TypeError::NumericOverflow { span, .. } => *span,
+        }
+    }
+}
+
+impl From<TypeError> for CompilerError {
+    fn from(err: TypeError) -> Self {
+        match err {
+            TypeError::UnificationFailed {
+                expected,
+                got,
+                span,
+            } => CompilerError::type_error(
+                span,
+                format!("type mismatch: expected {expected}, got {got}"),
+            ),
+            TypeError::UnboundVariable { name, span } => {
+                CompilerError::type_error(span, format!("unbound variable `{name}`"))
+            }
+            TypeError::ArityMismatch {
+                expected,
+                got,
+                span,
+            } => CompilerError::type_error(
+                span,
+                format!("arity mismatch: expected {expected} arguments, got {got}"),
+            ),
+            TypeError::InfiniteType { var, ty, span } => {
+                CompilerError::type_error(span, format!("infinite type: {var} occurs in {ty}"))
+            }
+            TypeError::AnnotationConflict {
+                annotation,
+                inferred,
+                span,
+            } => {
+                let msg = format!(
+                    "type annotation conflict: annotation says {annotation}, inferred {inferred}"
+                );
+                CompilerError::type_error(span, msg)
+            }
+            TypeError::NonExhaustiveMatch { span } => {
+                CompilerError::type_error(span, "non-exhaustive match")
+            }
+            TypeError::FieldNotFound { field, span } => {
+                CompilerError::type_error(span, format!("field `{field}` not found on record"))
+            }
+            TypeError::NumericOverflow { ty, span } => {
+                CompilerError::type_error(span, format!("numeric literal overflows type `{ty}`"))
+            }
         }
     }
 }
