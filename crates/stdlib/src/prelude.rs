@@ -1,9 +1,7 @@
 use std::sync::Arc;
 
 use ast::SmolStr;
-use runtime::bridge::BuiltinFunction;
-use runtime::error::RuntimeError;
-use runtime::value::Value;
+use runtime::{BuiltinFunction, RuntimeError, Value};
 
 // ---------------------------------------------------------------------------
 // Prelude type definitions (for the typechecker)
@@ -23,19 +21,21 @@ pub fn prelude_type_names() -> Vec<&'static str> {
 // Prelude builtins (for the runtime)
 // ---------------------------------------------------------------------------
 
-/// Returns all prelude builtins as (name, Arc<dyn BuiltinFunction>) pairs.
+/// Returns all builtins that are available without an import.
 ///
-/// These functions are automatically available in every pipe-lang program
-/// without requiring a `use` declaration.
+/// # Returns
+///
+/// A list of builtin implementations ready to register in a
+/// [`runtime::BuiltinRegistry`].
 #[must_use]
-pub fn prelude_builtins() -> Vec<(SmolStr, Arc<dyn BuiltinFunction>)> {
+pub fn prelude_builtins() -> Vec<Arc<dyn BuiltinFunction>> {
     vec![
-        ("id".into(), Arc::new(Id)),
-        ("const".into(), Arc::new(Const)),
-        ("flip".into(), Arc::new(Flip)),
-        ("compose".into(), Arc::new(Compose)),
-        ("pipe".into(), Arc::new(Pipe)),
-        ("apply".into(), Arc::new(Apply)),
+        Arc::new(Id),
+        Arc::new(Const),
+        Arc::new(Flip),
+        Arc::new(Compose),
+        Arc::new(Pipe),
+        Arc::new(Apply),
     ]
 }
 
@@ -317,13 +317,13 @@ mod tests {
     #[test]
     fn prelude_has_builtins() {
         let builtins = prelude_builtins();
-        let names: Vec<_> = builtins.iter().map(|(n, _)| n.as_str()).collect();
-        assert!(names.contains(&"id"));
-        assert!(names.contains(&"const"));
-        assert!(names.contains(&"flip"));
-        assert!(names.contains(&"compose"));
-        assert!(names.contains(&"pipe"));
-        assert!(names.contains(&"apply"));
+        let names: Vec<String> = builtins.iter().map(|b| b.name().to_string()).collect();
+        assert!(names.iter().any(|n| n == "id"));
+        assert!(names.iter().any(|n| n == "const"));
+        assert!(names.iter().any(|n| n == "flip"));
+        assert!(names.iter().any(|n| n == "compose"));
+        assert!(names.iter().any(|n| n == "pipe"));
+        assert!(names.iter().any(|n| n == "apply"));
     }
 
     #[test]
