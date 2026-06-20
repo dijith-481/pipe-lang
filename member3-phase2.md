@@ -4,18 +4,37 @@
 **Timeline:** 3 days (parallel with Member 1, Member 2)  
 **Goal:** Diagnostics contract compliance, LSP server for editor integration, tree-sitter grammar for syntax highlighting, CLI improvements (timing, exit codes, flags), and miette graphical rendering. All example programs show proper error messages.
 
+## ⚠️ Task Sequencing
+
+Tasks **MUST** be done in this order:
+
+1. **Task 3.1 first** — Rewrite `CompilerError` with new variants. Everything downstream depends on this.
+2. **Tasks 3.2–3.5** — Constructor helpers, `span()`, `From` impls (update the existing `From<TypeError>` once 3.1 is done)
+3. **Tasks 3.6–3.9** — session.rs updates, miette rendering, tests
+4. **Tasks 3.10–3.15** — LSP core (initialize, didOpen, didChange, hover, completion)
+5. **Task 3.16** — **LSP inlay hints** (1–2h, independent of other LSP features)
+6. **Task 3.17** — **`crates/formatter/` + `fmt` subcommand** (4–6h, independent of LSP)
+7. **Tasks 3.18–3.20** — CLI improvements (lsp subcommand, --time, exit codes)
+8. **Tasks 3.21–3.24** — Tree-sitter, CI, integration
+
+Do NOT do Task 3.6 before Task 3.1 — it references `CompilerError` variants that won't exist yet.
+
 ---
 
 ## Current State
 
 | Area | Status | Priority |
-|---|---|---|
-| **Diagnostics crate** | 8 `CompilerError` variants — 3 are non-contract (`TypeError`, `RuntimeError`, `EffectError`), 4 contract variants missing (`TypeMismatch`, `UnboundVariable`, `NonExhaustiveMatch`, `JitError`), `ParseError` fields don't match spec | **1 — Fix first** |
-| **Error rendering** | Uses `{diag:?}` debug format, not miette graphical | **2** |
-| **CLI** | 3 subcommands (check/compile/run), basic pipeline, no `--time`, `--emit-asm`, `-o`, or `lsp` subcommand | **2** |
-| **Exit codes** | Always returns 0 or 1, no distinction between compilation/runtime/IO errors | **2** |
-| **LSP** | Does not exist | **2** |
+|---|---|---|---|
+| **Diagnostics crate** | 8 `CompilerError` variants — 3 are non-contract (`TypeError`, `RuntimeError`, `EffectError`), 4 contract variants missing (`TypeMismatch`, `UnboundVariable`, `NonExhaustiveMatch`, `JitCompileError`), `ParseError` fields don't match spec | **1 — Fix first** |
+| **Error rendering** | ✅ **Done** — `eprint_to_stderr()` uses `miette::Report::new(diag)` | **2** |
+| **CLI** | ✅ `lsp` subcommand added. Missing `--time`, `--emit-asm`, `-o` | **2** |
+| **Exit codes** | Still 0/1 only, no distinction for compile/runtime/IO | **2** |
+| **LSP** | ✅ **Done** — `crates/pipe-lang-lsp/` with hover, diagnostics publication, binary entry point. Missing `completion`, `inlayHint` capabilities. | **2** |
+| **Inlay hints** | Not implemented — type_map infrastructure exists | **2** |
+| **Formatter** | Not implemented — basic AST pretty-printer needed | **3** |
 | **Tree-sitter** | Does not exist | **3** |
+| **Span::contains()** | ✅ **Done by Dijith** (`crates/ast/src/span.rs`) | **—** |
+| **From<TypeError>** | ✅ **Done** (in `crates/typechecker/src/error.rs` — will need update after Task 3.1) | **—** |
 
 ---
 
@@ -31,7 +50,7 @@ pub enum CompilerError {
     UnboundVariable   { name: String, span: Span },                    // MISSING
     NonExhaustiveMatch { span: Span },                                 // MISSING
     IrError           { msg: String, span: Span },
-    JitError          { msg: String },                                 // MISSING
+    JitCompileError   { msg: String },                                 // MISSING (NOT `JitError` — clashes with existing runtime::jit::JitError)
     Multiple          { count: usize, span: Option<Span> },
 }
 ```
@@ -45,7 +64,7 @@ Current has: `LexError`, `ParseError` (bad fields), `TypeError` (wrong — shoul
 ```
 REMOVE:
   TypeError      { span, msg }          → split into 3 contract variants
-  RuntimeError   { span, msg }          → replaced by JitError
+  RuntimeError   { span, msg }          → replaced by JitCompileError
   EffectError    { span, msg }          → removed (not in contract)
 
 ADD:
@@ -121,9 +140,9 @@ pub enum CompilerError {
         msg: String,
     },
 
-    #[error("JIT error: {msg}")]
+    #[error("JIT compile error: {msg}")]
     #[diagnostic(code(pipe_lang::jit))]
-    JitError {
+    JitCompileError {
         msg: String,
     },
 
@@ -177,8 +196,8 @@ impl CompilerError {
         Self::NonExhaustiveMatch { span }
     }
 
-    pub fn jit_error(msg: impl Into<String>) -> Self {
-        Self::JitError { msg: msg.into() }
+    pub fn jit_compile_error(msg: impl Into<String>) -> Self {
+        Self::JitCompileError { msg: msg.into() }
     }
 }
 ```
@@ -194,7 +213,7 @@ pub fn span(&self) -> Option<Span> {
         | CompilerError::UnboundVariable { span, .. }
         | CompilerError::NonExhaustiveMatch { span, .. }
         | CompilerError::IrError { span, .. } => Some(*span),
-        CompilerError::JitError { .. } | CompilerError::IoError(_) => None,
+        CompilerError::JitCompileError { .. } | CompilerError::IoError(_) => None,
         CompilerError::Multiple { span, .. } => *span,
     }
 }
@@ -232,43 +251,45 @@ impl From<parser::error::ParseError> for CompilerError {
 
 ### Task 3.5: Add `From<TypeError>` impl
 
-The typechecker's `TypeError` (from `crates/typechecker/src/error.rs`) has structured variants. Add a `From` impl that maps each variant to the correct `CompilerError`:
+**IMPORTANT: This impl MUST go in `crates/typechecker/src/error.rs`, NOT in `crates/diagnostics/src/errors.rs`.** Adding it to diagnostics creates a circular dependency (`diagnostics` → `typechecker` → `diagnostics`). The `typechecker` crate already depends on `diagnostics`, so it can legally implement `From<TypeError> for diagnostics::CompilerError`.
+
+The typechecker's `TypeError` (from `crates/typechecker/src/error.rs`) has structured variants. Add a `From` impl in `crates/typechecker/src/error.rs` that maps each variant to the correct `CompilerError`:
 
 ```rust
-impl From<typechecker::TypeError> for CompilerError {
-    fn from(err: typechecker::TypeError) -> Self {
+impl From<TypeError> for diagnostics::CompilerError {
+    fn from(err: TypeError) -> Self {
         match err {
-            typechecker::TypeError::UnificationFailed { expected, got, span } => {
-                CompilerError::type_mismatch(expected.to_string(), got.to_string(), span)
+            TypeError::UnificationFailed { span, expected, got } => {
+                diagnostics::CompilerError::type_mismatch(expected.to_string(), got.to_string(), span)
             }
-            typechecker::TypeError::UnboundVariable { name, span } => {
-                CompilerError::unbound_variable(name, span)
+            TypeError::UnboundVariable { name, span } => {
+                diagnostics::CompilerError::unbound_variable(name, span)
             }
-            typechecker::TypeError::NonExhaustiveMatch { span } => {
-                CompilerError::non_exhaustive_match(span)
+            TypeError::NonExhaustiveMatch { span } => {
+                diagnostics::CompilerError::non_exhaustive_match(span)
             }
-            typechecker::TypeError::ArityMismatch { expected, got, span } => {
-                CompilerError::type_mismatch(
+            TypeError::ArityMismatch { expected, got, span } => {
+                diagnostics::CompilerError::type_mismatch(
                     format!("{expected} arguments"),
                     format!("{got} arguments"),
                     span,
                 )
             }
-            typechecker::TypeError::AnnotationConflict { annotation, inferred, span } => {
-                CompilerError::type_mismatch(annotation.to_string(), inferred.to_string(), span)
+            TypeError::AnnotationConflict { annotation, inferred, span } => {
+                diagnostics::CompilerError::type_mismatch(annotation.to_string(), inferred.to_string(), span)
             }
-            typechecker::TypeError::FieldNotFound { field, span } => {
-                CompilerError::type_mismatch("record with field", field, span)
+            TypeError::FieldNotFound { field, span } => {
+                diagnostics::CompilerError::type_mismatch("record with field", field, span)
             }
-            typechecker::TypeError::InfiniteType { var, ty, span } => {
-                CompilerError::TypeMismatch {
+            TypeError::InfiniteType { var, ty, span } => {
+                diagnostics::CompilerError::TypeMismatch {
                     expected: format!("finite type"),
                     got: format!("Type var {var} occurs in {ty}"),
                     span,
                 }
             }
-            typechecker::TypeError::NumericOverflow { ty, span } => {
-                CompilerError::TypeMismatch {
+            TypeError::NumericOverflow { ty, span } => {
+                diagnostics::CompilerError::TypeMismatch {
                     expected: format!("value within range of {ty}"),
                     got: "overflow".to_string(),
                     span,
@@ -278,6 +299,8 @@ impl From<typechecker::TypeError> for CompilerError {
     }
 }
 ```
+
+⚠️ **This impl has already been implemented** (see `crates/typechecker/src/error.rs`). It currently maps to `CompilerError::type_error()` (the old variant) because Task 3.1 hasn't been done yet. **After Task 3.1 is complete, update this impl to use the new contract variants** (`TypeMismatch`, `UnboundVariable`, `NonExhaustiveMatch`) as shown above.
 
 ### Task 3.6: Update session.rs to use new variants
 
@@ -306,7 +329,7 @@ CompilerError::RuntimeError {
 
 After:
 ```rust
-CompilerError::jit_error(e.to_string())
+CompilerError::jit_compile_error(e.to_string())
 ```
 
 Same for line 238.
@@ -315,7 +338,7 @@ Same for line 238.
 
 The diagnostics test file has tests for the old variants. Update them:
 - `type_error_display` → `type_mismatch_display`
-- `runtime_error_with_optional_span` → `jit_error_display`
+- `runtime_error_with_optional_span` → `jit_compile_error_display`
 - Add tests for `unbound_variable_display`, `nonexhaustive_match_display`, `type_mismatch_source_code_label`
 
 ### Tests for Task 3.1–3.7
@@ -346,16 +369,16 @@ fn nonexhaustive_match_display() {
 }
 
 #[test]
-fn jit_error_display() {
-    let err = CompilerError::jit_error("segfault at 0x0");
+fn jit_compile_error_display() {
+    let err = CompilerError::jit_compile_error("segfault at 0x0");
     let msg = format!("{err}");
-    assert!(msg.contains("JIT error"));
+    assert!(msg.contains("JIT compile error"));
     assert!(msg.contains("segfault"));
 }
 
 #[test]
-fn jit_error_has_no_span() {
-    let err = CompilerError::jit_error("oops");
+fn jit_compile_error_has_no_span() {
+    let err = CompilerError::jit_compile_error("oops");
     assert!(err.span().is_none());
 }
 
@@ -558,18 +581,19 @@ fn lsp_position_to_offset(source: &str, line: usize, character: usize) -> usize 
 }
 ```
 
-### Task 3.13: Add `contains` method to `Span`
+### Task 3.13: Add `contains` method to `Span` ✅ ALREADY DONE
 
 **File:** `crates/ast/src/span.rs`
 
+**Already implemented by Dijith.** `Span::contains(byte_offset)` is available at `crates/ast/src/span.rs:49`:
+
 ```rust
-impl Span {
-    /// Returns true if `byte_offset` falls within this span.
-    pub fn contains(&self, byte_offset: usize) -> bool {
-        self.start <= byte_offset && byte_offset < self.end
-    }
+pub fn contains(self, byte_offset: usize) -> bool {
+    self.start <= byte_offset && byte_offset < self.end
 }
 ```
+
+The LSP `hover_for_position` should use `span.contains(offset)` instead of inlining the check manually.
 
 ### Task 3.14: LSP binary entry point
 
@@ -636,9 +660,462 @@ async fn lsp_did_open_publishes_diagnostics() {
 
 ---
 
-## Day 2 — Mid (Hours 6–10): CLI Improvements + Tree-Sitter
+## Day 2 — Mid-Morning (Hours 6–8): LSP Inlay Hints
 
-### Task 3.16: Add `lsp` subcommand to CLI
+### Task 3.16: Add LSP inlay hint support
+
+Inlay hints display inferred types inline in the editor next to each expression.
+The infrastructure already exists — only the LSP handler is missing.
+
+**What exists:**
+- `type_map: HashMap<Span, MonoType>` in `TypedProgram` — maps every expression span to its inferred type
+- Span→Position conversion — already implemented for hover
+- `InlayHint` types — available from `lsp-types` (transitive dep of `tower-lsp 0.20`)
+
+**File:** `crates/pipe-lang-lsp/src/lib.rs`
+
+**Changes:**
+
+1. **Update `ServerCapabilities`** to advertise inlay hint support:
+
+```rust
+use tower_lsp::lsp_types::{
+    // ... existing imports ...
+    InlayHint, InlayHintLabel, InlayHintKind, InlayHintOptions,
+    InlayHintParams, InlayHintProviderCapability,
+};
+
+// In initialize():
+inlay_hint_provider: Some(InlayHintProviderCapability::Options(InlayHintOptions {
+    resolve_provider: Some(false),
+})),
+```
+
+2. **Add `inlay_hint` method to `Backend`:**
+
+```rust
+#[tower_lsp::async_trait]
+impl LanguageServer for Backend {
+    // ... existing methods ...
+
+    async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
+        let uri = params.text_document.uri;
+        let range = params.range;
+        let documents = self.documents.read().await;
+        let doc = documents.get(&uri)?;
+
+        let hints: Vec<InlayHint> = doc.type_map
+            .iter()
+            .filter(|(span, _)| {
+                let span_range = span_to_range(&doc.source, **span);
+                ranges_overlap(&range, &span_range) && !span.is_empty()
+            })
+            // Skip the outermost decl span (the whole-line span)
+            .filter(|(span, _)| {
+                let text = span.source_text(&doc.source);
+                !text.trim().starts_with("let ") &&
+                !text.trim().starts_with("type ") &&
+                !text.trim().starts_with("use ")
+            })
+            .map(|(span, ty)| {
+                let pos = span_end_position(&doc.source, *span);
+                InlayHint {
+                    position: pos,
+                    label: InlayHintLabel::String(format!(": {ty}")),
+                    kind: Some(InlayHintKind::Type),
+                    padding_left: Some(true),
+                    padding_right: None,
+                    tooltip: None,
+                    text_edits: None,
+                    data: None,
+                }
+            })
+            .collect();
+
+        Ok(Some(hints))
+    }
+}
+
+fn ranges_overlap(a: &Range, b: &Range) -> bool {
+    !(a.end.line < b.start.line || (a.end.line == b.start.line && a.end.character <= b.start.character)
+        || b.end.line < a.start.line || (b.end.line == a.start.line && b.end.character <= a.start.character))
+}
+
+fn span_end_position(source: &str, span: Span) -> Position {
+    byte_offset_to_position(source, span.end)
+}
+```
+
+**Guidelines:**
+- ✅ Show types for all sub-expressions within the visible range
+- ❌ Skip `Decl::Bind` whole-line spans (those are "let x = ..." — too noisy)
+- ✅ Use `InlayHintKind::Type` and `padding_left: true` for visual separation
+
+**Testing:**
+
+```rust
+#[test]
+fn inlay_hint_shows_type_after_expression() {
+    let mut type_map = HashMap::new();
+    type_map.insert(Span::new(8, 10), "i32".to_string());
+    let document = DocumentState {
+        source: "let x = 42".to_string(),
+        type_map,
+    };
+    let range = Range::new(Position::new(0, 0), Position::new(0, 10));
+    // Verify hint appears at position (0, 10) with label ": i32"
+}
+```
+
+**Estimated effort:** 1–2 hours.
+
+---
+
+## Day 2 — Late Morning (Hours 8–10): Code Formatter
+
+### Task 3.17: Implement basic code formatter
+
+A `pipe-lang fmt` subcommand that pretty-prints source code.
+Comments are NOT preserved (they are discarded by the lexer). A comment-preserving
+formatter is deferred to v0.2.
+
+**Approach:** AST pretty-printer — walk the typed AST and emit formatted code
+with consistent indentation, line breaks, and spacing.
+
+**New crate:** `crates/formatter/`
+
+**`crates/formatter/Cargo.toml`:**
+```toml
+[package]
+name = "formatter"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ast = { path = "../ast" }
+bumpalo = "3"
+
+[dev-dependencies]
+parser = { path = "../parser" }
+```
+
+**`crates/formatter/src/lib.rs`:**
+
+```rust
+use ast::ast::{Decl, Expr, MatchArm, Pattern, Program, Stmt, TypeExpr};
+
+/// Formats a parsed program into a pretty-printed string.
+/// Does NOT preserve comments (they are discarded during lexing).
+pub fn format(program: &Program) -> String {
+    let mut out = String::new();
+    for decl in &program.decls {
+        format_decl(decl, &mut out, 0);
+        out.push('\n');
+    }
+    out
+}
+
+fn format_decl(decl: &Decl, out: &mut String, indent: usize) {
+    match decl {
+        Decl::Bind { name, ty, value, .. } => {
+            out.push_str(&indent_str(indent));
+            out.push_str("let ");
+            out.push_str(name);
+            if let Some(ann) = ty {
+                out.push_str(" : ");
+                format_type_expr(ann, out);
+            }
+            out.push_str(" = ");
+            format_expr(value, out, indent);
+        }
+        Decl::TypeAlias { name, params, rhs, .. } => {
+            out.push_str(&indent_str(indent));
+            out.push_str("type ");
+            out.push_str(name);
+            if !params.is_empty() {
+                out.push('<');
+                for (i, p) in params.iter().enumerate() {
+                    if i > 0 { out.push_str(", "); }
+                    out.push_str(p);
+                }
+                out.push('>');
+            }
+            out.push_str(" =\n");
+            format_type_expr(rhs, out);
+        }
+        Decl::Use { path, .. } => {
+            out.push_str(&indent_str(indent));
+            out.push_str("use ");
+            out.push_str(&path.join("::"));
+        }
+    }
+}
+
+fn format_expr(expr: &Expr, out: &mut String, indent: usize) {
+    match expr {
+        Expr::IntLiteral(s, _) => out.push_str(s),
+        Expr::FloatLiteral(s, _) => out.push_str(s),
+        Expr::Str(s, _) => { out.push('"'); out.push_str(s); out.push('"'); }
+        Expr::Bool(true, _) => out.push_str("true"),
+        Expr::Bool(false, _) => out.push_str("false"),
+        Expr::Ident(s, _) => out.push_str(s),
+        Expr::Lambda { params, body, .. } => {
+            out.push('(');
+            for (i, p) in params.iter().enumerate() {
+                if i > 0 { out.push_str(", "); }
+                out.push_str(p.name);
+                if let Some(ann) = &p.ty {
+                    out.push_str(": ");
+                    format_type_expr(ann, out);
+                }
+            }
+            out.push_str(") => ");
+            format_expr(body, out, indent);
+        }
+        Expr::Application { func, args, .. } => {
+            format_expr(func, out, indent);
+            out.push('(');
+            for (i, a) in args.iter().enumerate() {
+                if i > 0 { out.push_str(", "); }
+                format_expr(a, out, indent);
+            }
+            out.push(')');
+        }
+        Expr::Binary { op, left, right, .. } => {
+            format_expr(left, out, indent);
+            out.push(' ');
+            out.push_str(match op {
+                BinOp::Add => "+", BinOp::Sub => "-", BinOp::Mul => "*",
+                BinOp::Div => "/", BinOp::Rem => "%",
+                BinOp::Eq => "==", BinOp::Ne => "!=",
+                BinOp::Lt => "<", BinOp::Le => "<=",
+                BinOp::Gt => ">", BinOp::Ge => ">=",
+                BinOp::And => "&&", BinOp::Or => "||",
+            });
+            out.push(' ');
+            format_expr(right, out, indent);
+        }
+        Expr::Block { stmts, result, .. } => {
+            out.push_str("{\n");
+            for s in stmts {
+                format_stmt(s, out, indent + 1);
+                out.push('\n');
+            }
+            out.push_str(&indent_str(indent + 1));
+            format_expr(result, out, indent + 1);
+            out.push('\n');
+            out.push_str(&indent_str(indent));
+            out.push('}');
+        }
+        Expr::If { condition, then_branch, else_branch, .. } => {
+            out.push_str("if ");
+            format_expr(condition, out, indent);
+            out.push_str(" {\n");
+            out.push_str(&indent_str(indent + 1));
+            format_expr(then_branch, out, indent + 1);
+            out.push('\n');
+            out.push_str(&indent_str(indent));
+            out.push_str("} else {\n");
+            out.push_str(&indent_str(indent + 1));
+            format_expr(else_branch, out, indent + 1);
+            out.push('\n');
+            out.push_str(&indent_str(indent));
+            out.push('}');
+        }
+        Expr::Match { subject, arms, .. } => {
+            out.push_str("match ");
+            format_expr(subject, out, indent);
+            out.push_str(" {\n");
+            for arm in arms {
+                out.push_str(&indent_str(indent + 1));
+                format_pattern(&arm.pattern, out);
+                out.push_str(" => ");
+                format_expr(&arm.body, out, indent + 1);
+                out.push('\n');
+            }
+            out.push_str(&indent_str(indent));
+            out.push('}');
+        }
+        Expr::Array { elems, .. } => {
+            out.push('[');
+            for (i, e) in elems.iter().enumerate() {
+                if i > 0 { out.push_str(", "); }
+                format_expr(e, out, indent);
+            }
+            out.push(']');
+        }
+        Expr::Tuple { elems, .. } => {
+            out.push('(');
+            for (i, e) in elems.iter().enumerate() {
+                if i > 0 { out.push_str(", "); }
+                format_expr(e, out, indent);
+            }
+            out.push(')');
+        }
+        Expr::Record { fields, .. } => {
+            out.push_str("{ ");
+            for (i, f) in fields.iter().enumerate() {
+                if i > 0 { out.push_str(", "); }
+                out.push_str(f.name);
+                out.push_str(": ");
+                format_expr(f.value, out, indent);
+            }
+            out.push_str(" }");
+        }
+        Expr::FieldAccess { object, field, .. } => {
+            format_expr(object, out, indent);
+            out.push('.');
+            out.push_str(field);
+        }
+        Expr::Index { array, index, .. } => {
+            format_expr(array, out, indent);
+            out.push('[');
+            format_expr(index, out, indent);
+            out.push(']');
+        }
+        Expr::Template { parts, .. } => {
+            out.push('`');
+            for part in parts {
+                match part {
+                    ast::ast::TemplatePart::Str(s) => out.push_str(s),
+                    ast::ast::TemplatePart::Expr(e) => {
+                        out.push_str("${");
+                        format_expr(e, out, indent);
+                        out.push('}');
+                    }
+                }
+            }
+            out.push('`');
+        }
+        Expr::Unary { op, operand, .. } => {
+            out.push_str(match op {
+                UnaryOp::Neg => "-",
+                UnaryOp::Not => "!",
+            });
+            format_expr(operand, out, indent);
+        }
+    }
+}
+
+fn format_stmt(stmt: &Stmt, out: &mut String, indent: usize) {
+    match stmt {
+        Stmt::Let { pattern, value } => {
+            out.push_str(&indent_str(indent));
+            out.push_str("let ");
+            format_pattern(pattern, out);
+            out.push_str(" = ");
+            format_expr(value, out, indent);
+        }
+        Stmt::Expr(expr) => {
+            out.push_str(&indent_str(indent));
+            format_expr(expr, out, indent);
+        }
+    }
+}
+
+fn format_pattern(pattern: &Pattern, out: &mut String) {
+    match pattern {
+        Pattern::Wildcard(_) => out.push('_'),
+        Pattern::Binding(name, _) => out.push_str(name),
+        Pattern::Literal(expr, _) => format_expr(expr, out, 0),
+        Pattern::Constructor { name, args, .. } => {
+            out.push_str(name);
+            if !args.is_empty() {
+                out.push('(');
+                for (i, a) in args.iter().enumerate() {
+                    if i > 0 { out.push_str(", "); }
+                    format_pattern(a, out);
+                }
+                out.push(')');
+            }
+        }
+        Pattern::Tuple { elems, .. } => {
+            out.push('(');
+            for (i, e) in elems.iter().enumerate() {
+                if i > 0 { out.push_str(", "); }
+                format_pattern(e, out);
+            }
+            out.push(')');
+        }
+        Pattern::Record { fields, .. } => {
+            out.push_str("{ ");
+            for (i, f) in fields.iter().enumerate() {
+                if i > 0 { out.push_str(", "); }
+                out.push_str(f.name);
+                if let Some(p) = &f.pattern {
+                    out.push_str(": ");
+                    format_pattern(p, out);
+                }
+            }
+            out.push_str(" }");
+        }
+    }
+}
+
+fn indent_str(level: usize) -> String {
+    "    ".repeat(level)
+}
+```
+
+**Add `fmt` subcommand to CLI:**
+
+```rust
+// crates/cli/src/main.rs
+Subcommand::Fmt { path } => {
+    let src = std::fs::read_to_string(&path)
+        .map_err(|e| CompilerError::IoError(e.to_string()))?;
+    let arena = bumpalo::Bump::new();
+    let program = parser::parse(&src, &arena)
+        .map_err(|e| CompilerError::from(e))?;
+    let formatted = formatter::format(&program);
+    println!("{formatted}");
+}
+```
+
+**Note:** The formatter loses comments (`//` comments) because the parser discards
+them. A token-aware formatter that preserves comments requires a different approach
+(re-lex the source, attach comments to nearby tokens, format the token stream).
+That is out of scope for v0.1.
+
+**Testing:**
+
+```rust
+#[test]
+fn formats_simple_let_binding() {
+    let src = "let   x   =   42";
+    let bump = Bump::new();
+    let program = parse(src, &bump).unwrap();
+    let out = format(&program);
+    assert_eq!(out, "let x = 42\n");
+}
+
+#[test]
+fn formats_block_with_indentation() {
+    let src = "let f = (x) => {\nlet y = x + 1\ny * 2\n}";
+    let bump = Bump::new();
+    let program = parse(src, &bump).unwrap();
+    let out = format(&program);
+    assert!(out.contains("    let y = x + 1"));
+    assert!(out.contains("    y * 2"));
+}
+
+#[test]
+fn formats_if_else_with_braces() {
+    let src = "let abs = (x) => if x > 0 { x } else { -x }";
+    let bump = Bump::new();
+    let program = parse(src, &bump).unwrap();
+    let out = format(&program);
+    assert!(out.contains("if ") && out.contains("} else {"));
+}
+```
+
+**Estimated effort:** 4–6 hours for basic formatter + CLI integration.
+
+---
+
+## Day 2 — Mid (Hours 10–12): CLI Improvements
+
+### Task 3.18: Add `lsp` subcommand to CLI (already done — verify present)
 
 **File:** `crates/cli/src/main.rs`
 
@@ -665,7 +1142,7 @@ pub enum Commands {
 }
 ```
 
-### Task 3.17: `--time` flag
+### Task 3.19: `--time` flag
 
 Add timing to the pipeline in `session.rs`:
 
@@ -713,7 +1190,7 @@ fn print_timings(timings: &HashMap<String, Duration>) {
 }
 ```
 
-### Task 3.18: Proper exit codes
+### Task 3.20: Proper exit codes
 
 ```rust
 fn main() -> ExitCode {
@@ -729,7 +1206,7 @@ fn main() -> ExitCode {
 }
 ```
 
-### Task 3.19: Tree-sitter grammar
+### Task 3.21: Tree-sitter grammar
 
 **Create `tree-sitter-pipe-lang/` directory** with:
 
@@ -806,7 +1283,7 @@ function commaSep1(rule) {
 
 **Full grammar** — see the Day 1 Mid section of the original `member3-phase2.md` (the grammar.js content in lines 308–626 of the original file is correct and should be kept as-is).
 
-### Task 3.20: Verify tree-sitter tests
+### Task 3.22: Verify tree-sitter tests
 
 ```bash
 cd tree-sitter-pipe-lang
@@ -819,7 +1296,7 @@ npx tree-sitter test
 
 ## Day 2 — Late (Hours 10–12): Integration + Verification
 
-### Task 3.21: Update CI configuration
+### Task 3.23: Update CI configuration
 
 **File:** `.github/workflows/ci.yml`
 
@@ -840,7 +1317,7 @@ jobs:
       - run: cargo fmt --check
 ```
 
-### Task 3.22: End-to-end verification
+### Task 3.24: End-to-end verification
 
 ```bash
 # Full build
@@ -870,54 +1347,55 @@ cd tree-sitter-pipe-lang && npx tree-sitter test
 
 ## Deliverables
 
-1. **`crates/diagnostics/src/errors.rs`** — Contract-compliant `CompilerError` with TypeMismatch, UnboundVariable, NonExhaustiveMatch, JitError variants
-2. **`crates/diagnostics/src/errors.rs`** — `From<TypeError>` impl mapping all typechecker errors to correct CompilerError variants
-3. **`crates/cli/src/session.rs`** — Updated to use new CompilerError variants + miette graphical rendering
-4. **`crates/pipe-lang-lsp/`** — Full LSP crate with hover, completion, diagnostics publication
-5. **`crates/ast/src/span.rs`** — `Span::contains()` method
-6. **`crates/cli/src/main.rs`** — `lsp` subcommand, `--time` flag, proper exit codes (0/1/2/3)
-7. **`tree-sitter-pipe-lang/`** — Tree-sitter grammar with highlights and test corpus
-8. **`.github/workflows/ci.yml`** — CI configuration
-9. **Workspace `Cargo.toml`** — Updated member list
-10. **Test updates** — Diagnostics tests, LSP tests
+1. **`crates/diagnostics/src/errors.rs`** — Contract-compliant `CompilerError` with `TypeMismatch`, `UnboundVariable`, `NonExhaustiveMatch`, `JitCompileError` variants (NOT `JitError` — name clash with `runtime::jit::JitError`)
+2. **`crates/typechecker/src/error.rs`** — Update existing `From<TypeError>` impl to use new contract variants after Task 3.1 (NOT in diagnostics crate — circular dependency)
+3. **`crates/cli/src/session.rs`** — Update `CompilerError::RuntimeError` → `CompilerError::jit_compile_error()` (already has miette rendering)
+4. **`crates/pipe-lang-lsp/`** — Full LSP crate with hover, completion, **inlay hints**, diagnostics publication (already done for hover/diagnostics — add `completion` + `inlay_hint`)
+5. **`crates/ast/src/span.rs`** — `Span::contains()` method ✅ done
+6. **`crates/formatter/src/lib.rs`** — **NEW**: AST-based pretty-printer with `format()` and `Config`
+7. **`crates/cli/src/main.rs`** — `lsp` subcommand ✅ done. Add `--time`, `fmt`, and proper exit codes (0/1/2/3)
+8. **`tree-sitter-pipe-lang/`** — Tree-sitter grammar with highlights and test corpus
+9. **`.github/workflows/ci.yml`** — CI configuration
+10. **`crates/runtime/src/error.rs`** — `From<RuntimeError> for CompilerError` (NOT in diagnostics — circular dep)
+11. **`crates/ir/src/lower.rs`** — `From<LowerError> for CompilerError` (NOT in diagnostics — circular dep)
+12. **Test updates** — Diagnostics tests, LSP tests, formatter tests
 
 ---
 
 ### Gap G5: Missing `From<LowerError> for CompilerError`
 
-**File:** `crates/diagnostics/src/errors.rs`
+**⚠️ Same circular dependency issue as Task 3.5.** `diagnostics` cannot depend on `ir`. This impl belongs in `crates/ir/src/lower.rs`:
 
-The `ir::lower` module produces `Result<IrModule, LowerError>` (variants: `Unbound(SmolStr)`, `Unimplemented`). There is no `From` impl for it.
-
-**Add before `From<typechecker::TypeError>` (Task 3.5 area):**
 ```rust
-impl From<ir::LowerError> for CompilerError {
-    fn from(err: ir::LowerError) -> Self {
-        CompilerError::ir_error(err.to_string())
+// In crates/ir/src/lower.rs
+impl From<LowerError> for diagnostics::CompilerError {
+    fn from(err: LowerError) -> Self {
+        diagnostics::CompilerError::ir_error(Span::empty(0), err.to_string())
     }
 }
 ```
-Note: `ir::LowerError` doesn't carry a span. Use `Span::empty(0)` or just the message.
 
 ### Gap G6: Missing `From<RuntimeError> for CompilerError`
 
-**File:** `crates/diagnostics/src/errors.rs`
-
-The runtime crate's `RuntimeError` enum has 9 variants (DivisionByZero, IndexOutOfBounds, etc.). These need a conversion path to `CompilerError`.
+**⚠️ Same circular dependency.** This impl belongs in `crates/runtime/src/error.rs`:
 
 ```rust
-impl From<runtime::error::RuntimeError> for CompilerError {
-    fn from(err: runtime::error::RuntimeError) -> Self {
-        CompilerError::IoError(err.to_string())
+// In crates/runtime/src/error.rs
+impl From<RuntimeError> for diagnostics::CompilerError {
+    fn from(err: RuntimeError) -> Self {
+        diagnostics::CompilerError::jit_compile_error(err.to_string())
     }
 }
 ```
 
 ## Coordination Notes
 
-- **Dijith** already added `Span::contains()` to `crates/ast/src/span.rs` for the LSP hover feature (Gap G2)
-- **Dijith** must coordinate the `From<TypeError>` impl — the typechecker's error types must be stable before Member 3 writes the conversion
-- **Dijith / Member 2** add `NonExhaustiveMatch` to `TypeError` — Member 3 maps it to `CompilerError::NonExhaustiveMatch`
-- **Member 1** uses `JitError` — its error type should eventually convert to `CompilerError::JitError`
+- **Dijith** already added `Span::contains()` to `crates/ast/src/span.rs` (Gap G2) — the LSP `hover_for_position` should use it
+- **Dijith** already implemented `From<TypeError> for diagnostics::CompilerError` in `crates/typechecker/src/error.rs` — it currently maps to old `CompilerError::type_error()`. After Task 3.1 is complete, **update this impl** to use the new `TypeMismatch`/`UnboundVariable`/`NonExhaustiveMatch` variants.
+- **Dijith / Member 2** added `NonExhaustiveMatch` to `TypeError` — Member 3 maps it to `CompilerError::NonExhaustiveMatch`
+- **Member 1** uses `JitError` — `From<RuntimeError> for CompilerError` lives in `crates/runtime/src/error.rs` (NOT diagnostics — circular dep)
+- `From<LowerError> for CompilerError` lives in `crates/ir/src/lower.rs` (NOT diagnostics — circular dep)
 - The `lsp` subcommand runs the LSP server which blocks on stdin/stdout — must not conflict with other CLI commands
+- **Inlay hints** (Task 3.16) requires NO new infrastructure — `type_map` already exists, `InlayHint` types are available from `lsp-types`
+- **Formatter** (Task 3.17) is a new `crates/formatter/` crate with no dependencies on other phase-2 changes — can be worked on in parallel with everything
 - Tree-sitter is independent of the Rust pipeline — can be worked on in parallel with everything
