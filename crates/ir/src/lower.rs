@@ -372,10 +372,8 @@ fn lower_expr<'src>(
             span,
         } => {
             let subj_v = lower_expr(fb, subject, hoisted)?;
-            let disc_v = fb.emit(Instruction::TagDiscriminant(subj_v));
+            let subj_ty = fb.expr_type(subject.span());
             let merge_id = fb.alloc_block();
-
-            // Use the match-expression's inferred type for the merge block param.
             let result_ty = fb.expr_type(*span);
             let result_v = fb.alloc_value();
             {
@@ -388,7 +386,8 @@ fn lower_expr<'src>(
                 fb.func.blocks[merge_idx].params.push((result_v, result_ty));
             }
 
-            let mut switch_arms = Vec::new();
+            let is_tag = matches!(subj_ty, IrType::Tag(_));
+            let mut switch_arms: Vec<(u32, BlockId, Vec<ValueId>)> = Vec::new();
             let mut default_arm: Option<(BlockId, Vec<ValueId>)> = None;
 
             for arm in arms.iter() {
@@ -408,35 +407,82 @@ fn lower_expr<'src>(
                         default_arm = Some((arm_id, vec![]));
                     }
                     Pattern::Literal(lit, _) => {
-                        // Use the literal value as the discriminant.
                         let disc = literal_discriminant(lit);
                         switch_arms.push((disc, arm_id, vec![]));
                     }
-                    Pattern::Constructor { name, .. } => {
-                        // Look up the variant discriminant from the subject's tag type.
+                    Pattern::Constructor { name, .. } if is_tag => {
                         let disc = subj_tag_discriminant(fb, subj_v, name);
                         switch_arms.push((disc, arm_id, vec![]));
                     }
                     _ => {
-                        // Tuple / Record patterns — use arm position as discriminant.
-                        switch_arms.push((switch_arms.len() as u32, arm_id, vec![]));
+                        if is_tag {
+                            switch_arms.push((switch_arms.len() as u32, arm_id, vec![]));
+                        } else {
+                            default_arm = Some((arm_id, vec![]));
+                        }
                     }
                 }
             }
 
-            // Walk back to set the Switch terminator on the block that emitted disc_v.
-            let subject_block_idx = fb
-                .func
-                .blocks
-                .iter()
-                .position(|b| b.instructions.iter().any(|(vid, _)| *vid == Some(disc_v)))
-                .unwrap_or(0);
-            fb.current_block = subject_block_idx;
-            fb.set_terminator(Terminator::Switch {
-                discriminant: disc_v,
-                arms: switch_arms,
-                default: default_arm,
-            });
+            if is_tag {
+                // Tag types: TagDiscriminant + Switch (original path).
+                let disc_v = fb.emit(Instruction::TagDiscriminant(subj_v));
+                let subject_block_idx = fb
+                    .func
+                    .blocks
+                    .iter()
+                    .position(|b| b.instructions.iter().any(|(vid, _)| *vid == Some(disc_v)))
+                    .unwrap_or(0);
+                fb.current_block = subject_block_idx;
+                fb.set_terminator(Terminator::Switch {
+                    discriminant: disc_v,
+                    arms: switch_arms,
+                    default: default_arm,
+                });
+            } else {
+                // Primitive types: cascading Branch chain using Eq comparisons.
+                // The subject value IS the discriminant.
+                // Emit arms in reverse so the first literal becomes the outermost check.
+                let mut cascade_target: Option<BlockId> = default_arm.map(|(b, _)| b);
+                for (disc, block_id, _) in switch_arms.into_iter().rev() {
+                    let check_block = fb.alloc_block();
+                    fb.set_current(check_block);
+                    let lit_v = fb.emit(Instruction::ConstU32(disc));
+                    let eq_v = fb.emit(Instruction::Eq(subj_v, lit_v));
+                    let else_target = cascade_target.unwrap_or_else(|| {
+                        let trap = fb.alloc_block();
+                        fb.set_current(trap);
+                        fb.set_terminator(Terminator::Unreachable);
+                        trap
+                    });
+                    fb.set_terminator(Terminator::Branch {
+                        condition: eq_v,
+                        then_block: block_id,
+                        then_args: vec![],
+                        else_block: else_target,
+                        else_args: vec![],
+                    });
+                    cascade_target = Some(check_block);
+                }
+                // Jump from the subject block to the first check.
+                let entry = cascade_target.unwrap_or_else(|| {
+                    let trap = fb.alloc_block();
+                    fb.set_current(trap);
+                    fb.set_terminator(Terminator::Unreachable);
+                    trap
+                });
+                let subject_block_idx = fb
+                    .func
+                    .blocks
+                    .iter()
+                    .position(|b| b.instructions.iter().any(|(vid, _)| *vid == Some(subj_v)))
+                    .unwrap_or(0);
+                fb.current_block = subject_block_idx;
+                fb.set_terminator(Terminator::Jump {
+                    target: entry,
+                    args: vec![],
+                });
+            }
 
             fb.set_current(merge_id);
             Ok(result_v)

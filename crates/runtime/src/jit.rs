@@ -352,12 +352,13 @@ fn compile_function_body(
                 if callee_funcs.contains_key(&name_str) {
                     continue;
                 }
-                let (callee_id, _) = params.name_to_func.get(name_str.as_str()).ok_or_else(|| {
-                    JitError::UnimplementedInstruction {
-                        instruction: format!("CallNamed to unknown function {name_str}"),
-                        function: func.name.to_string(),
-                    }
-                })?;
+                let (callee_id, _) =
+                    params.name_to_func.get(name_str.as_str()).ok_or_else(|| {
+                        JitError::UnimplementedInstruction {
+                            instruction: format!("CallNamed to unknown function {name_str}"),
+                            function: func.name.to_string(),
+                        }
+                    })?;
                 let func_ref = {
                     let f: &mut Function = builder.func;
                     params.module.declare_func_in_func(*callee_id, f)
@@ -396,7 +397,9 @@ fn compile_function_body(
     // test binaries). Load the pointer and create a SigRef for it.
     let println_fn_ptr_gv = {
         let f: &mut Function = builder.func;
-        params.module.declare_data_in_func(params.println_ptr_data_id, f)
+        params
+            .module
+            .declare_data_in_func(params.println_ptr_data_id, f)
     };
     let println_fn_ptr_addr = builder.ins().global_value(types::I64, println_fn_ptr_gv);
     let println_fn_ptr =
@@ -412,7 +415,9 @@ fn compile_function_body(
     // Import the pipe_rt_str_concat function pointer from a data object.
     let str_concat_fn_ptr_gv = {
         let f: &mut Function = builder.func;
-        params.module.declare_data_in_func(params.str_concat_ptr_data_id, f)
+        params
+            .module
+            .declare_data_in_func(params.str_concat_ptr_data_id, f)
     };
     let str_concat_fn_ptr_addr = builder.ins().global_value(types::I64, str_concat_fn_ptr_gv);
     let str_concat_fn_ptr =
@@ -462,7 +467,8 @@ fn compile_function_body(
 
     let mut ctx = params.module.make_context();
     ctx.func = clif_func;
-    params.module
+    params
+        .module
         .define_function(func_id, &mut ctx)
         .map_err(|e| JitError::Cranelift {
             msg: format!("define body: {e:?}"),
