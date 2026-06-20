@@ -17,6 +17,7 @@
 //!
 //! The IR is **not** validated here; validation is the lowerer's job.
 
+use std::collections::HashMap;
 use std::fmt;
 
 use ast::SmolStr;
@@ -765,6 +766,62 @@ impl fmt::Display for IrModule {
             }
         }
         Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Instruction type inference
+// ---------------------------------------------------------------------------
+
+/// Returns the `IrType` of the result produced by `inst`, given the
+/// types of all prior values.
+pub fn lookup_type(types: &HashMap<ValueId, IrType>, value_id: ValueId) -> Option<&IrType> {
+    types.get(&value_id)
+}
+
+/// Infers the `IrType` that `inst` will produce. Returns `None` when
+/// the type cannot be determined (e.g. the input types are unknown).
+///
+/// `fn_return_types` maps callee names to their return types and is
+/// used for `CallNamed` instructions.
+pub fn infer_instruction_type(
+    inst: &Instruction,
+    types: &HashMap<ValueId, IrType>,
+    fn_return_types: &HashMap<String, IrType>,
+) -> Option<IrType> {
+    match inst {
+        Instruction::ConstI8(_) => Some(IrType::I8),
+        Instruction::ConstI16(_) => Some(IrType::I16),
+        Instruction::ConstI32(_) => Some(IrType::I32),
+        Instruction::ConstI64(_) => Some(IrType::I64),
+        Instruction::ConstU8(_) => Some(IrType::U8),
+        Instruction::ConstU16(_) => Some(IrType::U16),
+        Instruction::ConstU32(_) => Some(IrType::U32),
+        Instruction::ConstU64(_) => Some(IrType::U64),
+        Instruction::ConstUsize(_) => Some(IrType::Usize),
+        Instruction::ConstF32(_) => Some(IrType::F32),
+        Instruction::ConstF64(_) => Some(IrType::F64),
+        Instruction::ConstBool(_) => Some(IrType::Bool),
+        Instruction::ConstUnit => Some(IrType::Unit),
+        Instruction::ConstStr(_) => Some(IrType::Str),
+        Instruction::Add(left, _)
+        | Instruction::Sub(left, _)
+        | Instruction::Mul(left, _)
+        | Instruction::Div(left, _)
+        | Instruction::Rem(left, _) => lookup_type(types, *left).cloned(),
+        Instruction::Neg(value_id) => lookup_type(types, *value_id).cloned(),
+        Instruction::Eq(_, _)
+        | Instruction::Ne(_, _)
+        | Instruction::Lt(_, _)
+        | Instruction::Le(_, _)
+        | Instruction::Gt(_, _)
+        | Instruction::Ge(_, _)
+        | Instruction::And(_, _)
+        | Instruction::Or(_, _)
+        | Instruction::Not(_) => Some(IrType::Bool),
+        Instruction::CallNamed(data) => fn_return_types.get(data.name.as_str()).cloned(),
+        Instruction::StrConcat { .. } => Some(IrType::Str),
+        _ => None,
     }
 }
 

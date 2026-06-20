@@ -71,7 +71,7 @@ pub enum JitError {
 impl From<cranelift_module::ModuleError> for JitError {
     fn from(e: cranelift_module::ModuleError) -> Self {
         JitError::Cranelift {
-            msg: format!("{e:?}"),
+            msg: format!("{e}"),
         }
     }
 }
@@ -1206,6 +1206,19 @@ fn store_return_value(
     Ok(())
 }
 
+fn lookup_type<'a>(
+    types: &'a HashMap<ValueId, IrType>,
+    value_id: ValueId,
+    func_name: &str,
+) -> Result<&'a IrType, JitError> {
+    types
+        .get(&value_id)
+        .ok_or_else(|| JitError::UnimplementedInstruction {
+            instruction: format!("missing type for {value_id}"),
+            function: func_name.to_string(),
+        })
+}
+
 fn infer_value_types(
     func: &IrFunction,
     fn_return_types: &HashMap<String, IrType>,
@@ -1234,62 +1247,12 @@ fn infer_instruction_type(
     func_name: &str,
     fn_return_types: &HashMap<String, IrType>,
 ) -> Result<IrType, JitError> {
-    match inst {
-        ir::Instruction::ConstI8(_) => Ok(IrType::I8),
-        ir::Instruction::ConstI16(_) => Ok(IrType::I16),
-        ir::Instruction::ConstI32(_) => Ok(IrType::I32),
-        ir::Instruction::ConstI64(_) => Ok(IrType::I64),
-        ir::Instruction::ConstU8(_) => Ok(IrType::U8),
-        ir::Instruction::ConstU16(_) => Ok(IrType::U16),
-        ir::Instruction::ConstU32(_) => Ok(IrType::U32),
-        ir::Instruction::ConstU64(_) => Ok(IrType::U64),
-        ir::Instruction::ConstUsize(_) => Ok(IrType::Usize),
-        ir::Instruction::ConstF32(_) => Ok(IrType::F32),
-        ir::Instruction::ConstF64(_) => Ok(IrType::F64),
-        ir::Instruction::ConstBool(_) => Ok(IrType::Bool),
-        ir::Instruction::ConstUnit => Ok(IrType::Unit),
-        ir::Instruction::ConstStr(_) => Ok(IrType::Str),
-        ir::Instruction::Add(left, _)
-        | ir::Instruction::Sub(left, _)
-        | ir::Instruction::Mul(left, _)
-        | ir::Instruction::Div(left, _)
-        | ir::Instruction::Rem(left, _) => Ok(lookup_type(types, *left, func_name)?.clone()),
-        ir::Instruction::Neg(value_id) => Ok(lookup_type(types, *value_id, func_name)?.clone()),
-        ir::Instruction::Eq(_, _)
-        | ir::Instruction::Ne(_, _)
-        | ir::Instruction::Lt(_, _)
-        | ir::Instruction::Le(_, _)
-        | ir::Instruction::Gt(_, _)
-        | ir::Instruction::Ge(_, _)
-        | ir::Instruction::And(_, _)
-        | ir::Instruction::Or(_, _)
-        | ir::Instruction::Not(_) => Ok(IrType::Bool),
-        ir::Instruction::CallNamed(data) => fn_return_types
-            .get(data.name.as_str())
-            .cloned()
-            .ok_or_else(|| JitError::UnimplementedInstruction {
-                instruction: format!("CallNamed to unknown function {}", data.name),
-                function: func_name.to_string(),
-            }),
-        ir::Instruction::StrConcat { .. } => Ok(IrType::Str),
-        _ => Err(JitError::UnimplementedInstruction {
+    ir::infer_instruction_type(inst, types, fn_return_types).ok_or_else(|| {
+        JitError::UnimplementedInstruction {
             instruction: format!("{inst:?}"),
             function: func_name.to_string(),
-        }),
-    }
-}
-
-fn lookup_type<'a>(
-    types: &'a HashMap<ValueId, IrType>,
-    value_id: ValueId,
-    func_name: &str,
-) -> Result<&'a IrType, JitError> {
-    types
-        .get(&value_id)
-        .ok_or_else(|| JitError::UnimplementedInstruction {
-            instruction: format!("missing type for {value_id}"),
-            function: func_name.to_string(),
-        })
+        }
+    })
 }
 
 fn lookup_value(

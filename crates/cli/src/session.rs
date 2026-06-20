@@ -60,6 +60,8 @@ pub struct CompileResult {
     pub diagnostics: Vec<SourceDiagnostic>,
     /// Whether compilation succeeded.
     pub success: bool,
+    /// The exit code returned by the compiled program's `main` function (0 if not run).
+    pub exit_code: i32,
 }
 
 impl CompileResult {
@@ -177,6 +179,7 @@ impl CompilerSession {
             return Ok(CompileResult {
                 diagnostics: Vec::new(),
                 success: true,
+                exit_code: 0,
             });
         }
 
@@ -198,6 +201,7 @@ impl CompilerSession {
             return Ok(CompileResult {
                 diagnostics: Vec::new(),
                 success: true,
+                exit_code: 0,
             });
         }
 
@@ -214,9 +218,10 @@ impl CompilerSession {
         })?;
 
         match compiled.call_main() {
-            Ok(_exit_code) => Ok(CompileResult {
+            Ok(exit_code) => Ok(CompileResult {
                 diagnostics: Vec::new(),
                 success: true,
+                exit_code,
             }),
             Err(e) => Err(Box::new(SourceDiagnostic::new(
                 filename.clone(),

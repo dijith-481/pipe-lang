@@ -10,8 +10,6 @@
 //! by calling `run_fixture` and diffing against `.expected.txt`
 //! golden files in `example-programs/expected/`.
 
-#![cfg(feature = "phase-c")]
-
 #[allow(unused_imports)]
 use cli::fixtures::{
     Fixture, assert_stdout_matches, discover_fixtures, examples_dir, run_fixture, workspace_root,

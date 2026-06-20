@@ -273,11 +273,11 @@ fn fix_match_literal_discriminant() {
     let m = lower_src("let describe = (b) => match b { true => 1 false => 0 }");
     let f = m.function("describe").unwrap();
     // Primitive match now uses cascading Branch, not Switch.
-    // Find a ConstU32(1) used in an Eq comparison for the true arm.
+    // Find a ConstI64(1) used in an Eq comparison for the true arm.
     let has_true_check = f.blocks.iter().any(|b| {
         b.instructions
             .iter()
-            .any(|(_, inst)| matches!(inst, Instruction::ConstU32(1)))
+            .any(|(_, inst)| matches!(inst, Instruction::ConstI64(1)))
     });
     assert!(has_true_check, "true literal should map to value 1");
 }

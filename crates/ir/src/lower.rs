@@ -2,11 +2,12 @@ use std::collections::{HashMap, HashSet};
 
 use ast::SmolStr;
 use ast::ast::{BinOp, Decl, Expr, Pattern, Stmt, TemplatePart, UnaryOp};
-use typechecker::{MonoType, TypedProgram};
+use typechecker::{MonoType, TagVariants, TypedProgram};
 
 use crate::{
     BasicBlock, BlockId, FuncType, Instruction, IrDecl, IrFunction, IrModule, IrType,
-    MakeClosureData, RecordAllocData, TagConstructData, Terminator, ValueId,
+    MakeClosureData, RecordAllocData, TagConstructData, TagType, TagVariant, Terminator, ValueId,
+    infer_instruction_type,
 };
 
 // ---------------------------------------------------------------------------
@@ -27,6 +28,10 @@ pub enum LowerError {
 // ---------------------------------------------------------------------------
 
 pub(crate) fn mono_to_ir(ty: &MonoType) -> IrType {
+    mono_to_ir_inner(ty, None)
+}
+
+fn mono_to_ir_inner(ty: &MonoType, tag_variants: Option<&TagVariants>) -> IrType {
     match ty {
         MonoType::I8 => IrType::I8,
         MonoType::I16 => IrType::I16,
@@ -42,35 +47,73 @@ pub(crate) fn mono_to_ir(ty: &MonoType) -> IrType {
         MonoType::Bool => IrType::Bool,
         MonoType::Str => IrType::Str,
         MonoType::Unit => IrType::Unit,
-        MonoType::Array(inner) => IrType::Array(Box::new(mono_to_ir(inner))),
+        MonoType::Array(inner) => IrType::Array(Box::new(mono_to_ir_inner(inner, tag_variants))),
         MonoType::Func { params, ret } => IrType::Func(FuncType {
-            params: params.iter().map(mono_to_ir).collect(),
-            ret: Box::new(mono_to_ir(ret)),
+            params: params
+                .iter()
+                .map(|p| mono_to_ir_inner(p, tag_variants))
+                .collect(),
+            ret: Box::new(mono_to_ir_inner(ret, tag_variants)),
         }),
         MonoType::Record(fields) => IrType::Record(crate::RecordType {
             name: "anon".into(),
             fields: fields
                 .iter()
-                .map(|(k, v)| (k.clone(), mono_to_ir(v)))
+                .map(|(k, v)| (k.clone(), mono_to_ir_inner(v, tag_variants)))
                 .collect(),
         }),
-        MonoType::Tag { name, payload } => IrType::Tag(crate::TagType {
-            name: name.clone(),
-            variants: vec![crate::TagVariant {
-                name: name.clone(),
-                discriminant: 0,
-                payload: payload.iter().map(mono_to_ir).collect(),
-            }],
-        }),
-        // Unresolved type variable — occurs in fully-polymorphic positions (e.g. id: ∀a. a → a).
-        // Fall back to i32; the JIT will specialise via monomorphisation anyway.
+        MonoType::Tag { name, payload } => {
+            if let Some(variants) = tag_variants.and_then(|tv| tv.get(name.as_str())) {
+                let mut offset = 0;
+                let ir_variants: Vec<TagVariant> = variants
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (vname, vtemplate))| {
+                        let count = vtemplate.len();
+                        let vpayload: Vec<IrType> = payload[offset..offset + count]
+                            .iter()
+                            .map(|t| mono_to_ir_inner(t, tag_variants))
+                            .collect();
+                        offset += count;
+                        TagVariant {
+                            name: vname.clone(),
+                            discriminant: i as u32,
+                            payload: vpayload,
+                        }
+                    })
+                    .collect();
+                IrType::Tag(TagType {
+                    name: name.clone(),
+                    variants: ir_variants,
+                })
+            } else {
+                IrType::Tag(TagType {
+                    name: name.clone(),
+                    variants: vec![TagVariant {
+                        name: name.clone(),
+                        discriminant: 0,
+                        payload: payload
+                            .iter()
+                            .map(|t| mono_to_ir_inner(t, tag_variants))
+                            .collect(),
+                    }],
+                })
+            }
+        }
         MonoType::Var(_) => IrType::I32,
     }
 }
 
 /// Looks up the `IrType` for an expression span in the type map.
-fn expr_ir_type(span: ast::span::Span, type_map: &HashMap<ast::span::Span, MonoType>) -> IrType {
-    type_map.get(&span).map(mono_to_ir).unwrap_or(IrType::I32)
+fn expr_ir_type(
+    span: ast::span::Span,
+    type_map: &HashMap<ast::span::Span, MonoType>,
+    tag_variants: Option<&TagVariants>,
+) -> IrType {
+    type_map
+        .get(&span)
+        .map(|m| mono_to_ir_inner(m, tag_variants))
+        .unwrap_or(IrType::I32)
 }
 
 // ---------------------------------------------------------------------------
@@ -183,8 +226,10 @@ struct FunctionBuilder<'a> {
     func: IrFunction,
     current_block: usize,
     locals: HashMap<SmolStr, ValueId>,
+    value_types: HashMap<ValueId, IrType>,
     globals: &'a HashSet<SmolStr>,
     type_map: &'a HashMap<ast::span::Span, MonoType>,
+    tag_variants: &'a TagVariants,
 }
 
 impl<'a> FunctionBuilder<'a> {
@@ -193,6 +238,7 @@ impl<'a> FunctionBuilder<'a> {
         ret: IrType,
         globals: &'a HashSet<SmolStr>,
         type_map: &'a HashMap<ast::span::Span, MonoType>,
+        tag_variants: &'a TagVariants,
     ) -> Self {
         let mut func = IrFunction::new(name, ret);
         let entry_id = func.alloc_block();
@@ -201,8 +247,10 @@ impl<'a> FunctionBuilder<'a> {
             func,
             current_block: 0,
             locals: HashMap::new(),
+            value_types: HashMap::new(),
             globals,
             type_map,
+            tag_variants,
         }
     }
 
@@ -227,9 +275,14 @@ impl<'a> FunctionBuilder<'a> {
 
     fn emit(&mut self, inst: Instruction) -> ValueId {
         let v = self.alloc_value();
+        // Infer type BEFORE moving `inst` into the block.
+        let ty = infer_instruction_type(&inst, &self.value_types, &HashMap::new());
         self.func.blocks[self.current_block]
             .instructions
             .push((Some(v), inst));
+        if let Some(ty) = ty {
+            self.value_types.insert(v, ty);
+        }
         v
     }
 
@@ -246,7 +299,7 @@ impl<'a> FunctionBuilder<'a> {
 
     /// Returns the `IrType` for an expression span using the type map.
     fn expr_type(&self, span: ast::span::Span) -> IrType {
-        expr_ir_type(span, self.type_map)
+        expr_ir_type(span, self.type_map, Some(self.tag_variants))
     }
 }
 
@@ -388,6 +441,7 @@ fn lower_expr<'src>(
 
             let is_tag = matches!(subj_ty, IrType::Tag(_));
             let mut switch_arms: Vec<(u32, BlockId, Vec<ValueId>)> = Vec::new();
+            let mut literal_arms: Vec<(i64, BlockId)> = Vec::new();
             let mut default_arm: Option<(BlockId, Vec<ValueId>)> = None;
 
             for arm in arms.iter() {
@@ -408,7 +462,7 @@ fn lower_expr<'src>(
                     }
                     Pattern::Literal(lit, _) => {
                         let disc = literal_discriminant(lit);
-                        switch_arms.push((disc, arm_id, vec![]));
+                        literal_arms.push((disc, arm_id));
                     }
                     Pattern::Constructor { name, .. } if is_tag => {
                         let disc = subj_tag_discriminant(fb, subj_v, name);
@@ -444,10 +498,10 @@ fn lower_expr<'src>(
                 // The subject value IS the discriminant.
                 // Emit arms in reverse so the first literal becomes the outermost check.
                 let mut cascade_target: Option<BlockId> = default_arm.map(|(b, _)| b);
-                for (disc, block_id, _) in switch_arms.into_iter().rev() {
+                for (disc, block_id) in literal_arms.into_iter().rev() {
                     let check_block = fb.alloc_block();
                     fb.set_current(check_block);
-                    let lit_v = fb.emit(Instruction::ConstU32(disc));
+                    let lit_v = fb.emit(Instruction::ConstI64(disc));
                     let eq_v = fb.emit(Instruction::Eq(subj_v, lit_v));
                     let else_target = cascade_target.unwrap_or_else(|| {
                         let trap = fb.alloc_block();
@@ -576,13 +630,22 @@ fn lower_expr<'src>(
             // Determine the body return type from the type map.
             let body_ret_ty = fb.expr_type(body.span());
 
-            let mut inner_fb =
-                FunctionBuilder::new(inner_name.clone(), body_ret_ty, fb.globals, fb.type_map);
+            let mut inner_fb = FunctionBuilder::new(
+                inner_name.clone(),
+                body_ret_ty,
+                fb.globals,
+                fb.type_map,
+                fb.tag_variants,
+            );
 
-            // Capture params — type from outer scope (approximated as I32 when unknown).
+            // Capture params — type from outer scope value_types.
             for cap in &captures {
                 let v = inner_fb.alloc_value();
-                inner_fb.func.params.push((v, cap.clone(), IrType::I32));
+                let cap_ty = fb
+                    .lookup(cap.as_str())
+                    .and_then(|cv| fb.value_types.get(&cv).cloned())
+                    .unwrap_or(IrType::I32);
+                inner_fb.func.params.push((v, cap.clone(), cap_ty));
                 inner_fb.bind(cap.clone(), v);
             }
             // Declared params — resolve type from annotation or type_map.
@@ -642,39 +705,24 @@ fn lower_expr<'src>(
 // ---------------------------------------------------------------------------
 
 /// Returns the discriminant value for a literal pattern arm.
-fn literal_discriminant(lit: &ast::ast::LiteralPattern<'_>) -> u32 {
+fn literal_discriminant(lit: &ast::ast::LiteralPattern<'_>) -> i64 {
     match lit {
         ast::ast::LiteralPattern::Bool(true) => 1,
         ast::ast::LiteralPattern::Bool(false) => 0,
-        ast::ast::LiteralPattern::Int(s) => s.parse::<i64>().unwrap_or(0) as u32,
+        ast::ast::LiteralPattern::Int(s) => s.parse::<i64>().unwrap_or(0),
         _ => 0,
     }
 }
 
 /// Returns the variant discriminant for a constructor pattern by looking up
-/// the tag type in the type map.  Falls back to 0 if the type is unavailable.
-fn subj_tag_discriminant(fb: &FunctionBuilder<'_>, _subj_v: ValueId, variant_name: &str) -> u32 {
-    // Find the instruction that defines subj_v and get its span.
-    // Since we don't track ValueId→Span here, fall back to linear scan of decl type map.
-    // The tag type is resolved from the TypeMap via the subject expression type.
-    // For now: scan all tag types in the map for a matching variant.
-    for mono in fb.type_map.values() {
-        if let MonoType::Tag {
-            name: _,
-            payload: _,
-        } = mono
-        {
-            // Single-variant tags (Option/Result generics) — discriminant = 0 for first variant.
-            // More precise resolution requires the full ADT type, which isn't in MonoType yet.
-        }
+/// the subject value's `IrType::Tag` in `value_types`.
+fn subj_tag_discriminant(fb: &FunctionBuilder<'_>, subj_v: ValueId, variant_name: &str) -> u32 {
+    if let Some(IrType::Tag(tag)) = fb.value_types.get(&subj_v)
+        && let Some(v) = tag.variants.iter().find(|v| v.name == variant_name)
+    {
+        return v.discriminant;
     }
-    // Stable fallback: hash the variant name to a consistent value.
-    // Common cases: Some=1, None=0, Ok=0, Err=1.
-    match variant_name {
-        "None" | "Ok" | "True" => 0,
-        "Some" | "Err" | "False" => 1,
-        _ => variant_name.len() as u32,
-    }
+    0
 }
 
 /// Returns the field index of `field` in the record type of `object`.
@@ -828,6 +876,7 @@ fn lower_decl<'src>(
     decl: &Decl<'src>,
     globals: &HashSet<SmolStr>,
     type_map: &HashMap<ast::span::Span, MonoType>,
+    tag_variants: &TagVariants,
     module: &mut IrModule,
 ) -> Result<(), LowerError> {
     match decl {
@@ -839,7 +888,13 @@ fn lower_decl<'src>(
 
             match value {
                 Expr::Lambda { params, body, .. } => {
-                    let mut fb = FunctionBuilder::new((*name).into(), ret_ty, globals, type_map);
+                    let mut fb = FunctionBuilder::new(
+                        (*name).into(),
+                        ret_ty,
+                        globals,
+                        type_map,
+                        tag_variants,
+                    );
                     for p in params.iter() {
                         let v = fb.alloc_value();
                         // Resolve param type from annotation, or from the Func type in type_map.
@@ -867,7 +922,13 @@ fn lower_decl<'src>(
                     module.decls.push(IrDecl::Function(fb.func));
                 }
                 other => {
-                    let mut fb = FunctionBuilder::new((*name).into(), ret_ty, globals, type_map);
+                    let mut fb = FunctionBuilder::new(
+                        (*name).into(),
+                        ret_ty,
+                        globals,
+                        type_map,
+                        tag_variants,
+                    );
                     let v = lower_expr(&mut fb, other, &mut hoisted)?;
                     fb.set_terminator(Terminator::Return(v));
                     module.decls.push(IrDecl::Function(fb.func));
@@ -926,7 +987,13 @@ pub fn lower(typed: &TypedProgram<'_>) -> Result<IrModule, LowerError> {
         .collect();
 
     for decl in &typed.ast.decls {
-        lower_decl(decl, &globals, &typed.type_map, &mut module)?;
+        lower_decl(
+            decl,
+            &globals,
+            &typed.type_map,
+            &typed.tag_variants,
+            &mut module,
+        )?;
     }
 
     Ok(module)
