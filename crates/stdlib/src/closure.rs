@@ -23,7 +23,8 @@ pub(crate) fn call_closure(closure: &ClosureData, args: &[Value]) -> Result<Valu
     call_args.extend(closure.captures.iter().cloned());
     call_args.extend_from_slice(args);
 
-    #[allow(clippy::transmute_int_to_fn)]
+    // SAFETY: func_ptr is guaranteed to be a valid function pointer by the
+    // closure construction site.
     let function: ClosureThunk = unsafe { std::mem::transmute(closure.func_ptr) };
 
     let mut result = Value::Unit;
