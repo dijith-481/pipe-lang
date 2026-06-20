@@ -6,9 +6,7 @@ pub mod unify;
 
 pub use crate::env::{TagVariants, TypeEnv};
 pub use crate::error::TypeError;
-pub use crate::infer::{
-    infer_decl, infer_expr, type_expr_to_mono_with_env, type_expr_to_mono_with_generics,
-};
+pub use crate::infer::{infer_decl, infer_expr, type_expr_to_mono_with_env, type_expr_to_mono_with_generics};
 pub use crate::types::{MonoType, PolyType, TypeId};
 pub use crate::unify::{Substitution, unify};
 

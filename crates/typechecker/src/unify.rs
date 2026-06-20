@@ -114,7 +114,9 @@ impl Substitution {
                     payload: Rc::from(payload.as_slice()),
                 }
             }
-            MonoType::Effect(inner) => MonoType::Effect(Box::new(self.apply(inner))),
+            MonoType::Effect(inner) => {
+                MonoType::Effect(Box::new(self.apply(inner)))
+            }
             _ => ty.clone(),
         }
     }
@@ -212,11 +214,7 @@ pub fn unify(sub: &mut Substitution, a: &MonoType, b: &MonoType) -> Result<(), T
         }
 
         (MonoType::Record(af), MonoType::Record(bf)) => {
-            let (smaller, larger) = if af.len() <= bf.len() {
-                (af, bf)
-            } else {
-                (bf, af)
-            };
+            let (smaller, larger) = if af.len() <= bf.len() { (af, bf) } else { (bf, af) };
             for (name, smaller_ty) in smaller.iter() {
                 let larger_ty = larger.get(name).ok_or_else(|| mismatch(&a, &b))?;
                 unify(sub, smaller_ty, larger_ty)?;

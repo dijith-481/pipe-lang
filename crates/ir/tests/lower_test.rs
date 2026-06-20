@@ -279,20 +279,15 @@ fn fix_match_literal_discriminant() {
             .iter()
             .any(|(_, inst)| matches!(inst, Instruction::ConstI64(1)))
     });
-    assert!(
-        !has_bad_i64,
-        "should never emit ConstI64(1) — type dispatch must produce type-appropriate constant"
-    );
+    assert!(!has_bad_i64, "should never emit ConstI64(1) — type dispatch must produce type-appropriate constant");
     // Find the true literal reference — either ConstBool(true) or ConstI32(1).
     let has_correct = f.blocks.iter().any(|b| {
         b.instructions.iter().any(|(_, inst)| {
-            matches!(inst, Instruction::ConstBool(true)) || matches!(inst, Instruction::ConstI32(1))
+            matches!(inst, Instruction::ConstBool(true))
+                || matches!(inst, Instruction::ConstI32(1))
         })
     });
-    assert!(
-        has_correct,
-        "true literal should map to type-appropriate constant"
-    );
+    assert!(has_correct, "true literal should map to type-appropriate constant");
 }
 
 #[test]

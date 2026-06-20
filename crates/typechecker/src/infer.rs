@@ -4,6 +4,7 @@ use std::rc::Rc;
 use ast::SmolStr;
 use ast::ast::{BinOp, Decl, Expr, LiteralPattern, MatchArm, Pattern, Stmt, TypeExpr, UnaryOp};
 use ast::span::Span;
+use ast::SmolStr;
 
 use crate::env::TypeEnv;
 use crate::error::TypeError;
@@ -179,7 +180,9 @@ fn type_expr_to_mono_inner(
             let from_resolved = type_expr_to_mono_inner(env, from, generics)?;
             // Multi-param fix: unwrap Tuple into individual params
             let params = match &from_resolved {
-                MonoType::Tag { name, payload } if name.as_str() == "Tuple" => payload.to_vec(),
+                MonoType::Tag { name, payload } if name.as_str() == "Tuple" => {
+                    payload.to_vec()
+                }
                 _ => vec![from_resolved],
             };
             Ok(MonoType::Func {
@@ -188,10 +191,8 @@ fn type_expr_to_mono_inner(
             })
         }
         TypeExpr::Tuple { types, span: _ } => {
-            let payload: Result<Vec<MonoType>, _> = types
-                .iter()
-                .map(|t| type_expr_to_mono_inner(env, t, generics))
-                .collect();
+            let payload: Result<Vec<MonoType>, _> =
+                types.iter().map(|t| type_expr_to_mono_inner(env, t, generics)).collect();
             Ok(MonoType::Tag {
                 name: "Tuple".into(),
                 payload: Rc::from(payload?.as_slice()),
@@ -251,7 +252,10 @@ fn type_expr_to_mono_inner(
 /// # Errors
 ///
 /// Returns [`TypeError::UnboundVariable`] for unknown type names.
-pub fn type_expr_to_mono_with_env(env: &TypeEnv, te: &TypeExpr<'_>) -> Result<MonoType, TypeError> {
+pub fn type_expr_to_mono_with_env(
+    env: &TypeEnv,
+    te: &TypeExpr<'_>,
+) -> Result<MonoType, TypeError> {
     type_expr_to_mono_inner(env, te, &HashMap::new())
 }
 
@@ -917,9 +921,7 @@ pub fn infer_decl_with_map<'a>(
             Ok(poly)
         }
 
-        Decl::TypeAlias {
-            name, params, rhs, ..
-        } => {
+        Decl::TypeAlias { name, params, rhs, .. } => {
             // Create fresh type variables for generic params
             let param_vars: Vec<TypeId> = params.iter().map(|_| env.fresh_var()).collect();
             let param_map: HashMap<&str, MonoType> = params
@@ -966,7 +968,8 @@ pub fn infer_decl_with_map<'a>(
                         tag_info.push((SmolStr::from(variant.name), payload_tys));
                     }
 
-                    env.tag_variants.insert(SmolStr::from(*name), tag_info);
+                    env.tag_variants
+                        .insert(SmolStr::from(*name), tag_info);
 
                     let poly = PolyType::poly(
                         param_vars,
