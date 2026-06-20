@@ -75,6 +75,22 @@ impl CompileResult {
     }
 }
 
+fn failure_from_errors(
+    filename: &str,
+    source: &Arc<str>,
+    errors: impl IntoIterator<Item = CompilerError>,
+) -> CompileResult {
+    let diagnostics = errors
+        .into_iter()
+        .map(|err| SourceDiagnostic::new(filename, Arc::clone(source), err))
+        .collect();
+    CompileResult {
+        diagnostics,
+        success: false,
+        exit_code: 1,
+    }
+}
+
 /// Orchestrates the compilation pipeline: lex → parse → typecheck → lower → JIT.
 ///
 /// The `CompilerSession` is the central entry point for driving compilation.
@@ -154,27 +170,28 @@ impl CompilerSession {
 
         // Stage 1: Parse (parser handles lexing internally)
         let arena = Bump::new();
-        let program = parser::parse(source_ref, &arena).map_err(|e| {
-            Box::new(SourceDiagnostic::new(
-                filename.clone(),
-                source_arc.clone(),
-                e.into(),
-            ))
-        })?;
+        let program = match parser::parse(source_ref, &arena) {
+            Ok(program) => program,
+            Err(err) => {
+                return Ok(failure_from_errors(
+                    &filename,
+                    &source_arc,
+                    [CompilerError::from(err)],
+                ));
+            }
+        };
 
         // Stage 2: Typecheck
-        let typed = typechecker::typecheck(&program).map_err(|errors| {
-            let first = errors.into_iter().next().expect("at least one type error");
-            let err = CompilerError::TypeError {
-                span: first.span(),
-                msg: first.to_string(),
-            };
-            Box::new(SourceDiagnostic::new(
-                filename.clone(),
-                source_arc.clone(),
-                err,
-            ))
-        })?;
+        let typed = match typechecker::typecheck(&program) {
+            Ok(typed) => typed,
+            Err(errors) => {
+                return Ok(failure_from_errors(
+                    &filename,
+                    &source_arc,
+                    errors.into_iter().map(CompilerError::from),
+                ));
+            }
+        };
 
         // For `check` mode, stop here.
         if self.config.mode == CompileMode::Check {
@@ -309,8 +326,9 @@ mod tests {
         let config = SessionConfig::new(PathBuf::from("test.pl")).with_mode(CompileMode::Check);
         let mut session = CompilerSession::new(config);
         session.set_source("let = ");
-        let result = session.run_pipeline();
-        assert!(result.is_err());
+        let result = session.run_pipeline().expect("pipeline result");
+        assert!(!result.success);
+        assert!(!result.diagnostics.is_empty());
     }
 
     #[test]
@@ -318,8 +336,9 @@ mod tests {
         let config = SessionConfig::new(PathBuf::from("test.pl")).with_mode(CompileMode::Check);
         let mut session = CompilerSession::new(config);
         session.set_source("let x = \"hello\" + 42");
-        let result = session.run_pipeline();
-        assert!(result.is_err());
+        let result = session.run_pipeline().expect("pipeline result");
+        assert!(!result.success);
+        assert!(!result.diagnostics.is_empty());
     }
 
     #[test]

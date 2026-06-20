@@ -71,6 +71,57 @@ impl TypeError {
     }
 }
 
+impl From<TypeError> for diagnostics::CompilerError {
+    fn from(err: TypeError) -> Self {
+        match err {
+            TypeError::UnificationFailed {
+                span,
+                expected,
+                got,
+            } => diagnostics::CompilerError::type_error(
+                span,
+                format!("type mismatch: expected {expected}, got {got}"),
+            ),
+            TypeError::UnboundVariable { name, span } => {
+                diagnostics::CompilerError::type_error(span, format!("unbound variable `{name}`"))
+            }
+            TypeError::ArityMismatch {
+                expected,
+                got,
+                span,
+            } => diagnostics::CompilerError::type_error(
+                span,
+                format!("arity mismatch: expected {expected} arguments, got {got}"),
+            ),
+            TypeError::InfiniteType { var, ty, span } => diagnostics::CompilerError::type_error(
+                span,
+                format!("infinite type: {var} occurs in {ty}"),
+            ),
+            TypeError::AnnotationConflict {
+                annotation,
+                inferred,
+                span,
+            } => diagnostics::CompilerError::type_error(
+                span,
+                format!(
+                    "type annotation conflict: annotation says {annotation}, inferred {inferred}"
+                ),
+            ),
+            TypeError::NonExhaustiveMatch { span } => {
+                diagnostics::CompilerError::type_error(span, "non-exhaustive match")
+            }
+            TypeError::FieldNotFound { field, span } => diagnostics::CompilerError::type_error(
+                span,
+                format!("field `{field}` not found on record"),
+            ),
+            TypeError::NumericOverflow { ty, span } => diagnostics::CompilerError::type_error(
+                span,
+                format!("numeric literal overflows type `{ty}`"),
+            ),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
