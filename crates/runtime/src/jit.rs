@@ -94,15 +94,17 @@ unsafe impl Sync for CompiledModule {}
 
 impl CompiledModule {
     /// Calls the module's `main` function with no arguments and
-    /// returns its `i32` result.
+    /// returns its result as an `i32`.
     ///
-    /// For v0.1, `main` must have signature `() -> i32` or
-    /// `() -> Effect<()>` (effects are sequentialized into
-    /// `i32` return = 0 on success).
+    /// Only types that fit losslessly in `i32` are supported:
+    /// `I8`, `I16`, `I32`, `U8`, `U16`, `U32`, `Bool`, `Unit`.
+    /// Wider types (`I64`, `U64`, `Usize`, `F32`, `F64`) return
+    /// an error; use [`call_main_raw`] and decode manually.
     ///
     /// # Errors
     ///
-    /// Returns [`JitError`] if the main function returns non-zero.
+    /// Returns [`JitError`] if the main function panics or its
+    /// return type cannot be losslessly decoded as `i32`.
     pub fn call_main(&self) -> Result<i32, JitError> {
         let mut ret_buf = [0u8; 16];
         let code = unsafe { (self.main_ptr)(std::ptr::null(), ret_buf.as_mut_ptr()) };
@@ -180,13 +182,12 @@ pub fn compile_ir(ir_module: &IrModule) -> Result<CompiledModule, JitError> {
         let data_name = format!("__str_{}", s);
         let data_id = module.declare_data(&data_name, Linkage::Local, false, false)?;
         let mut data_desc = DataDescription::new();
-        let null_terminated = s
-            .as_bytes()
-            .iter()
-            .copied()
-            .chain(std::iter::once(0u8))
-            .collect::<Vec<_>>();
-        data_desc.define(Box::from(null_terminated));
+        let bytes = s.as_bytes();
+        let len = bytes.len() as u32;
+        let mut data = Vec::with_capacity(4 + bytes.len());
+        data.extend_from_slice(&len.to_ne_bytes());
+        data.extend_from_slice(bytes);
+        data_desc.define(data.into_boxed_slice());
         module.define_data(data_id, &data_desc)?;
         string_data_ids.insert(s.clone(), data_id);
     }
@@ -223,17 +224,15 @@ pub fn compile_ir(ir_module: &IrModule) -> Result<CompiledModule, JitError> {
                 msg: format!("function disappeared after declaration: {name}"),
             });
         };
-        compile_function_body(
-            &mut module,
-            &mut fn_builder_ctx,
-            func,
-            *func_id,
-            ret_type,
-            &name_to_func,
-            &string_data_ids,
+        let mut params = FunctionBodyParams {
+            module: &mut module,
+            fn_builder_ctx: &mut fn_builder_ctx,
+            name_to_func: &name_to_func,
+            string_data_ids: &string_data_ids,
             println_ptr_data_id,
             str_concat_ptr_data_id,
-        )?;
+        };
+        compile_function_body(&mut params, func, *func_id, ret_type)?;
     }
 
     module.finalize_definitions().map_err(JitError::from)?;
@@ -266,21 +265,47 @@ fn make_signature(module: &JITModule) -> cranelift_codegen::ir::Signature {
     sig
 }
 
+/// Shared context for compiling a single function body into Cranelift IR.
+///
+/// Bundles commonly-threaded references to eliminate
+/// `too_many_arguments` warnings throughout the compilation pipeline.
+///
+/// Does NOT own the `FunctionBuilder` — that is passed separately to avoid
+/// self-referential borrow issues with `finalize()` taking ownership.
+struct BlockContext<'a> {
+    value_types: &'a HashMap<ValueId, IrType>,
+    func_name: &'a str,
+    callee_funcs: &'a HashMap<String, FuncRef>,
+    fn_return_types: &'a HashMap<String, IrType>,
+    string_globals: &'a HashMap<String, GlobalValue>,
+    println_fn_ptr: Value,
+    println_sig: SigRef,
+    str_concat_fn_ptr: Value,
+    str_concat_sig: SigRef,
+    blocks: &'a HashMap<BlockId, Block>,
+    ret_ptr: Value,
+    ret_type: &'a IrType,
+}
+
+/// Module-scoped parameters for compiling a single function body.
+struct FunctionBodyParams<'a> {
+    module: &'a mut JITModule,
+    fn_builder_ctx: &'a mut FunctionBuilderContext,
+    name_to_func: &'a HashMap<String, (cranelift_module::FuncId, IrType)>,
+    string_data_ids: &'a HashMap<String, DataId>,
+    println_ptr_data_id: DataId,
+    str_concat_ptr_data_id: DataId,
+}
+
 /// Compiles the body of one IR function into the module's slot
 /// for `func_id`.
-#[allow(clippy::too_many_arguments)]
 fn compile_function_body(
-    module: &mut JITModule,
-    fn_builder_ctx: &mut FunctionBuilderContext,
+    params: &mut FunctionBodyParams,
     func: &IrFunction,
     func_id: cranelift_module::FuncId,
     ret_type: &IrType,
-    name_to_func: &HashMap<String, (cranelift_module::FuncId, IrType)>,
-    string_data_ids: &HashMap<String, DataId>,
-    println_ptr_data_id: DataId,
-    str_concat_ptr_data_id: DataId,
 ) -> Result<(), JitError> {
-    let sig = make_signature(module);
+    let sig = make_signature(params.module);
     let user_name = UserFuncName::user(0, func_id.as_u32());
     let mut clif_func = Function::with_name_signature(user_name, sig);
 
@@ -294,14 +319,14 @@ fn compile_function_body(
     // Populate fn_return_types for every declared function so that
     // type inference and codegen can resolve call return types.
     let mut fn_return_types: HashMap<String, IrType> = HashMap::new();
-    for (name, (_, ret_ty)) in name_to_func.iter() {
+    for (name, (_, ret_ty)) in params.name_to_func.iter() {
         fn_return_types.insert(name.clone(), ret_ty.clone());
     }
 
     // The ABI entry block unpacks function parameters, then jumps into
     // the first IR block. All IR blocks are declared before emission so
     // forward edges and block parameters are available immediately.
-    let mut builder = FunctionBuilder::new(&mut clif_func, fn_builder_ctx);
+    let mut builder = FunctionBuilder::new(&mut clif_func, params.fn_builder_ctx);
     let entry_block = builder.create_block();
     builder.append_block_params_for_function_params(entry_block);
     builder.switch_to_block(entry_block);
@@ -327,7 +352,7 @@ fn compile_function_body(
                 if callee_funcs.contains_key(&name_str) {
                     continue;
                 }
-                let (callee_id, _) = name_to_func.get(name_str.as_str()).ok_or_else(|| {
+                let (callee_id, _) = params.name_to_func.get(name_str.as_str()).ok_or_else(|| {
                     JitError::UnimplementedInstruction {
                         instruction: format!("CallNamed to unknown function {name_str}"),
                         function: func.name.to_string(),
@@ -335,7 +360,7 @@ fn compile_function_body(
                 })?;
                 let func_ref = {
                     let f: &mut Function = builder.func;
-                    module.declare_func_in_func(*callee_id, f)
+                    params.module.declare_func_in_func(*callee_id, f)
                 };
                 callee_funcs.insert(name_str, func_ref);
             }
@@ -351,7 +376,7 @@ fn compile_function_body(
                 if string_globals.contains_key(&s_str) {
                     continue;
                 }
-                let data_id = string_data_ids.get(&s_str).ok_or_else(|| {
+                let data_id = params.string_data_ids.get(&s_str).ok_or_else(|| {
                     JitError::UnimplementedInstruction {
                         instruction: format!("ConstStr: no DataId for {s_str}"),
                         function: func.name.to_string(),
@@ -359,7 +384,7 @@ fn compile_function_body(
                 })?;
                 let gv = {
                     let f: &mut Function = builder.func;
-                    module.declare_data_in_func(*data_id, f)
+                    params.module.declare_data_in_func(*data_id, f)
                 };
                 string_globals.insert(s_str, gv);
             }
@@ -371,7 +396,7 @@ fn compile_function_body(
     // test binaries). Load the pointer and create a SigRef for it.
     let println_fn_ptr_gv = {
         let f: &mut Function = builder.func;
-        module.declare_data_in_func(println_ptr_data_id, f)
+        params.module.declare_data_in_func(params.println_ptr_data_id, f)
     };
     let println_fn_ptr_addr = builder.ins().global_value(types::I64, println_fn_ptr_gv);
     let println_fn_ptr =
@@ -379,7 +404,7 @@ fn compile_function_body(
             .ins()
             .load(types::I64, MemFlags::trusted(), println_fn_ptr_addr, 0);
     let println_sig = {
-        let sig = make_signature(module);
+        let sig = make_signature(params.module);
         let f: &mut Function = builder.func;
         f.import_signature(sig)
     };
@@ -387,7 +412,7 @@ fn compile_function_body(
     // Import the pipe_rt_str_concat function pointer from a data object.
     let str_concat_fn_ptr_gv = {
         let f: &mut Function = builder.func;
-        module.declare_data_in_func(str_concat_ptr_data_id, f)
+        params.module.declare_data_in_func(params.str_concat_ptr_data_id, f)
     };
     let str_concat_fn_ptr_addr = builder.ins().global_value(types::I64, str_concat_fn_ptr_gv);
     let str_concat_fn_ptr =
@@ -395,7 +420,7 @@ fn compile_function_body(
             .ins()
             .load(types::I64, MemFlags::trusted(), str_concat_fn_ptr_addr, 0);
     let str_concat_sig = {
-        let sig = make_signature(module);
+        let sig = make_signature(params.module);
         let f: &mut Function = builder.func;
         f.import_signature(sig)
     };
@@ -411,34 +436,33 @@ fn compile_function_body(
     let first_block = lookup_block(&blocks, first_ir_block.id, func.name.as_ref())?;
     builder.ins().jump(first_block, &[]);
 
+    let ctx = BlockContext {
+        value_types: &value_types,
+        func_name: func.name.as_ref(),
+        callee_funcs: &callee_funcs,
+        fn_return_types: &fn_return_types,
+        string_globals: &string_globals,
+        println_fn_ptr,
+        println_sig,
+        str_concat_fn_ptr,
+        str_concat_sig,
+        blocks: &blocks,
+        ret_ptr,
+        ret_type,
+    };
+
     for block in &func.blocks {
         let clif_block = lookup_block(&blocks, block.id, func.name.as_ref())?;
         builder.switch_to_block(clif_block);
-        compile_block(
-            &mut builder,
-            block,
-            ret_ptr,
-            ret_type,
-            &blocks,
-            &value_types,
-            &mut values,
-            func.name.as_ref(),
-            &callee_funcs,
-            &fn_return_types,
-            &string_globals,
-            println_fn_ptr,
-            println_sig,
-            str_concat_fn_ptr,
-            str_concat_sig,
-        )?;
+        compile_block(&mut builder, &ctx, block, &mut values)?;
     }
 
     builder.seal_all_blocks();
     builder.finalize();
 
-    let mut ctx = module.make_context();
+    let mut ctx = params.module.make_context();
     ctx.func = clif_func;
-    module
+    params.module
         .define_function(func_id, &mut ctx)
         .map_err(|e| JitError::Cranelift {
             msg: format!("define body: {e:?}"),
@@ -476,43 +500,18 @@ fn declare_blocks(
 }
 
 /// Emits Cranelift instructions for a single IR block.
-#[allow(clippy::too_many_arguments)]
 fn compile_block(
     builder: &mut FunctionBuilder,
+    ctx: &BlockContext,
     block: &BasicBlock,
-    ret_ptr: Value,
-    ret_type: &IrType,
-    blocks: &HashMap<BlockId, Block>,
-    value_types: &HashMap<ValueId, IrType>,
     values: &mut HashMap<ValueId, Value>,
-    func_name: &str,
-    callee_funcs: &HashMap<String, FuncRef>,
-    fn_return_types: &HashMap<String, IrType>,
-    string_globals: &HashMap<String, GlobalValue>,
-    println_fn_ptr: Value,
-    println_sig: SigRef,
-    str_concat_fn_ptr: Value,
-    str_concat_sig: SigRef,
 ) -> Result<(), JitError> {
     for (defined, inst) in &block.instructions {
-        let emitted = compile_instruction(
-            builder,
-            inst,
-            value_types,
-            values,
-            func_name,
-            callee_funcs,
-            fn_return_types,
-            string_globals,
-            println_fn_ptr,
-            println_sig,
-            str_concat_fn_ptr,
-            str_concat_sig,
-        )?;
+        let emitted = compile_instruction(builder, ctx, inst, values)?;
         if let Some(value_id) = defined {
             let value = emitted.ok_or_else(|| JitError::UnimplementedInstruction {
                 instruction: format!("value-less instruction assigned to {value_id}"),
-                function: func_name.to_string(),
+                function: ctx.func_name.to_string(),
             })?;
             values.insert(*value_id, value);
         }
@@ -520,15 +519,15 @@ fn compile_block(
 
     match &block.terminator {
         Terminator::Return(value_id) => {
-            let value = lookup_value(values, *value_id, func_name)?;
-            store_return_value(builder, ret_ptr, ret_type, value, func_name)?;
+            let value = lookup_value(values, *value_id, ctx.func_name)?;
+            store_return_value(builder, ctx.ret_ptr, ctx.ret_type, value, ctx.func_name)?;
             let zero = builder.ins().iconst(I32, 0);
             builder.ins().return_(&[zero]);
             Ok(())
         }
         Terminator::Jump { target, args } => {
-            let target = lookup_block(blocks, *target, func_name)?;
-            let args = lookup_block_args(values, args, func_name)?;
+            let target = lookup_block(ctx.blocks, *target, ctx.func_name)?;
+            let args = lookup_block_args(values, args, ctx.func_name)?;
             builder.ins().jump(target, &args);
             Ok(())
         }
@@ -539,15 +538,15 @@ fn compile_block(
             else_block,
             else_args,
         } => {
-            let condition_type = lookup_type(value_types, *condition, func_name)?;
+            let condition_type = lookup_type(ctx.value_types, *condition, ctx.func_name)?;
             if !matches!(condition_type, IrType::Bool) {
-                return Err(unsupported_type(func_name, condition_type));
+                return Err(unsupported_type(ctx.func_name, condition_type));
             }
-            let condition = lookup_value(values, *condition, func_name)?;
-            let then_block = lookup_block(blocks, *then_block, func_name)?;
-            let then_args = lookup_block_args(values, then_args, func_name)?;
-            let else_block = lookup_block(blocks, *else_block, func_name)?;
-            let else_args = lookup_block_args(values, else_args, func_name)?;
+            let condition = lookup_value(values, *condition, ctx.func_name)?;
+            let then_block = lookup_block(ctx.blocks, *then_block, ctx.func_name)?;
+            let then_args = lookup_block_args(values, then_args, ctx.func_name)?;
+            let else_block = lookup_block(ctx.blocks, *else_block, ctx.func_name)?;
+            let else_args = lookup_block_args(values, else_args, ctx.func_name)?;
             builder
                 .ins()
                 .brif(condition, then_block, &then_args, else_block, &else_args);
@@ -557,65 +556,48 @@ fn compile_block(
             discriminant,
             arms,
             default,
-        } => compile_switch(
-            builder,
-            blocks,
-            value_types,
-            values,
-            *discriminant,
-            arms,
-            default.as_ref(),
-            func_name,
-        ),
+        } => compile_switch(builder, ctx, values, *discriminant, arms, default.as_ref()),
         Terminator::Unreachable => {
             builder.ins().trap(UNREACHABLE_TRAP);
             Ok(())
         }
         _ => Err(JitError::UnimplementedInstruction {
             instruction: format!("{:?}", block.terminator),
-            function: func_name.to_string(),
+            function: ctx.func_name.to_string(),
         }),
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn compile_switch(
     builder: &mut FunctionBuilder,
-    blocks: &HashMap<BlockId, Block>,
-    value_types: &HashMap<ValueId, IrType>,
+    ctx: &BlockContext,
     values: &HashMap<ValueId, Value>,
     discriminant: ValueId,
     arms: &[(u32, BlockId, Vec<ValueId>)],
     default: Option<&(BlockId, Vec<ValueId>)>,
-    func_name: &str,
 ) -> Result<(), JitError> {
-    let discriminant_type = lookup_type(value_types, discriminant, func_name)?;
+    let discriminant_type = lookup_type(ctx.value_types, discriminant, ctx.func_name)?;
     let max_discriminant = switch_max_discriminant(discriminant_type)
-        .ok_or_else(|| unsupported_type(func_name, discriminant_type))?;
-    let discriminant = lookup_value(values, discriminant, func_name)?;
-    validate_switch_arms(arms, max_discriminant, func_name)?;
+        .ok_or_else(|| unsupported_type(ctx.func_name, discriminant_type))?;
+    validate_switch_arms(arms, max_discriminant, ctx.func_name)?;
+    let discriminant = lookup_value(values, discriminant, ctx.func_name)?;
 
     let has_edge_args = arms.iter().any(|(_, _, args)| !args.is_empty())
         || default.is_some_and(|(_, args)| !args.is_empty());
     if has_edge_args {
-        return compile_switch_with_args(
-            builder,
-            blocks,
-            values,
-            discriminant,
-            arms,
-            default,
-            func_name,
-        );
+        return compile_switch_with_args(builder, ctx, values, discriminant, arms, default);
     }
 
     let mut switch = ClifSwitch::new();
     for (case, target, _) in arms {
-        switch.set_entry(u128::from(*case), lookup_block(blocks, *target, func_name)?);
+        switch.set_entry(
+            u128::from(*case),
+            lookup_block(ctx.blocks, *target, ctx.func_name)?,
+        );
     }
 
     let (fallback, trap_fallback) = match default {
-        Some((target, _)) => (lookup_block(blocks, *target, func_name)?, false),
+        Some((target, _)) => (lookup_block(ctx.blocks, *target, ctx.func_name)?, false),
         None => (builder.create_block(), true),
     };
     switch.emit(builder, discriminant, fallback);
@@ -628,16 +610,15 @@ fn compile_switch(
 
 fn compile_switch_with_args(
     builder: &mut FunctionBuilder,
-    blocks: &HashMap<BlockId, Block>,
+    ctx: &BlockContext,
     values: &HashMap<ValueId, Value>,
     discriminant: Value,
     arms: &[(u32, BlockId, Vec<ValueId>)],
     default: Option<&(BlockId, Vec<ValueId>)>,
-    func_name: &str,
 ) -> Result<(), JitError> {
     for (case, target, args) in arms {
-        let target = lookup_block(blocks, *target, func_name)?;
-        let args = lookup_block_args(values, args, func_name)?;
+        let target = lookup_block(ctx.blocks, *target, ctx.func_name)?;
+        let args = lookup_block_args(values, args, ctx.func_name)?;
         let next = builder.create_block();
         let matches = builder
             .ins()
@@ -648,8 +629,8 @@ fn compile_switch_with_args(
 
     match default {
         Some((target, args)) => {
-            let target = lookup_block(blocks, *target, func_name)?;
-            let args = lookup_block_args(values, args, func_name)?;
+            let target = lookup_block(ctx.blocks, *target, ctx.func_name)?;
+            let args = lookup_block_args(values, args, ctx.func_name)?;
             builder.ins().jump(target, &args);
         }
         None => {
@@ -716,20 +697,11 @@ fn lookup_block_args(
         .collect()
 }
 
-#[allow(clippy::too_many_arguments)]
 fn compile_instruction(
     builder: &mut FunctionBuilder,
+    ctx: &BlockContext,
     inst: &ir::Instruction,
-    value_types: &HashMap<ValueId, IrType>,
     values: &HashMap<ValueId, Value>,
-    func_name: &str,
-    callee_funcs: &HashMap<String, FuncRef>,
-    fn_return_types: &HashMap<String, IrType>,
-    string_globals: &HashMap<String, GlobalValue>,
-    println_fn_ptr: Value,
-    println_sig: SigRef,
-    str_concat_fn_ptr: Value,
-    str_concat_sig: SigRef,
 ) -> Result<Option<Value>, JitError> {
     let value = match inst {
         ir::Instruction::ConstI8(n) => builder.ins().iconst(types::I8, i64::from(*n)),
@@ -746,83 +718,53 @@ fn compile_instruction(
         ir::Instruction::ConstBool(v) => builder.ins().iconst(types::I8, i64::from(u8::from(*v))),
         ir::Instruction::ConstUnit => builder.ins().iconst(I32, 0),
         ir::Instruction::ConstStr(s) => {
-            let gv = string_globals.get(s.as_str()).ok_or_else(|| {
+            let gv = ctx.string_globals.get(s.as_str()).ok_or_else(|| {
                 JitError::UnimplementedInstruction {
                     instruction: format!("ConstStr: no GlobalValue for {s}"),
-                    function: func_name.to_string(),
+                    function: ctx.func_name.to_string(),
                 }
             })?;
             builder.ins().global_value(types::I64, *gv)
         }
 
-        ir::Instruction::Add(left, right) => compile_numeric_binary(
-            builder,
-            value_types,
-            values,
-            *left,
-            *right,
-            func_name,
-            |b, t, l, r| {
+        ir::Instruction::Add(left, right) => {
+            compile_numeric_binary(builder, ctx, values, *left, *right, |b, t, l, r| {
                 if is_float(t) {
                     Ok(b.ins().fadd(l, r))
                 } else {
                     Ok(b.ins().iadd(l, r))
                 }
-            },
-        )?,
-        ir::Instruction::Sub(left, right) => compile_numeric_binary(
-            builder,
-            value_types,
-            values,
-            *left,
-            *right,
-            func_name,
-            |b, t, l, r| {
+            })?
+        }
+        ir::Instruction::Sub(left, right) => {
+            compile_numeric_binary(builder, ctx, values, *left, *right, |b, t, l, r| {
                 if is_float(t) {
                     Ok(b.ins().fsub(l, r))
                 } else {
                     Ok(b.ins().isub(l, r))
                 }
-            },
-        )?,
-        ir::Instruction::Mul(left, right) => compile_numeric_binary(
-            builder,
-            value_types,
-            values,
-            *left,
-            *right,
-            func_name,
-            |b, t, l, r| {
+            })?
+        }
+        ir::Instruction::Mul(left, right) => {
+            compile_numeric_binary(builder, ctx, values, *left, *right, |b, t, l, r| {
                 if is_float(t) {
                     Ok(b.ins().fmul(l, r))
                 } else {
                     Ok(b.ins().imul(l, r))
                 }
-            },
-        )?,
-        ir::Instruction::Div(left, right) => compile_numeric_binary(
-            builder,
-            value_types,
-            values,
-            *left,
-            *right,
-            func_name,
-            |b, t, l, r| match t {
+            })?
+        }
+        ir::Instruction::Div(left, right) => {
+            compile_numeric_binary(builder, ctx, values, *left, *right, |b, t, l, r| match t {
                 IrType::F32 | IrType::F64 => Ok(b.ins().fdiv(l, r)),
                 IrType::U8 | IrType::U16 | IrType::U32 | IrType::U64 | IrType::Usize => {
                     Ok(b.ins().udiv(l, r))
                 }
                 _ => Ok(b.ins().sdiv(l, r)),
-            },
-        )?,
-        ir::Instruction::Rem(left, right) => compile_numeric_binary(
-            builder,
-            value_types,
-            values,
-            *left,
-            *right,
-            func_name,
-            |b, t, l, r| match t {
+            })?
+        }
+        ir::Instruction::Rem(left, right) => {
+            compile_numeric_binary(builder, ctx, values, *left, *right, |b, t, l, r| match t {
                 IrType::F32 | IrType::F64 => {
                     let quotient = b.ins().fdiv(l, r);
                     let truncated = b.ins().trunc(quotient);
@@ -833,140 +775,74 @@ fn compile_instruction(
                     Ok(b.ins().urem(l, r))
                 }
                 _ => Ok(b.ins().srem(l, r)),
-            },
-        )?,
+            })?
+        }
         ir::Instruction::Neg(value_id) => {
-            let ty = lookup_type(value_types, *value_id, func_name)?;
-            let value = lookup_value(values, *value_id, func_name)?;
+            let ty = lookup_type(ctx.value_types, *value_id, ctx.func_name)?;
+            let value = lookup_value(values, *value_id, ctx.func_name)?;
             if is_float(ty) {
                 builder.ins().fneg(value)
             } else if is_integer(ty) {
                 builder.ins().ineg(value)
             } else {
-                return Err(unsupported_type(func_name, ty));
+                return Err(unsupported_type(ctx.func_name, ty));
             }
         }
 
-        ir::Instruction::Eq(left, right) => compile_comparison(
-            builder,
-            value_types,
-            values,
-            *left,
-            *right,
-            func_name,
-            CompareOp::Eq,
-        )?,
-        ir::Instruction::Ne(left, right) => compile_comparison(
-            builder,
-            value_types,
-            values,
-            *left,
-            *right,
-            func_name,
-            CompareOp::Ne,
-        )?,
-        ir::Instruction::Lt(left, right) => compile_comparison(
-            builder,
-            value_types,
-            values,
-            *left,
-            *right,
-            func_name,
-            CompareOp::Lt,
-        )?,
-        ir::Instruction::Le(left, right) => compile_comparison(
-            builder,
-            value_types,
-            values,
-            *left,
-            *right,
-            func_name,
-            CompareOp::Le,
-        )?,
-        ir::Instruction::Gt(left, right) => compile_comparison(
-            builder,
-            value_types,
-            values,
-            *left,
-            *right,
-            func_name,
-            CompareOp::Gt,
-        )?,
-        ir::Instruction::Ge(left, right) => compile_comparison(
-            builder,
-            value_types,
-            values,
-            *left,
-            *right,
-            func_name,
-            CompareOp::Ge,
-        )?,
+        ir::Instruction::Eq(left, right) => {
+            compile_comparison(builder, ctx, values, *left, *right, CompareOp::Eq)?
+        }
+        ir::Instruction::Ne(left, right) => {
+            compile_comparison(builder, ctx, values, *left, *right, CompareOp::Ne)?
+        }
+        ir::Instruction::Lt(left, right) => {
+            compile_comparison(builder, ctx, values, *left, *right, CompareOp::Lt)?
+        }
+        ir::Instruction::Le(left, right) => {
+            compile_comparison(builder, ctx, values, *left, *right, CompareOp::Le)?
+        }
+        ir::Instruction::Gt(left, right) => {
+            compile_comparison(builder, ctx, values, *left, *right, CompareOp::Gt)?
+        }
+        ir::Instruction::Ge(left, right) => {
+            compile_comparison(builder, ctx, values, *left, *right, CompareOp::Ge)?
+        }
 
-        ir::Instruction::And(left, right) => compile_bool_binary(
-            builder,
-            value_types,
-            values,
-            *left,
-            *right,
-            func_name,
-            |b, l, r| b.ins().band(l, r),
-        )?,
-        ir::Instruction::Or(left, right) => compile_bool_binary(
-            builder,
-            value_types,
-            values,
-            *left,
-            *right,
-            func_name,
-            |b, l, r| b.ins().bor(l, r),
-        )?,
+        ir::Instruction::And(left, right) => {
+            compile_bool_binary(builder, ctx, values, *left, *right, |b, l, r| {
+                b.ins().band(l, r)
+            })?
+        }
+        ir::Instruction::Or(left, right) => {
+            compile_bool_binary(builder, ctx, values, *left, *right, |b, l, r| {
+                b.ins().bor(l, r)
+            })?
+        }
         ir::Instruction::Not(value_id) => {
-            let ty = lookup_type(value_types, *value_id, func_name)?;
+            let ty = lookup_type(ctx.value_types, *value_id, ctx.func_name)?;
             if !matches!(ty, IrType::Bool) {
-                return Err(unsupported_type(func_name, ty));
+                return Err(unsupported_type(ctx.func_name, ty));
             }
-            builder
-                .ins()
-                .icmp_imm(IntCC::Equal, lookup_value(values, *value_id, func_name)?, 0)
+            builder.ins().icmp_imm(
+                IntCC::Equal,
+                lookup_value(values, *value_id, ctx.func_name)?,
+                0,
+            )
         }
 
-        ir::Instruction::CallNamed(data) => compile_call_named(
-            builder,
-            data,
-            value_types,
-            values,
-            func_name,
-            callee_funcs,
-            fn_return_types,
-        )?,
+        ir::Instruction::CallNamed(data) => compile_call_named(builder, ctx, data, values)?,
 
         ir::Instruction::Println(value_id) => {
-            compile_println(
-                builder,
-                *value_id,
-                value_types,
-                values,
-                func_name,
-                println_fn_ptr,
-                println_sig,
-            )?;
+            compile_println(builder, ctx, *value_id, values)?;
             return Ok(None);
         }
 
-        ir::Instruction::StrConcat { parts } => compile_str_concat(
-            builder,
-            parts,
-            value_types,
-            values,
-            func_name,
-            str_concat_fn_ptr,
-            str_concat_sig,
-        )?,
+        ir::Instruction::StrConcat { parts } => compile_str_concat(builder, ctx, parts, values)?,
 
         _ => {
             return Err(JitError::UnimplementedInstruction {
                 instruction: format!("{inst:?}"),
-                function: func_name.to_string(),
+                function: ctx.func_name.to_string(),
             });
         }
     };
@@ -975,40 +851,35 @@ fn compile_instruction(
 
 fn compile_call_named(
     builder: &mut FunctionBuilder,
+    ctx: &BlockContext,
     data: &ir::CallNamedData,
-    value_types: &HashMap<ValueId, IrType>,
     values: &HashMap<ValueId, Value>,
-    func_name: &str,
-    callee_funcs: &HashMap<String, FuncRef>,
-    fn_return_types: &HashMap<String, IrType>,
 ) -> Result<Value, JitError> {
     let callee_name = data.name.as_str();
-    let func_ref = callee_funcs.get(callee_name).copied().ok_or_else(|| {
+    let func_ref = ctx.callee_funcs.get(callee_name).copied().ok_or_else(|| {
         JitError::UnimplementedInstruction {
             instruction: format!("CallNamed: no FuncRef for {callee_name}"),
-            function: func_name.to_string(),
+            function: ctx.func_name.to_string(),
         }
     })?;
     let ret_type =
-        fn_return_types
+        ctx.fn_return_types
             .get(callee_name)
             .ok_or_else(|| JitError::UnimplementedInstruction {
                 instruction: format!("CallNamed: no return type for {callee_name}"),
-                function: func_name.to_string(),
+                function: ctx.func_name.to_string(),
             })?;
 
-    // Compute total argument buffer size.
     let total_size: u32 = data
         .args
         .iter()
         .map(|arg_id| {
-            let ty = lookup_type(value_types, *arg_id, func_name)?;
-            storage_size(ty, func_name)
+            let ty = lookup_type(ctx.value_types, *arg_id, ctx.func_name)?;
+            storage_size(ty, ctx.func_name)
         })
         .sum::<Result<i32, _>>()?
         .max(1) as u32;
 
-    // Allocate stack slot for outgoing arguments.
     let arg_slot = builder.create_sized_stack_slot(StackSlotData::new(
         StackSlotKind::ExplicitSlot,
         total_size,
@@ -1016,22 +887,19 @@ fn compile_call_named(
     ));
     let args_buf = builder.ins().stack_addr(types::I64, arg_slot, 0);
 
-    // Store each argument at the correct offset (same layout as
-    // load_function_params expects on the callee side).
     let mut offset: i32 = 0;
     for arg_id in &data.args {
-        let arg_type = lookup_type(value_types, *arg_id, func_name)?;
+        let arg_type = lookup_type(ctx.value_types, *arg_id, ctx.func_name)?;
         if !matches!(arg_type, IrType::Unit) {
-            let arg_val = lookup_value(values, *arg_id, func_name)?;
+            let arg_val = lookup_value(values, *arg_id, ctx.func_name)?;
             builder
                 .ins()
                 .store(MemFlags::trusted(), arg_val, args_buf, offset);
         }
-        offset += storage_size(arg_type, func_name)?;
+        offset += storage_size(arg_type, ctx.func_name)?;
     }
 
-    // Allocate stack slot for the return value.
-    let ret_size = storage_size(ret_type, func_name)?.max(1) as u32;
+    let ret_size = storage_size(ret_type, ctx.func_name)?.max(1) as u32;
     let ret_slot = builder.create_sized_stack_slot(StackSlotData::new(
         StackSlotKind::ExplicitSlot,
         ret_size,
@@ -1039,69 +907,52 @@ fn compile_call_named(
     ));
     let ret_buf = builder.ins().stack_addr(types::I64, ret_slot, 0);
 
-    // Emit the call.
     builder.ins().call(func_ref, &[args_buf, ret_buf]);
 
-    // Load the return value from the ret buffer.
-    let result = load_primitive_value(builder, ret_buf, 0, ret_type, func_name)?;
+    let result = load_primitive_value(builder, ret_buf, 0, ret_type, ctx.func_name)?;
     Ok(result)
 }
 
 fn compile_println(
     builder: &mut FunctionBuilder,
+    ctx: &BlockContext,
     value_id: ValueId,
-    value_types: &HashMap<ValueId, IrType>,
     values: &HashMap<ValueId, Value>,
-    func_name: &str,
-    println_fn_ptr: Value,
-    println_sig: SigRef,
 ) -> Result<(), JitError> {
-    let ty = lookup_type(value_types, value_id, func_name)?;
-    let val = lookup_value(values, value_id, func_name)?;
-    let tag = ir_type_tag(ty).ok_or_else(|| unsupported_type(func_name, ty))?;
+    let ty = lookup_type(ctx.value_types, value_id, ctx.func_name)?;
+    let val = lookup_value(values, value_id, ctx.func_name)?;
+    let tag = ir_type_tag(ty).ok_or_else(|| unsupported_type(ctx.func_name, ty))?;
 
-    // Args buffer layout (12 bytes):
-    //   offset 0: value as i64 (8 bytes, extended/bitcast)
-    //   offset 8: type tag as u32 (4 bytes)
     let arg_slot =
         builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 12, 0));
     let args_buf = builder.ins().stack_addr(types::I64, arg_slot, 0);
 
-    // Store value as i64 at offset 0.
-    let widened = widen_to_i64(builder, val, ty, func_name)?;
+    let widened = widen_to_i64(builder, val, ty, ctx.func_name)?;
     builder
         .ins()
         .store(MemFlags::trusted(), widened, args_buf, 0);
 
-    // Store type tag at offset 8.
     let tag_val = builder.ins().iconst(I32, i64::from(tag));
     builder
         .ins()
         .store(MemFlags::trusted(), tag_val, args_buf, 8);
 
-    // Ret slot for the Unit return value.
     let ret_slot =
         builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 4, 0));
     let ret_buf = builder.ins().stack_addr(types::I64, ret_slot, 0);
 
     builder
         .ins()
-        .call_indirect(println_sig, println_fn_ptr, &[args_buf, ret_buf]);
+        .call_indirect(ctx.println_sig, ctx.println_fn_ptr, &[args_buf, ret_buf]);
     Ok(())
 }
 
 /// Compile a `StrConcat` instruction.
-///
-/// Packs each part's value (widened to i64) and type tag into a buffer,
-/// calls `pipe_rt_str_concat`, and returns the resulting string pointer.
 fn compile_str_concat(
     builder: &mut FunctionBuilder,
+    ctx: &BlockContext,
     parts: &[ValueId],
-    value_types: &HashMap<ValueId, IrType>,
     values: &HashMap<ValueId, Value>,
-    func_name: &str,
-    str_concat_fn_ptr: Value,
-    str_concat_sig: SigRef,
 ) -> Result<Value, JitError> {
     let count = parts.len();
     let buf_size = 4u32 + count as u32 * 12u32;
@@ -1119,14 +970,14 @@ fn compile_str_concat(
         .store(MemFlags::trusted(), count_val, args_buf, 0);
 
     for (i, part_id) in parts.iter().enumerate() {
-        let ty = lookup_type(value_types, *part_id, func_name)?;
-        let val = lookup_value(values, *part_id, func_name)?;
-        let widened = widen_to_i64(builder, val, ty, func_name)?;
+        let ty = lookup_type(ctx.value_types, *part_id, ctx.func_name)?;
+        let val = lookup_value(values, *part_id, ctx.func_name)?;
+        let widened = widen_to_i64(builder, val, ty, ctx.func_name)?;
         let offset = 4i32 + i as i32 * 12;
         builder
             .ins()
             .store(MemFlags::trusted(), widened, args_buf, offset);
-        let tag = ir_type_tag(ty).ok_or_else(|| unsupported_type(func_name, ty))?;
+        let tag = ir_type_tag(ty).ok_or_else(|| unsupported_type(ctx.func_name, ty))?;
         let tag_val = builder.ins().iconst(I32, i64::from(tag));
         builder
             .ins()
@@ -1137,9 +988,11 @@ fn compile_str_concat(
         builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 0));
     let ret_buf = builder.ins().stack_addr(types::I64, ret_slot, 0);
 
-    builder
-        .ins()
-        .call_indirect(str_concat_sig, str_concat_fn_ptr, &[args_buf, ret_buf]);
+    builder.ins().call_indirect(
+        ctx.str_concat_sig,
+        ctx.str_concat_fn_ptr,
+        &[args_buf, ret_buf],
+    );
 
     Ok(builder
         .ins()
@@ -1182,37 +1035,43 @@ fn widen_to_i64(
 
 fn compile_numeric_binary(
     builder: &mut FunctionBuilder,
-    value_types: &HashMap<ValueId, IrType>,
+    ctx: &BlockContext,
     values: &HashMap<ValueId, Value>,
     left: ValueId,
     right: ValueId,
-    func_name: &str,
     emit: impl FnOnce(&mut FunctionBuilder, &IrType, Value, Value) -> Result<Value, JitError>,
 ) -> Result<Value, JitError> {
-    let ty = lookup_type(value_types, left, func_name)?;
+    let ty = lookup_type(ctx.value_types, left, ctx.func_name)?;
     if !ty.is_numeric() {
-        return Err(unsupported_type(func_name, ty));
+        return Err(unsupported_type(ctx.func_name, ty));
     }
-    let left_value = lookup_value(values, left, func_name)?;
-    let right_value = lookup_value(values, right, func_name)?;
+    let right_ty = lookup_type(ctx.value_types, right, ctx.func_name)?;
+    if !right_ty.is_numeric() {
+        return Err(unsupported_type(ctx.func_name, right_ty));
+    }
+    let left_value = lookup_value(values, left, ctx.func_name)?;
+    let right_value = lookup_value(values, right, ctx.func_name)?;
     emit(builder, ty, left_value, right_value)
 }
 
 fn compile_bool_binary(
     builder: &mut FunctionBuilder,
-    value_types: &HashMap<ValueId, IrType>,
+    ctx: &BlockContext,
     values: &HashMap<ValueId, Value>,
     left: ValueId,
     right: ValueId,
-    func_name: &str,
     emit: impl FnOnce(&mut FunctionBuilder, Value, Value) -> Value,
 ) -> Result<Value, JitError> {
-    let ty = lookup_type(value_types, left, func_name)?;
+    let ty = lookup_type(ctx.value_types, left, ctx.func_name)?;
     if !matches!(ty, IrType::Bool) {
-        return Err(unsupported_type(func_name, ty));
+        return Err(unsupported_type(ctx.func_name, ty));
     }
-    let left_value = lookup_value(values, left, func_name)?;
-    let right_value = lookup_value(values, right, func_name)?;
+    let right_ty = lookup_type(ctx.value_types, right, ctx.func_name)?;
+    if !matches!(right_ty, IrType::Bool) {
+        return Err(unsupported_type(ctx.func_name, right_ty));
+    }
+    let left_value = lookup_value(values, left, ctx.func_name)?;
+    let right_value = lookup_value(values, right, ctx.func_name)?;
     Ok(emit(builder, left_value, right_value))
 }
 
@@ -1228,16 +1087,15 @@ enum CompareOp {
 
 fn compile_comparison(
     builder: &mut FunctionBuilder,
-    value_types: &HashMap<ValueId, IrType>,
+    ctx: &BlockContext,
     values: &HashMap<ValueId, Value>,
     left: ValueId,
     right: ValueId,
-    func_name: &str,
     op: CompareOp,
 ) -> Result<Value, JitError> {
-    let ty = lookup_type(value_types, left, func_name)?;
-    let left_value = lookup_value(values, left, func_name)?;
-    let right_value = lookup_value(values, right, func_name)?;
+    let ty = lookup_type(ctx.value_types, left, ctx.func_name)?;
+    let left_value = lookup_value(values, left, ctx.func_name)?;
+    let right_value = lookup_value(values, right, ctx.func_name)?;
     match ty {
         IrType::F32 | IrType::F64 => {
             Ok(builder
@@ -1247,14 +1105,14 @@ fn compile_comparison(
         IrType::Bool => match op {
             CompareOp::Eq => Ok(builder.ins().icmp(IntCC::Equal, left_value, right_value)),
             CompareOp::Ne => Ok(builder.ins().icmp(IntCC::NotEqual, left_value, right_value)),
-            _ => Err(unsupported_type(func_name, ty)),
+            _ => Err(unsupported_type(ctx.func_name, ty)),
         },
         _ if is_integer(ty) => {
             Ok(builder
                 .ins()
                 .icmp(int_compare_code(op, ty), left_value, right_value))
         }
-        _ => Err(unsupported_type(func_name, ty)),
+        _ => Err(unsupported_type(ctx.func_name, ty)),
     }
 }
 
@@ -1327,7 +1185,7 @@ fn store_return_value(
     ret_ptr: Value,
     ret_type: &IrType,
     value: Value,
-    func_name: &str,
+    _func_name: &str,
 ) -> Result<(), JitError> {
     if matches!(ret_type, IrType::Unit) {
         let zero = builder.ins().iconst(I32, 0);
@@ -1338,7 +1196,6 @@ fn store_return_value(
         builder.ins().store(MemFlags::trusted(), value, ret_ptr, 0);
         return Ok(());
     }
-    storage_type(ret_type, func_name)?;
     builder.ins().store(MemFlags::trusted(), value, ret_ptr, 0);
     Ok(())
 }
@@ -1508,29 +1365,16 @@ fn decode_main_i32(ret_type: &IrType, ret_buf: &[u8; 16]) -> Result<i32, JitErro
         IrType::I32 => Ok(i32::from_ne_bytes([
             ret_buf[0], ret_buf[1], ret_buf[2], ret_buf[3],
         ])),
-        IrType::I64 => Ok(i64::from_ne_bytes([
-            ret_buf[0], ret_buf[1], ret_buf[2], ret_buf[3], ret_buf[4], ret_buf[5], ret_buf[6],
-            ret_buf[7],
-        ]) as i32),
         IrType::U8 | IrType::Bool => Ok(u8::from_ne_bytes([ret_buf[0]]) as i32),
         IrType::U16 => Ok(u16::from_ne_bytes([ret_buf[0], ret_buf[1]]) as i32),
         IrType::U32 => {
             Ok(u32::from_ne_bytes([ret_buf[0], ret_buf[1], ret_buf[2], ret_buf[3]]) as i32)
         }
-        IrType::U64 | IrType::Usize => Ok(u64::from_ne_bytes([
-            ret_buf[0], ret_buf[1], ret_buf[2], ret_buf[3], ret_buf[4], ret_buf[5], ret_buf[6],
-            ret_buf[7],
-        ]) as i32),
-        IrType::F32 => {
-            Ok(f32::from_ne_bytes([ret_buf[0], ret_buf[1], ret_buf[2], ret_buf[3]]) as i32)
-        }
-        IrType::F64 => Ok(f64::from_ne_bytes([
-            ret_buf[0], ret_buf[1], ret_buf[2], ret_buf[3], ret_buf[4], ret_buf[5], ret_buf[6],
-            ret_buf[7],
-        ]) as i32),
         IrType::Unit => Ok(0),
         _ => Err(JitError::UnimplementedInstruction {
-            instruction: format!("call_main return type {ret_type}"),
+            instruction: format!(
+                "call_main does not support lossy return type {ret_type}; use call_main_raw instead"
+            ),
             function: "main".to_string(),
         }),
     }
@@ -1551,7 +1395,8 @@ fn decode_main_i32(ret_type: &IrType, ret_buf: &[u8; 16]) -> Result<i32, JitErro
 ///   - bytes 0–7:  value as `i64` (extended/bitcast from native type)
 ///   - bytes 8–11: type tag as `u32` (see [`ir_type_tag`])
 ///
-/// For `Str` the value is a pointer to null‑terminated UTF‑8 bytes.
+/// For `Str` the value is a pointer to length‑prefixed UTF‑8 bytes:
+/// bytes 0–3 store the length as `u32`, followed by the string content.
 #[unsafe(no_mangle)]
 unsafe extern "C" fn __pipe_println(args: *const u8, ret: *mut u8) -> i32 {
     let raw = unsafe { std::ptr::read_unaligned(args as *const i64) };
@@ -1570,11 +1415,8 @@ unsafe extern "C" fn __pipe_println(args: *const u8, ret: *mut u8) -> i32 {
         10 => println!("{}", raw != 0),
         11 => {
             let ptr = raw as *const u8;
-            let mut len = 0usize;
-            while unsafe { *ptr.add(len) } != 0 {
-                len += 1;
-            }
-            let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+            let len = unsafe { std::ptr::read_unaligned(ptr as *const u32) } as usize;
+            let bytes = unsafe { std::slice::from_raw_parts(ptr.add(4), len) };
             let s = unsafe { std::str::from_utf8_unchecked(bytes) };
             println!("{s}");
         }
@@ -1589,7 +1431,7 @@ unsafe extern "C" fn __pipe_println(args: *const u8, ret: *mut u8) -> i32 {
 /// External function called by `StrConcat` JIT code.
 ///
 /// Concatenates an array of type-tagged values into a single
-/// null-terminated string and writes the pointer to `ret`.
+/// length-prefixed string and writes the pointer to `ret`.
 ///
 /// # Safety
 ///
@@ -1598,7 +1440,7 @@ unsafe extern "C" fn __pipe_println(args: *const u8, ret: *mut u8) -> i32 {
 ///   - for each part i: value as `i64` (8 bytes) then type tag as `u32` (4 bytes)
 ///
 /// `ret` points to an 8-byte buffer that receives the pointer to
-/// the null-terminated concatenated result.
+/// the length-prefixed concatenated result.
 #[unsafe(no_mangle)]
 unsafe extern "C" fn pipe_rt_str_concat(args: *const u8, ret: *mut u8) -> i32 {
     let count = unsafe { std::ptr::read_unaligned(args as *const u32) } as usize;
@@ -1621,11 +1463,8 @@ unsafe extern "C" fn pipe_rt_str_concat(args: *const u8, ret: *mut u8) -> i32 {
             10 => result.push_str(&format!("{}", raw != 0)),
             11 => {
                 let ptr = raw as *const u8;
-                let mut len = 0usize;
-                while unsafe { *ptr.add(len) } != 0 {
-                    len += 1;
-                }
-                let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+                let len = unsafe { std::ptr::read_unaligned(ptr as *const u32) } as usize;
+                let bytes = unsafe { std::slice::from_raw_parts(ptr.add(4), len) };
                 let s = unsafe { std::str::from_utf8_unchecked(bytes) };
                 result.push_str(s);
             }
@@ -1633,10 +1472,11 @@ unsafe extern "C" fn pipe_rt_str_concat(args: *const u8, ret: *mut u8) -> i32 {
         }
     }
     let bytes = result.into_bytes();
-    let mut vec = Vec::with_capacity(bytes.len() + 1);
-    vec.extend(bytes);
-    vec.push(0u8);
-    let ptr = vec.leak().as_ptr();
+    let len = bytes.len() as u32;
+    let mut buf = Vec::with_capacity(4 + bytes.len());
+    buf.extend_from_slice(&len.to_ne_bytes());
+    buf.extend_from_slice(&bytes);
+    let ptr = Box::leak(buf.into_boxed_slice()).as_ptr();
     unsafe {
         *(ret as *mut u64) = ptr as u64;
     }
@@ -1705,6 +1545,21 @@ mod tests {
         let code = unsafe { (compiled.main_ptr)(std::ptr::null(), ret_buf.as_mut_ptr()) };
         assert_eq!(code, 0);
         ret_buf
+    }
+
+    /// Read a length-prefixed string from a raw pointer.
+    /// Layout: [len: u32][bytes...] — len is the byte count of the content.
+    fn read_len_prefixed_str(ptr: u64) -> &'static [u8] {
+        let p = ptr as *const u8;
+        let len = unsafe { std::ptr::read_unaligned(p as *const u32) } as usize;
+        unsafe { std::slice::from_raw_parts(p.add(4), len) }
+    }
+
+    /// Assert that a raw pointer points to a length-prefixed string
+    /// matching `expected`.
+    fn check_len_prefixed_str(ptr: u64, expected: &[u8]) {
+        let actual = read_len_prefixed_str(ptr);
+        assert_eq!(actual, expected);
     }
 
     fn make_main_returning(n: i32) -> IrModule {
@@ -2019,10 +1874,7 @@ mod tests {
         let compiled = compile_ir(&module).expect("compile should succeed");
         let ret_buf = call_main_raw(&compiled);
         let ptr = u64::from_ne_bytes(ret_buf[..8].try_into().unwrap());
-        assert_ne!(ptr, 0, "string pointer should not be null");
-        let len = "hello".len();
-        let s = unsafe { std::slice::from_raw_parts(ptr as *const u8, len) };
-        assert_eq!(s, b"hello");
+        check_len_prefixed_str(ptr, b"hello");
     }
 
     #[test]
@@ -2033,7 +1885,7 @@ mod tests {
         let compiled = compile_ir(&module).expect("compile should succeed");
         let ret_buf = call_main_raw(&compiled);
         let ptr = u64::from_ne_bytes(ret_buf[..8].try_into().unwrap());
-        assert_ne!(ptr, 0, "empty string pointer should not be null");
+        check_len_prefixed_str(ptr, b"");
     }
 
     #[test]
@@ -2062,10 +1914,7 @@ mod tests {
         let compiled = compile_ir(&module_with_main(func)).expect("compile should succeed");
         let ret_buf = call_main_raw(&compiled);
         let ptr = u64::from_ne_bytes(ret_buf[..8].try_into().unwrap());
-        assert_ne!(ptr, 0);
-        let len = "gamma".len();
-        let s = unsafe { std::slice::from_raw_parts(ptr as *const u8, len) };
-        assert_eq!(s, b"gamma");
+        check_len_prefixed_str(ptr, b"gamma");
     }
 
     // -----------------------------------------------------------------------
@@ -2412,9 +2261,7 @@ mod tests {
         let compiled = compile_ir(&module_with_main(func)).expect("compile should succeed");
         let ret_buf = call_main_raw(&compiled);
         let ptr = u64::from_ne_bytes(ret_buf[..8].try_into().unwrap());
-        let len = "hello world".len();
-        let s = unsafe { std::slice::from_raw_parts(ptr as *const u8, len) };
-        assert_eq!(s, b"hello world");
+        check_len_prefixed_str(ptr, b"hello world");
     }
 
     #[test]
@@ -2438,9 +2285,7 @@ mod tests {
         let compiled = compile_ir(&module_with_main(func)).expect("compile should succeed");
         let ret_buf = call_main_raw(&compiled);
         let ptr = u64::from_ne_bytes(ret_buf[..8].try_into().unwrap());
-        let len = "abc".len();
-        let s = unsafe { std::slice::from_raw_parts(ptr as *const u8, len) };
-        assert_eq!(s, b"abc");
+        check_len_prefixed_str(ptr, b"abc");
     }
 
     #[test]
@@ -2465,10 +2310,7 @@ mod tests {
         let compiled = compile_ir(&module_with_main(func)).expect("compile should succeed");
         let ret_buf = call_main_raw(&compiled);
         let ptr = u64::from_ne_bytes(ret_buf[..8].try_into().unwrap());
-        let expected = "value: 42";
-        let len = expected.len();
-        let s = unsafe { std::slice::from_raw_parts(ptr as *const u8, len) };
-        assert_eq!(s, expected.as_bytes());
+        check_len_prefixed_str(ptr, b"value: 42");
     }
 
     #[test]
@@ -2487,8 +2329,7 @@ mod tests {
         let compiled = compile_ir(&module_with_main(func)).expect("compile should succeed");
         let ret_buf = call_main_raw(&compiled);
         let ptr = u64::from_ne_bytes(ret_buf[..8].try_into().unwrap());
-        let s = unsafe { std::slice::from_raw_parts(ptr as *const u8, 0) };
-        assert_eq!(s, b"");
+        check_len_prefixed_str(ptr, b"");
     }
 
     #[test]
@@ -2496,10 +2337,7 @@ mod tests {
         let compiled = lower_and_compile("let main = `hello world`");
         let ret_buf = call_main_raw(&compiled);
         let ptr = u64::from_ne_bytes(ret_buf[..8].try_into().unwrap());
-        let expected = "hello world";
-        let len = expected.len();
-        let s = unsafe { std::slice::from_raw_parts(ptr as *const u8, len) };
-        assert_eq!(s, expected.as_bytes());
+        check_len_prefixed_str(ptr, b"hello world");
     }
 
     #[test]
@@ -2507,10 +2345,7 @@ mod tests {
         let compiled = lower_and_compile("let main = `hello ${42}`");
         let ret_buf = call_main_raw(&compiled);
         let ptr = u64::from_ne_bytes(ret_buf[..8].try_into().unwrap());
-        let expected = "hello 42";
-        let len = expected.len();
-        let s = unsafe { std::slice::from_raw_parts(ptr as *const u8, len) };
-        assert_eq!(s, expected.as_bytes());
+        check_len_prefixed_str(ptr, b"hello 42");
     }
 
     #[test]
@@ -2518,10 +2353,7 @@ mod tests {
         let compiled = lower_and_compile("let main = `flag: ${true}`");
         let ret_buf = call_main_raw(&compiled);
         let ptr = u64::from_ne_bytes(ret_buf[..8].try_into().unwrap());
-        let expected = "flag: true";
-        let len = expected.len();
-        let s = unsafe { std::slice::from_raw_parts(ptr as *const u8, len) };
-        assert_eq!(s, expected.as_bytes());
+        check_len_prefixed_str(ptr, b"flag: true");
     }
 
     #[test]
@@ -2529,9 +2361,6 @@ mod tests {
         let compiled = lower_and_compile("let main = `pi is ${3.14}`");
         let ret_buf = call_main_raw(&compiled);
         let ptr = u64::from_ne_bytes(ret_buf[..8].try_into().unwrap());
-        let expected = "pi is 3.14";
-        let len = expected.len();
-        let s = unsafe { std::slice::from_raw_parts(ptr as *const u8, len) };
-        assert_eq!(s, expected.as_bytes());
+        check_len_prefixed_str(ptr, b"pi is 3.14");
     }
 }
