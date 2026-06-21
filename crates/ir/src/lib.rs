@@ -784,6 +784,21 @@ pub fn lookup_type(types: &HashMap<ValueId, IrType>, value_id: ValueId) -> Optio
     types.get(&value_id)
 }
 
+/// Constructs a [`FuncType`] for a named function, using the return
+/// type from `fn_return_types`. Parameter types are left empty because
+/// they are not available through this API — the result is sufficient
+/// for storage-type dispatch (closure is always pointer-width).
+fn lookup_func_type(func_name: &str, fn_return_types: &HashMap<String, IrType>) -> FuncType {
+    let ret = fn_return_types
+        .get(func_name)
+        .cloned()
+        .unwrap_or(IrType::Unit);
+    FuncType {
+        params: vec![],
+        ret: Box::new(ret),
+    }
+}
+
 /// Infers the `IrType` that `inst` will produce. Returns `None` when
 /// the type cannot be determined (e.g. the input types are unknown).
 ///
@@ -827,6 +842,10 @@ pub fn infer_instruction_type(
         | Instruction::Not(_) => Some(IrType::Bool),
         Instruction::CallNamed(data) => Some(data.return_type.clone()),
         Instruction::StrConcat { .. } => Some(IrType::Str),
+        Instruction::MakeClosure(data) => {
+            let func_type = lookup_func_type(data.func_name.as_str(), fn_return_types);
+            Some(IrType::Closure(Box::new(func_type)))
+        }
         _ => None,
     }
 }

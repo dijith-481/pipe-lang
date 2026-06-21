@@ -216,6 +216,17 @@ pub fn compile_ir(ir_module: &IrModule) -> Result<CompiledModule, JitError> {
         module.define_data(str_concat_ptr_data_id, &data_desc)?;
     }
 
+    // Declare a data object for the pipe_rt_alloc_closure function pointer.
+    let alloc_closure_ptr = pipe_rt_alloc_closure as *const ();
+    let alloc_closure_ptr_data_id =
+        module.declare_data("__pipe_alloc_closure_ptr", Linkage::Local, false, false)?;
+    {
+        let mut data_desc = DataDescription::new();
+        let ptr_bytes: Vec<u8> = (alloc_closure_ptr as u64).to_ne_bytes().to_vec();
+        data_desc.define(ptr_bytes.into_boxed_slice());
+        module.define_data(alloc_closure_ptr_data_id, &data_desc)?;
+    }
+
     // Scan all functions for CallNamed instructions referencing
     // builtins (not local functions) and create name data objects.
     let mut unique_builtin_names: Vec<String> = Vec::new();
@@ -260,6 +271,45 @@ pub fn compile_ir(ir_module: &IrModule) -> Result<CompiledModule, JitError> {
         module.define_data(call_builtin_ptr_data_id, &data_desc)?;
     }
 
+    // Scan all functions for MakeClosure instructions and declare a
+    // data object for each unique closure-target function pointer.
+    // The actual pointer is patched after finalize_definitions.
+    let mut closure_target_names: Vec<String> = Vec::new();
+    let mut seen_closure_targets: HashSet<String> = HashSet::new();
+    for func in ir_module.functions() {
+        for block in &func.blocks {
+            for (_, inst) in &block.instructions {
+                if let ir::Instruction::MakeClosure(data) = inst {
+                    let name_str = data.func_name.to_string();
+                    if seen_closure_targets.insert(name_str.clone()) {
+                        if !name_to_func.contains_key(&name_str) {
+                            return Err(JitError::UnimplementedInstruction {
+                                instruction: format!(
+                                    "MakeClosure: unknown function `{name_str}`"
+                                ),
+                                function: func.name.to_string(),
+                            });
+                        }
+                        closure_target_names.push(name_str);
+                    }
+                }
+            }
+        }
+    }
+    let mut closure_fn_ptr_data_ids: HashMap<String, DataId> = HashMap::new();
+    for target_name in &closure_target_names {
+        let data_name = format!("__closure_fn_ptr_{target_name}");
+        let data_id =
+            module.declare_data(&data_name, Linkage::Local, false, false)?;
+        {
+            let mut data_desc = DataDescription::new();
+            let zero_bytes: Vec<u8> = 0u64.to_ne_bytes().to_vec();
+            data_desc.define(zero_bytes.into_boxed_slice());
+            module.define_data(data_id, &data_desc)?;
+        }
+        closure_fn_ptr_data_ids.insert(target_name.clone(), data_id);
+    }
+
     // Compile each function. The function bodies are populated here;
     // finalize_definitions happens once at the end.
     for (name, func_id, ret_type) in &func_ids {
@@ -275,13 +325,33 @@ pub fn compile_ir(ir_module: &IrModule) -> Result<CompiledModule, JitError> {
             string_data_ids: &string_data_ids,
             println_ptr_data_id,
             str_concat_ptr_data_id,
+            alloc_closure_ptr_data_id,
             call_builtin_ptr_data_id,
             builtin_name_data_ids: &builtin_name_data_ids,
+            closure_fn_ptr_data_ids: &closure_fn_ptr_data_ids,
         };
         compile_function_body(&mut params, func, *func_id, ret_type)?;
     }
 
     module.finalize_definitions().map_err(JitError::from)?;
+
+    // Patch each closure-target function pointer data object with
+    // the actual code address (not known until after finalization).
+    for (target_name, data_id) in &closure_fn_ptr_data_ids {
+        let (callee_id, _) = name_to_func.get(target_name.as_str()).ok_or_else(|| {
+            JitError::UnimplementedInstruction {
+                instruction: format!(
+                    "MakeClosure: function `{target_name}` vanished after finalization"
+                ),
+                function: "".to_string(),
+            }
+        })?;
+        let code_ptr = module.get_finalized_function(*callee_id);
+        let data_ptr = module.get_finalized_data(*data_id);
+        unsafe {
+            std::ptr::write(data_ptr as *mut u64, code_ptr as u64);
+        }
+    }
 
     let (main_id, main_return_type) = func_ids
         .iter()
@@ -329,9 +399,12 @@ struct BlockContext<'a> {
     println_sig: SigRef,
     str_concat_fn_ptr: Value,
     str_concat_sig: SigRef,
+    alloc_closure_fn_ptr: Value,
+    alloc_closure_sig: SigRef,
     call_builtin_fn_ptr: Value,
     call_builtin_sig: SigRef,
     builtin_name_globals: &'a HashMap<String, GlobalValue>,
+    closure_fn_ptr_globals: &'a HashMap<String, GlobalValue>,
     blocks: &'a HashMap<BlockId, Block>,
     ret_ptr: Value,
     ret_type: &'a IrType,
@@ -345,8 +418,10 @@ struct FunctionBodyParams<'a> {
     string_data_ids: &'a HashMap<String, DataId>,
     println_ptr_data_id: DataId,
     str_concat_ptr_data_id: DataId,
+    alloc_closure_ptr_data_id: DataId,
     call_builtin_ptr_data_id: DataId,
     builtin_name_data_ids: &'a HashMap<String, DataId>,
+    closure_fn_ptr_data_ids: &'a HashMap<String, DataId>,
 }
 
 /// Compiles the body of one IR function into the module's slot
@@ -480,6 +555,24 @@ fn compile_function_body(
         f.import_signature(sig)
     };
 
+    // Import the pipe_rt_alloc_closure function pointer from a data object.
+    let alloc_closure_fn_ptr_gv = {
+        let f: &mut Function = builder.func;
+        params
+            .module
+            .declare_data_in_func(params.alloc_closure_ptr_data_id, f)
+    };
+    let alloc_closure_fn_ptr_addr = builder.ins().global_value(types::I64, alloc_closure_fn_ptr_gv);
+    let alloc_closure_fn_ptr =
+        builder
+            .ins()
+            .load(types::I64, MemFlags::trusted(), alloc_closure_fn_ptr_addr, 0);
+    let alloc_closure_sig = {
+        let sig = make_signature(params.module);
+        let f: &mut Function = builder.func;
+        f.import_signature(sig)
+    };
+
     // Import the pipe_rt_call_builtin function pointer from a data object.
     let call_builtin_fn_ptr_gv = {
         let f: &mut Function = builder.func;
@@ -527,6 +620,34 @@ fn compile_function_body(
         }
     }
 
+    // Pre-import closure function pointer data objects referenced by
+    // MakeClosure in this function.
+    let mut closure_fn_ptr_globals: HashMap<String, GlobalValue> = HashMap::new();
+    for ir_block in &func.blocks {
+        for (_, inst) in &ir_block.instructions {
+            if let ir::Instruction::MakeClosure(data) = inst {
+                let name_str = data.func_name.to_string();
+                if closure_fn_ptr_globals.contains_key(&name_str) {
+                    continue;
+                }
+                let data_id = params
+                    .closure_fn_ptr_data_ids
+                    .get(&name_str)
+                    .ok_or_else(|| JitError::UnimplementedInstruction {
+                        instruction: format!(
+                            "MakeClosure: no data object for function `{name_str}`"
+                        ),
+                        function: func.name.to_string(),
+                    })?;
+                let gv = {
+                    let f: &mut Function = builder.func;
+                    params.module.declare_data_in_func(*data_id, f)
+                };
+                closure_fn_ptr_globals.insert(name_str, gv);
+            }
+        }
+    }
+
     let blocks = declare_blocks(&mut builder, func, &mut values)?;
     let first_ir_block = &func.blocks[0];
     if !first_ir_block.params.is_empty() {
@@ -548,9 +669,12 @@ fn compile_function_body(
         println_sig,
         str_concat_fn_ptr,
         str_concat_sig,
+        alloc_closure_fn_ptr,
+        alloc_closure_sig,
         call_builtin_fn_ptr,
         call_builtin_sig,
         builtin_name_globals: &builtin_name_globals,
+        closure_fn_ptr_globals: &closure_fn_ptr_globals,
         blocks: &blocks,
         ret_ptr,
         ret_type,
