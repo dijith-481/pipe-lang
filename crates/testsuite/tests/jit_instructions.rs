@@ -381,55 +381,51 @@ fn jit_record_alloc_and_get() {
 // Tags (Sum Types) — ALL UNIMPLEMENTED
 // ---------------------------------------------------------------------------
 
-#[ignore = "Member 1: implement TagConstruct instruction in JIT"]
 #[test]
 fn jit_tag_construct_and_discriminant() {
-    let _result = std::panic::catch_unwind(|| {
-        let module = make_main(IrType::U32, |func, entry| {
-            let payload = push_inst(func, entry, Instruction::ConstI32(42));
-            let tag = push_inst(
-                func,
-                entry,
-                Instruction::TagConstruct(Box::new(TagConstructData {
-                    type_name: SmolStr::new("Option"),
-                    variant: SmolStr::new("Some"),
-                    discriminant: 1,
-                    payload: vec![payload],
-                })),
-            );
-            push_inst(func, entry, Instruction::TagDiscriminant(tag))
-        });
-        compile_ir(&module)
+    let module = make_main(IrType::U32, |func, entry| {
+        let payload = push_inst(func, entry, Instruction::ConstI32(42));
+        let tag = push_inst(
+            func,
+            entry,
+            Instruction::TagConstruct(Box::new(TagConstructData {
+                type_name: SmolStr::new("Option"),
+                variant: SmolStr::new("Some"),
+                discriminant: 1,
+                payload: vec![payload],
+            })),
+        );
+        push_inst(func, entry, Instruction::TagDiscriminant(tag))
     });
+    let compiled = compile_ir(&module).expect("TagConstruct + TagDiscriminant should compile");
+    compiled.call_main().expect("main should run");
 }
 
-#[ignore = "Member 1: implement TagGet instruction in JIT"]
 #[test]
 fn jit_tag_get_payload() {
-    let _result = std::panic::catch_unwind(|| {
-        let module = make_main(IrType::I32, |func, entry| {
-            let payload = push_inst(func, entry, Instruction::ConstI32(99));
-            let tag = push_inst(
-                func,
-                entry,
-                Instruction::TagConstruct(Box::new(TagConstructData {
-                    type_name: SmolStr::new("Option"),
-                    variant: SmolStr::new("Some"),
-                    discriminant: 1,
-                    payload: vec![payload],
-                })),
-            );
-            push_inst(
-                func,
-                entry,
-                Instruction::TagGet {
-                    value: tag,
-                    index: 0,
-                },
-            )
-        });
-        compile_ir(&module)
+    let module = make_main(IrType::I32, |func, entry| {
+        let payload = push_inst(func, entry, Instruction::ConstI32(99));
+        let tag = push_inst(
+            func,
+            entry,
+            Instruction::TagConstruct(Box::new(TagConstructData {
+                type_name: SmolStr::new("Option"),
+                variant: SmolStr::new("Some"),
+                discriminant: 1,
+                payload: vec![payload],
+            })),
+        );
+        push_inst(
+            func,
+            entry,
+            Instruction::TagGet {
+                value: tag,
+                index: 0,
+            },
+        )
     });
+    let compiled = compile_ir(&module).expect("TagGet should compile");
+    assert_eq!(compiled.call_main().expect("main should run"), 99);
 }
 
 // ---------------------------------------------------------------------------

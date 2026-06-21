@@ -848,6 +848,31 @@ pub fn infer_instruction_type(
             let func_type = lookup_func_type(data.func_name.as_str(), fn_return_types);
             Some(IrType::Closure(Box::new(func_type)))
         }
+        Instruction::TagConstruct(data) => {
+            let payload_types: Vec<IrType> = data
+                .payload
+                .iter()
+                .filter_map(|vid| lookup_type(types, *vid).cloned())
+                .collect();
+            Some(IrType::Tag(TagType {
+                name: data.type_name.clone(),
+                variants: vec![TagVariant {
+                    name: data.variant.clone(),
+                    discriminant: data.discriminant,
+                    payload: payload_types,
+                }],
+            }))
+        }
+        Instruction::TagDiscriminant(_) => Some(IrType::U32),
+        Instruction::TagGet { value, index } => {
+            lookup_type(types, *value).and_then(|ty| match ty {
+                IrType::Tag(tag_type) => tag_type
+                    .variants
+                    .first()
+                    .and_then(|v| v.payload.get(*index as usize).cloned()),
+                _ => None,
+            })
+        }
         _ => None,
     }
 }

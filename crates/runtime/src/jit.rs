@@ -1021,6 +1021,16 @@ fn compile_instruction(
 
         ir::Instruction::CallIndirect(data) => compile_call_indirect(builder, ctx, data, values)?,
 
+        ir::Instruction::TagConstruct(data) => compile_tag_construct(builder, ctx, data, values)?,
+
+        ir::Instruction::TagDiscriminant(value_id) => {
+            compile_tag_discriminant(builder, ctx, *value_id, values)?
+        }
+
+        ir::Instruction::TagGet { value, index } => {
+            compile_tag_get(builder, ctx, *value, *index, values)?
+        }
+
         _ => {
             return Err(JitError::UnimplementedInstruction {
                 instruction: format!("{inst:?}"),
@@ -1530,6 +1540,129 @@ fn compile_call_indirect(
 
     let result = load_primitive_value(builder, ret_buf, 0, ret_type, ctx.func_name)?;
     Ok(result)
+}
+
+/// Compile a `TagConstruct` instruction.
+///
+/// Tag layout: `[discriminant: u32][payload packed by storage_size]`.
+/// Heap-allocated via `pipe_rt_alloc_closure`.
+fn compile_tag_construct(
+    builder: &mut FunctionBuilder,
+    ctx: &BlockContext,
+    data: &ir::TagConstructData,
+    values: &HashMap<ValueId, Value>,
+) -> Result<Value, JitError> {
+    let payload_sizes: Vec<i32> = data
+        .payload
+        .iter()
+        .map(|vid| {
+            let ty = lookup_type(ctx.value_types, *vid, ctx.func_name)?;
+            storage_size(ty, ctx.func_name)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let total_size: i32 = 4 + payload_sizes.iter().sum::<i32>();
+
+    let content_slot = builder.create_sized_stack_slot(StackSlotData::new(
+        StackSlotKind::ExplicitSlot,
+        total_size.max(1) as u32,
+        0,
+    ));
+    let content_buf = builder.ins().stack_addr(types::I64, content_slot, 0);
+
+    let disc_val = builder.ins().iconst(I32, i64::from(data.discriminant));
+    builder
+        .ins()
+        .store(MemFlags::trusted(), disc_val, content_buf, 0);
+
+    let mut offset: i32 = 4;
+    for (vid, size) in data.payload.iter().zip(payload_sizes.iter()) {
+        let val = lookup_value(values, *vid, ctx.func_name)?;
+        builder
+            .ins()
+            .store(MemFlags::trusted(), val, content_buf, offset);
+        offset += size;
+    }
+
+    let args_slot =
+        builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 12, 0));
+    let args_buf = builder.ins().stack_addr(types::I64, args_slot, 0);
+    let content_addr = builder.ins().stack_addr(types::I64, content_slot, 0);
+    builder
+        .ins()
+        .store(MemFlags::trusted(), content_addr, args_buf, 0);
+    let byte_size_val = builder.ins().iconst(I32, total_size as i64);
+    builder
+        .ins()
+        .store(MemFlags::trusted(), byte_size_val, args_buf, 8);
+
+    let ret_slot =
+        builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 0));
+    let ret_buf = builder.ins().stack_addr(types::I64, ret_slot, 0);
+    builder.ins().call_indirect(
+        ctx.alloc_closure_sig,
+        ctx.alloc_closure_fn_ptr,
+        &[args_buf, ret_buf],
+    );
+
+    Ok(builder
+        .ins()
+        .load(types::I64, MemFlags::trusted(), ret_buf, 0))
+}
+
+/// Compile a `TagDiscriminant` instruction.
+/// Loads the u32 discriminant from offset 0 of the tag heap block.
+fn compile_tag_discriminant(
+    builder: &mut FunctionBuilder,
+    ctx: &BlockContext,
+    value_id: ValueId,
+    values: &HashMap<ValueId, Value>,
+) -> Result<Value, JitError> {
+    let tag_val = lookup_value(values, value_id, ctx.func_name)?;
+    Ok(builder.ins().load(I32, MemFlags::trusted(), tag_val, 0))
+}
+
+/// Compile a `TagGet` instruction.
+/// Loads the `index`-th payload field from a tag heap block.
+fn compile_tag_get(
+    builder: &mut FunctionBuilder,
+    ctx: &BlockContext,
+    value_id: ValueId,
+    index: u32,
+    values: &HashMap<ValueId, Value>,
+) -> Result<Value, JitError> {
+    let tag_val = lookup_value(values, value_id, ctx.func_name)?;
+    let tag_ty = lookup_type(ctx.value_types, value_id, ctx.func_name)?;
+    let tag_type = match tag_ty {
+        IrType::Tag(tt) => tt.clone(),
+        _ => return Err(unsupported_type(ctx.func_name, tag_ty)),
+    };
+    let variant = tag_type
+        .variants
+        .first()
+        .ok_or_else(|| JitError::UnimplementedInstruction {
+            instruction: format!("TagGet: tag type {} has no variants", tag_type.name),
+            function: ctx.func_name.to_string(),
+        })?;
+    let field_type =
+        variant
+            .payload
+            .get(index as usize)
+            .ok_or_else(|| JitError::UnimplementedInstruction {
+                instruction: format!("TagGet: index {index} out of bounds"),
+                function: ctx.func_name.to_string(),
+            })?;
+
+    let mut offset: i32 = 4;
+    for i in 0..index as usize {
+        offset += storage_size(&variant.payload[i], ctx.func_name)?;
+    }
+
+    Ok(builder.ins().load(
+        storage_type(field_type, ctx.func_name)?,
+        MemFlags::trusted(),
+        tag_val,
+        offset,
+    ))
 }
 
 fn compile_numeric_binary(
