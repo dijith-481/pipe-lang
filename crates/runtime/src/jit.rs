@@ -1031,6 +1031,14 @@ fn compile_instruction(
             compile_tag_get(builder, ctx, *value, *index, values)?
         }
 
+        ir::Instruction::RecordAlloc(data) => compile_record_alloc(builder, ctx, data, values)?,
+
+        ir::Instruction::RecordGet {
+            record,
+            field_index,
+            ..
+        } => compile_record_get(builder, ctx, *record, *field_index, values)?,
+
         _ => {
             return Err(JitError::UnimplementedInstruction {
                 instruction: format!("{inst:?}"),
@@ -1661,6 +1669,98 @@ fn compile_tag_get(
         storage_type(field_type, ctx.func_name)?,
         MemFlags::trusted(),
         tag_val,
+        offset,
+    ))
+}
+
+/// Compile a `RecordAlloc` instruction.
+///
+/// Record layout: `[fields packed by storage_size]`, no header.
+/// Heap-allocated via `pipe_rt_alloc_closure`.
+fn compile_record_alloc(
+    builder: &mut FunctionBuilder,
+    ctx: &BlockContext,
+    data: &ir::RecordAllocData,
+    values: &HashMap<ValueId, Value>,
+) -> Result<Value, JitError> {
+    let field_sizes: Vec<i32> = data
+        .fields
+        .iter()
+        .map(|vid| {
+            let ty = lookup_type(ctx.value_types, *vid, ctx.func_name)?;
+            storage_size(ty, ctx.func_name)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let total_size: i32 = field_sizes.iter().sum();
+
+    let content_slot = builder.create_sized_stack_slot(StackSlotData::new(
+        StackSlotKind::ExplicitSlot,
+        total_size.max(1) as u32,
+        0,
+    ));
+    let content_buf = builder.ins().stack_addr(types::I64, content_slot, 0);
+
+    let mut offset: i32 = 0;
+    for (vid, size) in data.fields.iter().zip(field_sizes.iter()) {
+        let val = lookup_value(values, *vid, ctx.func_name)?;
+        builder
+            .ins()
+            .store(MemFlags::trusted(), val, content_buf, offset);
+        offset += size;
+    }
+
+    let args_slot =
+        builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 12, 0));
+    let args_buf = builder.ins().stack_addr(types::I64, args_slot, 0);
+    let content_addr = builder.ins().stack_addr(types::I64, content_slot, 0);
+    builder
+        .ins()
+        .store(MemFlags::trusted(), content_addr, args_buf, 0);
+    let byte_size_val = builder.ins().iconst(I32, total_size as i64);
+    builder
+        .ins()
+        .store(MemFlags::trusted(), byte_size_val, args_buf, 8);
+
+    let ret_slot =
+        builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 0));
+    let ret_buf = builder.ins().stack_addr(types::I64, ret_slot, 0);
+    builder.ins().call_indirect(
+        ctx.alloc_closure_sig,
+        ctx.alloc_closure_fn_ptr,
+        &[args_buf, ret_buf],
+    );
+
+    Ok(builder
+        .ins()
+        .load(types::I64, MemFlags::trusted(), ret_buf, 0))
+}
+
+/// Compile a `RecordGet` instruction.
+/// Loads the field at `field_index` from a record heap block.
+fn compile_record_get(
+    builder: &mut FunctionBuilder,
+    ctx: &BlockContext,
+    record_id: ValueId,
+    field_index: u32,
+    values: &HashMap<ValueId, Value>,
+) -> Result<Value, JitError> {
+    let record_val = lookup_value(values, record_id, ctx.func_name)?;
+    let ty = lookup_type(ctx.value_types, record_id, ctx.func_name)?;
+    let record_type = match ty {
+        IrType::Record(rt) => rt.clone(),
+        _ => return Err(unsupported_type(ctx.func_name, ty)),
+    };
+    let field_type = &record_type.fields[field_index as usize].1;
+
+    let mut offset: i32 = 0;
+    for i in 0..field_index as usize {
+        offset += storage_size(&record_type.fields[i].1, ctx.func_name)?;
+    }
+
+    Ok(builder.ins().load(
+        storage_type(field_type, ctx.func_name)?,
+        MemFlags::trusted(),
+        record_val,
         offset,
     ))
 }

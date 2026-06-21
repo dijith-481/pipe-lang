@@ -348,33 +348,31 @@ fn jit_array_len() {
 // Records — ALL UNIMPLEMENTED
 // ---------------------------------------------------------------------------
 
-#[ignore = "Member 1: implement RecordAlloc instruction in JIT"]
 #[test]
 fn jit_record_alloc_and_get() {
-    let _result = std::panic::catch_unwind(|| {
-        let module = make_main(IrType::I32, |func, entry| {
-            let name = push_inst(func, entry, Instruction::ConstStr(SmolStr::new("Alice")));
-            let age = push_inst(func, entry, Instruction::ConstI32(30));
-            let rec = push_inst(
-                func,
-                entry,
-                Instruction::RecordAlloc(Box::new(RecordAllocData {
-                    type_name: SmolStr::new("Person"),
-                    fields: vec![name, age],
-                })),
-            );
-            push_inst(
-                func,
-                entry,
-                Instruction::RecordGet {
-                    record: rec,
-                    field: SmolStr::new("age"),
-                    field_index: 1,
-                },
-            )
-        });
-        compile_ir(&module)
+    let module = make_main(IrType::I32, |func, entry| {
+        let name = push_inst(func, entry, Instruction::ConstStr(SmolStr::new("Alice")));
+        let age = push_inst(func, entry, Instruction::ConstI32(30));
+        let rec = push_inst(
+            func,
+            entry,
+            Instruction::RecordAlloc(Box::new(RecordAllocData {
+                type_name: SmolStr::new("Person"),
+                fields: vec![name, age],
+            })),
+        );
+        push_inst(
+            func,
+            entry,
+            Instruction::RecordGet {
+                record: rec,
+                field: SmolStr::new("age"),
+                field_index: 1,
+            },
+        )
     });
+    let compiled = compile_ir(&module).expect("RecordAlloc + RecordGet should compile");
+    assert_eq!(compiled.call_main().expect("main should run"), 30);
 }
 
 // ---------------------------------------------------------------------------

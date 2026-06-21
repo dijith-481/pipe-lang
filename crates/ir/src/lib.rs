@@ -873,6 +873,32 @@ pub fn infer_instruction_type(
                 _ => None,
             })
         }
+        Instruction::RecordAlloc(data) => {
+            let field_types: Vec<IrType> = data
+                .fields
+                .iter()
+                .filter_map(|vid| lookup_type(types, *vid).cloned())
+                .collect();
+            Some(IrType::Record(RecordType {
+                name: data.type_name.clone(),
+                fields: field_types
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, ty)| (SmolStr::new(format!("_{i}")), ty))
+                    .collect(),
+            }))
+        }
+        Instruction::RecordGet {
+            record,
+            field_index,
+            ..
+        } => lookup_type(types, *record).and_then(|ty| match ty {
+            IrType::Record(rt) => rt
+                .fields
+                .get(*field_index as usize)
+                .map(|(_, ty)| ty.clone()),
+            _ => None,
+        }),
         _ => None,
     }
 }
