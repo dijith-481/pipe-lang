@@ -234,6 +234,7 @@ pub struct MakeClosureData {
 pub struct CallIndirectData {
     pub callee: ValueId,
     pub args: Vec<ValueId>,
+    pub return_type: IrType,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -842,6 +843,7 @@ pub fn infer_instruction_type(
         | Instruction::Not(_) => Some(IrType::Bool),
         Instruction::CallNamed(data) => Some(data.return_type.clone()),
         Instruction::StrConcat { .. } => Some(IrType::Str),
+        Instruction::CallIndirect(data) => Some(data.return_type.clone()),
         Instruction::MakeClosure(data) => {
             let func_type = lookup_func_type(data.func_name.as_str(), fn_return_types);
             Some(IrType::Closure(Box::new(func_type)))

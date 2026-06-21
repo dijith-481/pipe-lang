@@ -717,6 +717,7 @@ fn lower_expr<'src>(
                         crate::CallIndirectData {
                             callee,
                             args: arg_vals,
+                            return_type,
                         },
                     ))))
                 }

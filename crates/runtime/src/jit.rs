@@ -150,6 +150,7 @@ pub fn compile_ir(ir_module: &IrModule) -> Result<CompiledModule, JitError> {
     // Collect function name -> FuncId so we can resolve forward refs.
     let mut func_ids: Vec<(String, cranelift_module::FuncId, IrType)> = Vec::new();
     let mut name_to_func: HashMap<String, (cranelift_module::FuncId, IrType)> = HashMap::new();
+    let mut fn_param_types: HashMap<String, Vec<IrType>> = HashMap::new();
     for func in ir_module.functions() {
         let name = func.name.as_str().to_string();
         let sig = make_signature(&module);
@@ -158,7 +159,9 @@ pub fn compile_ir(ir_module: &IrModule) -> Result<CompiledModule, JitError> {
             .map_err(JitError::from)?;
         let ret_type = func.return_type.clone();
         name_to_func.insert(name.clone(), (id, ret_type.clone()));
-        func_ids.push((name, id, ret_type));
+        func_ids.push((name.clone(), id, ret_type));
+        let param_tys: Vec<IrType> = func.params.iter().map(|(_, _, ty)| ty.clone()).collect();
+        fn_param_types.insert(name, param_tys);
     }
 
     // Scan all functions for ConstStr strings and declare data objects
@@ -271,45 +274,6 @@ pub fn compile_ir(ir_module: &IrModule) -> Result<CompiledModule, JitError> {
         module.define_data(call_builtin_ptr_data_id, &data_desc)?;
     }
 
-    // Scan all functions for MakeClosure instructions and declare a
-    // data object for each unique closure-target function pointer.
-    // The actual pointer is patched after finalize_definitions.
-    let mut closure_target_names: Vec<String> = Vec::new();
-    let mut seen_closure_targets: HashSet<String> = HashSet::new();
-    for func in ir_module.functions() {
-        for block in &func.blocks {
-            for (_, inst) in &block.instructions {
-                if let ir::Instruction::MakeClosure(data) = inst {
-                    let name_str = data.func_name.to_string();
-                    if seen_closure_targets.insert(name_str.clone()) {
-                        if !name_to_func.contains_key(&name_str) {
-                            return Err(JitError::UnimplementedInstruction {
-                                instruction: format!(
-                                    "MakeClosure: unknown function `{name_str}`"
-                                ),
-                                function: func.name.to_string(),
-                            });
-                        }
-                        closure_target_names.push(name_str);
-                    }
-                }
-            }
-        }
-    }
-    let mut closure_fn_ptr_data_ids: HashMap<String, DataId> = HashMap::new();
-    for target_name in &closure_target_names {
-        let data_name = format!("__closure_fn_ptr_{target_name}");
-        let data_id =
-            module.declare_data(&data_name, Linkage::Local, false, false)?;
-        {
-            let mut data_desc = DataDescription::new();
-            let zero_bytes: Vec<u8> = 0u64.to_ne_bytes().to_vec();
-            data_desc.define(zero_bytes.into_boxed_slice());
-            module.define_data(data_id, &data_desc)?;
-        }
-        closure_fn_ptr_data_ids.insert(target_name.clone(), data_id);
-    }
-
     // Compile each function. The function bodies are populated here;
     // finalize_definitions happens once at the end.
     for (name, func_id, ret_type) in &func_ids {
@@ -322,36 +286,18 @@ pub fn compile_ir(ir_module: &IrModule) -> Result<CompiledModule, JitError> {
             module: &mut module,
             fn_builder_ctx: &mut fn_builder_ctx,
             name_to_func: &name_to_func,
+            fn_param_types: &fn_param_types,
             string_data_ids: &string_data_ids,
             println_ptr_data_id,
             str_concat_ptr_data_id,
             alloc_closure_ptr_data_id,
             call_builtin_ptr_data_id,
             builtin_name_data_ids: &builtin_name_data_ids,
-            closure_fn_ptr_data_ids: &closure_fn_ptr_data_ids,
         };
         compile_function_body(&mut params, func, *func_id, ret_type)?;
     }
 
     module.finalize_definitions().map_err(JitError::from)?;
-
-    // Patch each closure-target function pointer data object with
-    // the actual code address (not known until after finalization).
-    for (target_name, data_id) in &closure_fn_ptr_data_ids {
-        let (callee_id, _) = name_to_func.get(target_name.as_str()).ok_or_else(|| {
-            JitError::UnimplementedInstruction {
-                instruction: format!(
-                    "MakeClosure: function `{target_name}` vanished after finalization"
-                ),
-                function: "".to_string(),
-            }
-        })?;
-        let code_ptr = module.get_finalized_function(*callee_id);
-        let data_ptr = module.get_finalized_data(*data_id);
-        unsafe {
-            std::ptr::write(data_ptr as *mut u64, code_ptr as u64);
-        }
-    }
 
     let (main_id, main_return_type) = func_ids
         .iter()
@@ -394,6 +340,7 @@ struct BlockContext<'a> {
     func_name: &'a str,
     callee_funcs: &'a HashMap<String, FuncRef>,
     fn_return_types: &'a HashMap<String, IrType>,
+    fn_param_types: &'a HashMap<String, Vec<IrType>>,
     string_globals: &'a HashMap<String, GlobalValue>,
     println_fn_ptr: Value,
     println_sig: SigRef,
@@ -404,7 +351,7 @@ struct BlockContext<'a> {
     call_builtin_fn_ptr: Value,
     call_builtin_sig: SigRef,
     builtin_name_globals: &'a HashMap<String, GlobalValue>,
-    closure_fn_ptr_globals: &'a HashMap<String, GlobalValue>,
+    closure_callee_funcs: &'a HashMap<String, FuncRef>,
     blocks: &'a HashMap<BlockId, Block>,
     ret_ptr: Value,
     ret_type: &'a IrType,
@@ -415,13 +362,13 @@ struct FunctionBodyParams<'a> {
     module: &'a mut JITModule,
     fn_builder_ctx: &'a mut FunctionBuilderContext,
     name_to_func: &'a HashMap<String, (cranelift_module::FuncId, IrType)>,
+    fn_param_types: &'a HashMap<String, Vec<IrType>>,
     string_data_ids: &'a HashMap<String, DataId>,
     println_ptr_data_id: DataId,
     str_concat_ptr_data_id: DataId,
     alloc_closure_ptr_data_id: DataId,
     call_builtin_ptr_data_id: DataId,
     builtin_name_data_ids: &'a HashMap<String, DataId>,
-    closure_fn_ptr_data_ids: &'a HashMap<String, DataId>,
 }
 
 /// Compiles the body of one IR function into the module's slot
@@ -459,7 +406,7 @@ fn compile_function_body(
     builder.switch_to_block(entry_block);
     let args_ptr = builder.block_params(entry_block)[0];
     let ret_ptr = builder.block_params(entry_block)[1];
-    let value_types = infer_value_types(func, &fn_return_types)?;
+    let value_types = infer_value_types(func, &fn_return_types, params.fn_param_types)?;
     let mut values = HashMap::new();
 
     load_function_params(
@@ -562,11 +509,15 @@ fn compile_function_body(
             .module
             .declare_data_in_func(params.alloc_closure_ptr_data_id, f)
     };
-    let alloc_closure_fn_ptr_addr = builder.ins().global_value(types::I64, alloc_closure_fn_ptr_gv);
-    let alloc_closure_fn_ptr =
-        builder
-            .ins()
-            .load(types::I64, MemFlags::trusted(), alloc_closure_fn_ptr_addr, 0);
+    let alloc_closure_fn_ptr_addr = builder
+        .ins()
+        .global_value(types::I64, alloc_closure_fn_ptr_gv);
+    let alloc_closure_fn_ptr = builder.ins().load(
+        types::I64,
+        MemFlags::trusted(),
+        alloc_closure_fn_ptr_addr,
+        0,
+    );
     let alloc_closure_sig = {
         let sig = make_signature(params.module);
         let f: &mut Function = builder.func;
@@ -620,30 +571,26 @@ fn compile_function_body(
         }
     }
 
-    // Pre-import closure function pointer data objects referenced by
-    // MakeClosure in this function.
-    let mut closure_fn_ptr_globals: HashMap<String, GlobalValue> = HashMap::new();
+    // Pre-import FuncRefs for functions used as MakeClosure targets.
+    let mut closure_callee_funcs: HashMap<String, FuncRef> = HashMap::new();
     for ir_block in &func.blocks {
         for (_, inst) in &ir_block.instructions {
             if let ir::Instruction::MakeClosure(data) = inst {
                 let name_str = data.func_name.to_string();
-                if closure_fn_ptr_globals.contains_key(&name_str) {
+                if closure_callee_funcs.contains_key(&name_str) {
                     continue;
                 }
-                let data_id = params
-                    .closure_fn_ptr_data_ids
-                    .get(&name_str)
-                    .ok_or_else(|| JitError::UnimplementedInstruction {
-                        instruction: format!(
-                            "MakeClosure: no data object for function `{name_str}`"
-                        ),
+                let Some((callee_id, _)) = params.name_to_func.get(name_str.as_str()) else {
+                    return Err(JitError::UnimplementedInstruction {
+                        instruction: format!("MakeClosure: unknown function `{name_str}`"),
                         function: func.name.to_string(),
-                    })?;
-                let gv = {
-                    let f: &mut Function = builder.func;
-                    params.module.declare_data_in_func(*data_id, f)
+                    });
                 };
-                closure_fn_ptr_globals.insert(name_str, gv);
+                let func_ref = {
+                    let f: &mut Function = builder.func;
+                    params.module.declare_func_in_func(*callee_id, f)
+                };
+                closure_callee_funcs.insert(name_str, func_ref);
             }
         }
     }
@@ -664,6 +611,7 @@ fn compile_function_body(
         func_name: func.name.as_ref(),
         callee_funcs: &callee_funcs,
         fn_return_types: &fn_return_types,
+        fn_param_types: params.fn_param_types,
         string_globals: &string_globals,
         println_fn_ptr,
         println_sig,
@@ -674,7 +622,7 @@ fn compile_function_body(
         call_builtin_fn_ptr,
         call_builtin_sig,
         builtin_name_globals: &builtin_name_globals,
-        closure_fn_ptr_globals: &closure_fn_ptr_globals,
+        closure_callee_funcs: &closure_callee_funcs,
         blocks: &blocks,
         ret_ptr,
         ret_type,
@@ -1069,6 +1017,10 @@ fn compile_instruction(
 
         ir::Instruction::StrConcat { parts } => compile_str_concat(builder, ctx, parts, values)?,
 
+        ir::Instruction::MakeClosure(data) => compile_make_closure(builder, ctx, data, values)?,
+
+        ir::Instruction::CallIndirect(data) => compile_call_indirect(builder, ctx, data, values)?,
+
         _ => {
             return Err(JitError::UnimplementedInstruction {
                 instruction: format!("{inst:?}"),
@@ -1351,6 +1303,235 @@ fn widen_to_i64(
     }
 }
 
+/// Compile a `MakeClosure` instruction.
+///
+/// Layout on the heap: `[func_ptr: u64] [captures packed by storage_size]`.
+/// The function pointer is stored in a data object and patched after
+/// finalization. We load it, pack captures after it, call
+/// `pipe_rt_alloc_closure` to heap-allocate, and return the pointer.
+fn compile_make_closure(
+    builder: &mut FunctionBuilder,
+    ctx: &BlockContext,
+    data: &ir::MakeClosureData,
+    values: &HashMap<ValueId, Value>,
+) -> Result<Value, JitError> {
+    let func_name = data.func_name.as_str();
+
+    // Get the target function pointer via func_addr.
+    let func_ref = ctx.closure_callee_funcs.get(func_name).ok_or_else(|| {
+        JitError::UnimplementedInstruction {
+            instruction: format!("MakeClosure: no FuncRef for `{func_name}`"),
+            function: ctx.func_name.to_string(),
+        }
+    })?;
+    let fn_ptr = builder.ins().func_addr(types::I64, *func_ref);
+
+    // Compute total byte size: 8 for func_ptr + captures.
+    let capture_sizes: Vec<i32> = data
+        .captures
+        .iter()
+        .map(|capture_id| {
+            let ty = lookup_type(ctx.value_types, *capture_id, ctx.func_name)?;
+            storage_size(ty, ctx.func_name)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let total_size: i32 = 8 + capture_sizes.iter().sum::<i32>();
+
+    // Create a stack buffer for the closure content.
+    let content_slot = builder.create_sized_stack_slot(StackSlotData::new(
+        StackSlotKind::ExplicitSlot,
+        total_size.max(1) as u32,
+        0,
+    ));
+    let content_buf = builder.ins().stack_addr(types::I64, content_slot, 0);
+
+    // Store func_ptr at offset 0.
+    builder
+        .ins()
+        .store(MemFlags::trusted(), fn_ptr, content_buf, 0);
+
+    // Store each capture after func_ptr.
+    let mut offset: i32 = 8;
+    for (capture_id, size) in data.captures.iter().zip(capture_sizes.iter()) {
+        let capture_val = lookup_value(values, *capture_id, ctx.func_name)?;
+        builder
+            .ins()
+            .store(MemFlags::trusted(), capture_val, content_buf, offset);
+        offset += size;
+    }
+
+    // Build args buffer for pipe_rt_alloc_closure: [data_ptr: u64, byte_size: u32].
+    let args_slot =
+        builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 12, 0));
+    let args_buf = builder.ins().stack_addr(types::I64, args_slot, 0);
+
+    let content_addr = builder.ins().stack_addr(types::I64, content_slot, 0);
+    builder
+        .ins()
+        .store(MemFlags::trusted(), content_addr, args_buf, 0);
+
+    let byte_size_val = builder.ins().iconst(I32, total_size as i64);
+    builder
+        .ins()
+        .store(MemFlags::trusted(), byte_size_val, args_buf, 8);
+
+    // Allocate 8-byte ret buffer for the closure pointer.
+    let ret_slot =
+        builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 0));
+    let ret_buf = builder.ins().stack_addr(types::I64, ret_slot, 0);
+
+    builder.ins().call_indirect(
+        ctx.alloc_closure_sig,
+        ctx.alloc_closure_fn_ptr,
+        &[args_buf, ret_buf],
+    );
+
+    Ok(builder
+        .ins()
+        .load(types::I64, MemFlags::trusted(), ret_buf, 0))
+}
+
+/// Compile a `CallIndirect` instruction.
+///
+/// Closure layout: `[func_ptr: u64] [captures packed by storage_size]`.
+/// We load func_ptr from offset 0, read captures starting at offset 8
+/// using the type information from the closure's FuncType, build the
+/// full args buffer (captures followed by explicit call arguments),
+/// and call the function pointer via call_indirect.
+fn compile_call_indirect(
+    builder: &mut FunctionBuilder,
+    ctx: &BlockContext,
+    data: &ir::CallIndirectData,
+    values: &HashMap<ValueId, Value>,
+) -> Result<Value, JitError> {
+    let closure_val = lookup_value(values, data.callee, ctx.func_name)?;
+    let closure_type = lookup_type(ctx.value_types, data.callee, ctx.func_name)?;
+
+    // Extract the FuncType from the closure type.
+    let func_type = match closure_type {
+        IrType::Closure(ft) => ft.as_ref().clone(),
+        _ => {
+            return Err(JitError::UnimplementedInstruction {
+                instruction: format!("CallIndirect: callee is not a closure, got {closure_type}"),
+                function: ctx.func_name.to_string(),
+            });
+        }
+    };
+
+    let ret_type = &data.return_type;
+
+    // The FuncType.params = [capture_params..., call_params...].
+    // The capture params are the first (total_params - call_args.len()) params.
+    let call_arg_count = data.args.len();
+    let total_param_count = func_type.params.len();
+    if call_arg_count > total_param_count {
+        return Err(JitError::UnimplementedInstruction {
+            instruction: format!(
+                "CallIndirect: expected at most {total_param_count} arguments, got {call_arg_count}"
+            ),
+            function: ctx.func_name.to_string(),
+        });
+    }
+    let capture_param_count = total_param_count - call_arg_count;
+    let capture_types: Vec<&IrType> = func_type.params[..capture_param_count].iter().collect();
+    let call_arg_types: Vec<&IrType> = data
+        .args
+        .iter()
+        .map(
+            |id| match lookup_type(ctx.value_types, *id, ctx.func_name) {
+                Ok(t) => t,
+                Err(e) => panic!("{e}"),
+            },
+        )
+        .collect();
+    // Double-check consistency with FuncType params.
+    let expected_arg_types: Vec<&IrType> = func_type.params[capture_param_count..].iter().collect();
+    if call_arg_types.len() != expected_arg_types.len() {
+        return Err(JitError::UnimplementedInstruction {
+            instruction: format!(
+                "CallIndirect: arg count mismatch, expected {} got {}",
+                expected_arg_types.len(),
+                call_arg_types.len(),
+            ),
+            function: ctx.func_name.to_string(),
+        });
+    }
+
+    // Load func_ptr from closure offset 0.
+    let fn_ptr = builder
+        .ins()
+        .load(types::I64, MemFlags::trusted(), closure_val, 0);
+
+    // Compute total args buffer size: captures (from closure) + call args.
+    let capture_total_size: i32 = capture_types
+        .iter()
+        .map(|ty| storage_size(ty, ctx.func_name))
+        .collect::<Result<Vec<_>, _>>()?
+        .iter()
+        .sum();
+    let call_args_total_size: i32 = call_arg_types
+        .iter()
+        .map(|ty| storage_size(ty, ctx.func_name))
+        .collect::<Result<Vec<_>, _>>()?
+        .iter()
+        .sum();
+
+    let args_buf_size = (capture_total_size + call_args_total_size).max(1) as u32;
+    let arg_slot = builder.create_sized_stack_slot(StackSlotData::new(
+        StackSlotKind::ExplicitSlot,
+        args_buf_size,
+        0,
+    ));
+    let args_buf = builder.ins().stack_addr(types::I64, arg_slot, 0);
+
+    // Copy captures from closure (offset 8) into args buffer.
+    let mut offset: i32 = 0;
+    let mut closure_offset: i32 = 8;
+    for capture_ty in &capture_types {
+        let cap_val = builder.ins().load(
+            storage_type(capture_ty, ctx.func_name)?,
+            MemFlags::trusted(),
+            closure_val,
+            closure_offset,
+        );
+        builder
+            .ins()
+            .store(MemFlags::trusted(), cap_val, args_buf, offset);
+        let sz = storage_size(capture_ty, ctx.func_name)?;
+        offset += sz;
+        closure_offset += sz;
+    }
+
+    // Store call arguments.
+    for arg_id in &data.args {
+        let arg_type = lookup_type(ctx.value_types, *arg_id, ctx.func_name)?;
+        if !matches!(arg_type, IrType::Unit) {
+            let arg_val = lookup_value(values, *arg_id, ctx.func_name)?;
+            builder
+                .ins()
+                .store(MemFlags::trusted(), arg_val, args_buf, offset);
+        }
+        offset += storage_size(arg_type, ctx.func_name)?;
+    }
+
+    // Allocate return buffer.
+    let ret_size = storage_size(ret_type, ctx.func_name)?.max(1) as u32;
+    let ret_slot = builder.create_sized_stack_slot(StackSlotData::new(
+        StackSlotKind::ExplicitSlot,
+        ret_size,
+        0,
+    ));
+    let ret_buf = builder.ins().stack_addr(types::I64, ret_slot, 0);
+
+    // Call the function pointer via call_indirect using the standard sig.
+    builder
+        .ins()
+        .call_indirect(ctx.alloc_closure_sig, fn_ptr, &[args_buf, ret_buf]);
+
+    let result = load_primitive_value(builder, ret_buf, 0, ret_type, ctx.func_name)?;
+    Ok(result)
+}
+
 fn compile_numeric_binary(
     builder: &mut FunctionBuilder,
     ctx: &BlockContext,
@@ -1534,6 +1715,7 @@ fn lookup_type<'a>(
 fn infer_value_types(
     func: &IrFunction,
     fn_return_types: &HashMap<String, IrType>,
+    fn_param_types: &HashMap<String, Vec<IrType>>,
 ) -> Result<HashMap<ValueId, IrType>, JitError> {
     let mut types = HashMap::new();
     for (value_id, _, ty) in &func.params {
@@ -1545,7 +1727,13 @@ fn infer_value_types(
         }
         for (defined, inst) in &block.instructions {
             if let Some(value_id) = defined {
-                let ty = infer_instruction_type(inst, &types, func.name.as_ref(), fn_return_types)?;
+                let ty = infer_instruction_type(
+                    inst,
+                    &types,
+                    func.name.as_ref(),
+                    fn_return_types,
+                    fn_param_types,
+                )?;
                 types.insert(*value_id, ty);
             }
         }
@@ -1558,7 +1746,28 @@ fn infer_instruction_type(
     types: &HashMap<ValueId, IrType>,
     func_name: &str,
     fn_return_types: &HashMap<String, IrType>,
+    fn_param_types: &HashMap<String, Vec<IrType>>,
 ) -> Result<IrType, JitError> {
+    // Override MakeClosure inference to include proper param types
+    // (capture types + declared param types) in the FuncType.
+    if let ir::Instruction::MakeClosure(data) = inst {
+        let func_type = if let Some(param_tys) = fn_param_types.get(data.func_name.as_str()) {
+            let ret = fn_return_types
+                .get(data.func_name.as_str())
+                .cloned()
+                .unwrap_or(IrType::Unit);
+            ir::FuncType {
+                params: param_tys.clone(),
+                ret: Box::new(ret),
+            }
+        } else {
+            ir::FuncType {
+                params: vec![],
+                ret: Box::new(IrType::Unit),
+            }
+        };
+        return Ok(IrType::Closure(Box::new(func_type)));
+    }
     ir::infer_instruction_type(inst, types, fn_return_types).ok_or_else(|| {
         JitError::UnimplementedInstruction {
             instruction: format!("{inst:?}"),
@@ -1768,6 +1977,32 @@ unsafe extern "C" fn pipe_rt_str_concat(args: *const u8, ret: *mut u8) -> i32 {
     buf.extend_from_slice(&len.to_ne_bytes());
     buf.extend_from_slice(&bytes);
     let ptr = Box::leak(buf.into_boxed_slice()).as_ptr();
+    unsafe {
+        *(ret as *mut u64) = ptr as u64;
+    }
+    0
+}
+
+/// External function called by `MakeClosure` JIT code.
+///
+/// Allocates a heap-allocated closure object containing the function
+/// pointer followed by packed capture values, and writes the pointer
+/// to `ret`.
+///
+/// # Safety
+///
+/// `args` points to a buffer in this layout:
+///   - bytes 0–7:  `u64` pointer to closure content data
+///   - bytes 8–11: `u32` byte size of the closure content data
+///
+/// `ret` points to an 8-byte buffer that receives the pointer to
+/// the heap-allocated closure object.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn pipe_rt_alloc_closure(args: *const u8, ret: *mut u8) -> i32 {
+    let data_ptr = unsafe { std::ptr::read_unaligned(args as *const u64) } as *const u8;
+    let byte_size = unsafe { std::ptr::read_unaligned(args.add(8) as *const u32) } as usize;
+    let closure = Vec::from(unsafe { std::slice::from_raw_parts(data_ptr, byte_size) });
+    let ptr = Box::leak(closure.into_boxed_slice()).as_ptr();
     unsafe {
         *(ret as *mut u64) = ptr as u64;
     }

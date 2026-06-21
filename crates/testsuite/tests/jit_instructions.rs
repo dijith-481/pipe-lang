@@ -436,39 +436,38 @@ fn jit_tag_get_payload() {
 // Closures — ALL UNIMPLEMENTED
 // ---------------------------------------------------------------------------
 
-#[ignore = "Member 1: implement MakeClosure instruction in JIT"]
 #[test]
 fn jit_make_closure() {
-    let _result = std::panic::catch_unwind(|| {
-        let helper_name = SmolStr::new("helper");
-        let mut helper = IrFunction::new(helper_name.clone(), IrType::I32);
-        let h_entry_id = helper.alloc_block();
-        let mut h_entry = BasicBlock::new(h_entry_id);
-        let cap = push_inst(&mut helper, &mut h_entry, Instruction::ConstI32(42));
-        h_entry.terminator = Terminator::Return(cap);
-        helper.blocks.push(h_entry);
+    let helper_name = SmolStr::new("helper");
+    let mut helper = IrFunction::new(helper_name.clone(), IrType::I32);
+    let h_entry_id = helper.alloc_block();
+    let mut h_entry = BasicBlock::new(h_entry_id);
+    let cap = push_inst(&mut helper, &mut h_entry, Instruction::ConstI32(42));
+    h_entry.terminator = Terminator::Return(cap);
+    helper.blocks.push(h_entry);
 
-        let mut func = IrFunction::new(SmolStr::new("main"), IrType::I32);
-        let entry_id = func.alloc_block();
-        let mut entry = BasicBlock::new(entry_id);
-        let captured = push_inst(&mut func, &mut entry, Instruction::ConstI32(99));
-        let _closure = push_inst(
-            &mut func,
-            &mut entry,
-            Instruction::MakeClosure(Box::new(MakeClosureData {
-                func_name: helper_name,
-                captures: vec![captured],
-            })),
-        );
-        let ret = push_inst(&mut func, &mut entry, Instruction::ConstI32(0));
-        entry.terminator = Terminator::Return(ret);
-        func.blocks.push(entry);
+    let mut func = IrFunction::new(SmolStr::new("main"), IrType::I32);
+    let entry_id = func.alloc_block();
+    let mut entry = BasicBlock::new(entry_id);
+    let captured = push_inst(&mut func, &mut entry, Instruction::ConstI32(99));
+    let _closure = push_inst(
+        &mut func,
+        &mut entry,
+        Instruction::MakeClosure(Box::new(MakeClosureData {
+            func_name: helper_name,
+            captures: vec![captured],
+        })),
+    );
+    let ret = push_inst(&mut func, &mut entry, Instruction::ConstI32(0));
+    entry.terminator = Terminator::Return(ret);
+    func.blocks.push(entry);
 
-        let mut module = IrModule::new();
-        module.decls.push(IrDecl::Function(helper));
-        module.decls.push(IrDecl::Function(func));
-        compile_ir(&module)
-    });
+    let mut module = IrModule::new();
+    module.decls.push(IrDecl::Function(helper));
+    module.decls.push(IrDecl::Function(func));
+    let compiled = compile_ir(&module).expect("MakeClosure should compile");
+    let result = compiled.call_main().expect("main should run");
+    assert_eq!(result, 0);
 }
 
 // ---------------------------------------------------------------------------
