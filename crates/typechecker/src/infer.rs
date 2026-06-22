@@ -409,8 +409,35 @@ fn int_literal_type(text: &str) -> MonoType {
     if text.ends_with("usize") {
         return MonoType::Usize;
     }
-    // "i32" suffix or bare decimal → i32
     MonoType::I32
+}
+
+fn check_int_overflow(text: &str, ty: &MonoType, span: Span) -> Result<(), TypeError> {
+    let clean = text.trim_end_matches(|c: char| c.is_ascii_alphabetic());
+    let val: i128 = match clean.parse() {
+        Ok(v) => v,
+        Err(_) => return Ok(()),
+    };
+    let in_range = match ty {
+        MonoType::I8 => val >= i128::from(i8::MIN) && val <= i128::from(i8::MAX),
+        MonoType::I16 => val >= i128::from(i16::MIN) && val <= i128::from(i16::MAX),
+        MonoType::I32 => val >= i128::from(i32::MIN) && val <= i128::from(i32::MAX),
+        MonoType::I64 => val >= i128::from(i64::MIN) && val <= i128::from(i64::MAX),
+        MonoType::U8 => val >= 0 && val <= i128::from(u8::MAX),
+        MonoType::U16 => val >= 0 && val <= i128::from(u16::MAX),
+        MonoType::U32 => val >= 0 && val <= i128::from(u32::MAX),
+        MonoType::U64 => val >= 0 && val <= i128::from(u64::MAX),
+        MonoType::Usize => val >= 0 && val <= i128::from(usize::MAX as u64),
+        _ => return Ok(()),
+    };
+    if in_range {
+        Ok(())
+    } else {
+        Err(TypeError::NumericOverflow {
+            ty: ty.clone(),
+            span,
+        })
+    }
 }
 
 fn float_literal_type(text: &str) -> MonoType {
@@ -453,7 +480,11 @@ fn infer_inner<'a>(
     expr: &Expr<'a>,
 ) -> Result<MonoType, TypeError> {
     match expr {
-        Expr::IntLiteral(text, _) => Ok(int_literal_type(text)),
+        Expr::IntLiteral(text, span) => {
+            let ty = int_literal_type(text);
+            check_int_overflow(text, &ty, *span)?;
+            Ok(ty)
+        }
         Expr::FloatLiteral(text, _) => Ok(float_literal_type(text)),
         Expr::Bool(_, _) => Ok(MonoType::Bool),
         Expr::Str(_, _) => Ok(MonoType::Str),
@@ -653,6 +684,31 @@ fn infer_inner<'a>(
             let mut result_ty: Option<MonoType> = None;
             for arm in arms {
                 infer_arm(env, sub, type_map, arm, &subj_ty, span, &mut result_ty)?;
+            }
+            // Check exhaustiveness for tag types (sum type variant coverage).
+            let resolved = sub.apply(&subj_ty);
+            if let MonoType::Tag { name, .. } = &resolved {
+                let Some(variants) = env.tag_variants.get(name) else {
+                    return Ok(sub.apply(result_ty.as_ref().unwrap()));
+                };
+                let mut covered: HashSet<SmolStr> = HashSet::new();
+                let mut has_wildcard = false;
+                for arm in arms {
+                    match &arm.pattern {
+                        Pattern::Constructor { name, .. } => {
+                            covered.insert(SmolStr::from(*name));
+                        }
+                        Pattern::Wildcard(_) => has_wildcard = true,
+                        _ => {}
+                    }
+                }
+                if !has_wildcard {
+                    for (vname, _) in variants {
+                        if !covered.contains(vname) {
+                            return Err(TypeError::NonExhaustiveMatch { span: *span });
+                        }
+                    }
+                }
             }
             Ok(sub.apply(result_ty.as_ref().unwrap()))
         }
@@ -918,7 +974,11 @@ pub fn infer_decl_with_map<'a>(
         }
 
         Decl::TypeAlias {
-            name, params, rhs, ..
+            name,
+            params,
+            rhs,
+            span,
+            ..
         } => {
             // Create fresh type variables for generic params
             let param_vars: Vec<TypeId> = params.iter().map(|_| env.fresh_var()).collect();
@@ -976,6 +1036,7 @@ pub fn infer_decl_with_map<'a>(
                         },
                     );
                     env.insert(*name, poly.clone());
+                    type_map.insert(*span, poly.body.clone());
                     Ok(poly)
                 }
                 _ => {
@@ -983,6 +1044,7 @@ pub fn infer_decl_with_map<'a>(
                     let resolved = resolve_type_expr_with_env(env, rhs, &param_map)?;
                     let poly = PolyType::poly(param_vars, resolved);
                     env.insert(*name, poly.clone());
+                    type_map.insert(*span, poly.body.clone());
                     Ok(poly)
                 }
             }

@@ -25,7 +25,6 @@ fn assert_fixture_ok(name: &str) {
 // Working programs
 // ---------------------------------------------------------------------------
 
-#[ignore = "Dijith: implement run_fixture in cli/src/fixtures.rs"]
 #[test]
 fn e2e_hello() {
     assert_fixture_ok("hello");

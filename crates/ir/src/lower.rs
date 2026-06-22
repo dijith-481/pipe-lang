@@ -971,12 +971,14 @@ fn lower_decl<'src>(
             Ok(())
         }
 
-        Decl::TypeAlias { name, rhs, .. } => {
-            // Convert and register the type alias in the IR module.
-            if let Ok(mono) = typechecker::infer::type_expr_to_mono(rhs) {
+        Decl::TypeAlias {
+            name, rhs: _, span, ..
+        } => {
+            // Use the type_map to get the resolved canonical type.
+            if let Some(mono) = type_map.get(span) {
                 module.decls.push(IrDecl::TypeAlias {
                     name: (*name).into(),
-                    ty: mono_to_ir(&mono),
+                    ty: mono_to_ir(mono),
                 });
             }
             Ok(())

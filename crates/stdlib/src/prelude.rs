@@ -39,6 +39,7 @@ pub fn prelude_builtins() -> Vec<Arc<dyn BuiltinFunction>> {
         Arc::new(Pipe),
         Arc::new(Apply),
         // Array operations
+        Arc::new(array::ArrayLiteral),
         Arc::new(array::ArrayMap),
         Arc::new(array::ArrayFilter),
         Arc::new(array::ArrayFold),
