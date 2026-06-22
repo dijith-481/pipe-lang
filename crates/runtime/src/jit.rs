@@ -1564,30 +1564,36 @@ fn decode_main_i32(ret_type: &IrType, ret_buf: &[u8; 16]) -> Result<i32, JitErro
 ///
 /// For `Str` the value is a pointer to length‑prefixed UTF‑8 bytes:
 /// bytes 0–3 store the length as `u32`, followed by the string content.
+/// External function called by `Println` JIT code (when emitted).
+/// Uses `libc::write` to respect `dup2` redirection for test capture.
 #[unsafe(no_mangle)]
 unsafe extern "C" fn __pipe_println(args: *const u8, ret: *mut u8) -> i32 {
     let raw = unsafe { std::ptr::read_unaligned(args as *const i64) };
     let type_tag = unsafe { std::ptr::read_unaligned(args.add(8) as *const u32) };
-    match type_tag {
-        0 => println!("{}", raw as i8),
-        1 => println!("{}", raw as i16),
-        2 => println!("{}", raw as i32),
-        3 => println!("{}", raw),
-        4 => println!("{}", raw as u8),
-        5 => println!("{}", raw as u16),
-        6 => println!("{}", raw as u32),
-        7 => println!("{}", raw as u64),
-        8 => println!("{}", f32::from_bits(raw as u32)),
-        9 => println!("{}", f64::from_bits(raw as u64)),
-        10 => println!("{}", raw != 0),
+    let s = match type_tag {
+        0 => format!("{}", raw as i8),
+        1 => format!("{}", raw as i16),
+        2 => format!("{}", raw as i32),
+        3 => format!("{}", raw),
+        4 => format!("{}", raw as u8),
+        5 => format!("{}", raw as u16),
+        6 => format!("{}", raw as u32),
+        7 => format!("{}", raw as u64),
+        8 => format!("{}", f32::from_bits(raw as u32)),
+        9 => format!("{}", f64::from_bits(raw as u64)),
+        10 => format!("{}", raw != 0),
         11 => {
             let ptr = raw as *const u8;
             let len = unsafe { std::ptr::read_unaligned(ptr as *const u32) } as usize;
             let bytes = unsafe { std::slice::from_raw_parts(ptr.add(4), len) };
             let s = unsafe { std::str::from_utf8_unchecked(bytes) };
-            println!("{s}");
+            s.to_string()
         }
-        _ => {}
+        _ => String::new(),
+    };
+    let output = if s.is_empty() { s } else { s + "\n" };
+    unsafe {
+        libc::write(1, output.as_ptr() as *const libc::c_void, output.len());
     }
     unsafe {
         *(ret as *mut i32) = 0;
