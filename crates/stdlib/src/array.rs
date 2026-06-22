@@ -251,6 +251,24 @@ impl BuiltinFunction for ArrayPrepend {
     }
 }
 
+/// Variadic array literal builtin: `array_literal(elem0, elem1, ...)`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ArrayLiteral;
+
+impl BuiltinFunction for ArrayLiteral {
+    fn name(&self) -> &str {
+        "array_literal"
+    }
+
+    fn arity(&self) -> usize {
+        0 // variadic
+    }
+
+    fn execute(&self, args: &[Value]) -> Result<Value, String> {
+        Ok(Value::array(args.to_vec()))
+    }
+}
+
 fn expect_array<'a>(name: &str, value: &'a Value) -> Result<&'a [Value], String> {
     match value {
         Value::Array(values) => Ok(values),

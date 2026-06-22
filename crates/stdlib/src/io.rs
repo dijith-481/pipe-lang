@@ -1,6 +1,6 @@
-use std::io::{self, Write};
+use std::io;
 
-use runtime::{BuiltinFunction, Value, expect_arity};
+use runtime::{BuiltinFunction, Value, expect_arity, write_stdout};
 
 /// Prints a string followed by a newline: `println(value)`.
 #[derive(Clone, Copy, Debug, Default)]
@@ -31,7 +31,8 @@ impl BuiltinFunction for IoPrintln {
     fn execute(&self, args: &[Value]) -> Result<Value, String> {
         expect_arity(self.name(), args, self.arity())?;
         let message = expect_str(self.name(), &args[0])?;
-        println!("{message}");
+        let output = format!("{message}\n");
+        write_stdout(&output);
         Ok(Value::Unit)
     }
 }
@@ -48,8 +49,7 @@ impl BuiltinFunction for IoPrint {
     fn execute(&self, args: &[Value]) -> Result<Value, String> {
         expect_arity(self.name(), args, self.arity())?;
         let message = expect_str(self.name(), &args[0])?;
-        print!("{message}");
-        io::stdout().flush().map_err(|e| e.to_string())?;
+        write_stdout(message);
         Ok(Value::Unit)
     }
 }
