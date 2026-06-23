@@ -135,20 +135,31 @@ fn closure_builtins_are_registered() {
 }
 
 // ---------------------------------------------------------------------------
-// Drop, Take, Sqrt, Unwrap — UNIMPLEMENTED in stdlib
+// Drop, Take, Sqrt, Unwrap — IMPLEMENTED in stdlib
 // ---------------------------------------------------------------------------
 
-#[ignore = "Member 2: implement `drop` builtin"]
 #[test]
-fn builtin_drop_returns_unit() {
+fn builtin_drop_removes_first_n() {
     let registry = full_registry();
+    let arr = Value::array(vec![
+        Value::I32(1),
+        Value::I32(2),
+        Value::I32(3),
+        Value::I32(4),
+    ]);
     let result = registry
-        .execute("drop", &[Value::I32(42)])
+        .execute("drop", &[arr, Value::I32(2)])
         .expect("drop should work");
-    assert_eq!(result, Value::Unit);
+    match result {
+        Value::Array(elems) => {
+            assert_eq!(elems.len(), 2);
+            assert_eq!(elems[0], Value::I32(3));
+            assert_eq!(elems[1], Value::I32(4));
+        }
+        other => panic!("expected Array, got {other:?}"),
+    }
 }
 
-#[ignore = "Member 2: implement `take` builtin"]
 #[test]
 fn builtin_take_first_n() {
     let registry = full_registry();
@@ -171,7 +182,6 @@ fn builtin_take_first_n() {
     }
 }
 
-#[ignore = "Member 2: implement `take` builtin with zero"]
 #[test]
 fn builtin_take_zero_returns_empty() {
     let registry = full_registry();
@@ -185,7 +195,6 @@ fn builtin_take_zero_returns_empty() {
     }
 }
 
-#[ignore = "Member 2: implement `sqrt` builtin"]
 #[test]
 fn builtin_sqrt_positive() {
     let registry = full_registry();
@@ -195,7 +204,6 @@ fn builtin_sqrt_positive() {
     assert_eq!(result, Value::F64(3.0));
 }
 
-#[ignore = "Member 2: implement `sqrt` with zero"]
 #[test]
 fn builtin_sqrt_zero() {
     let registry = full_registry();
@@ -205,24 +213,24 @@ fn builtin_sqrt_zero() {
     assert_eq!(result, Value::F64(0.0));
 }
 
-#[ignore = "Member 2: implement `unwrap` builtin"]
 #[test]
 fn builtin_unwrap_some() {
     let registry = full_registry();
     let some = Value::tag(1, vec![Value::I32(42)]);
     let result = registry
-        .execute("unwrap", &[some])
+        .execute("unwrap", &[some, Value::I32(0)])
         .expect("unwrap Some should work");
     assert_eq!(result, Value::I32(42));
 }
 
-#[ignore = "Member 2: implement `unwrap` panics on None"]
 #[test]
-fn builtin_unwrap_none_panics() {
+fn builtin_unwrap_none_returns_default() {
     let registry = full_registry();
     let none = Value::tag(0, vec![]);
-    let result = registry.execute("unwrap", &[none]);
-    assert!(result.is_err(), "unwrap None should error");
+    let result = registry
+        .execute("unwrap", &[none, Value::I32(99)])
+        .expect("unwrap None should return default");
+    assert_eq!(result, Value::I32(99));
 }
 
 // ---------------------------------------------------------------------------

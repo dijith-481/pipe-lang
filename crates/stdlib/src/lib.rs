@@ -7,6 +7,7 @@ pub mod array;
 mod closure;
 pub mod io;
 pub mod numeric;
+pub mod ops;
 pub mod option;
 pub mod prelude;
 pub mod result;

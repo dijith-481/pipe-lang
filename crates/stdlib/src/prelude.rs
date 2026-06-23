@@ -3,7 +3,7 @@ use std::sync::Arc;
 use runtime::{BuiltinFunction, ClosureData, FuncPtr, Value, expect_arity};
 
 use crate::closure::call_closure;
-use crate::{array, io, numeric, option, result as rslt, str as string};
+use crate::{array, io, numeric, ops, option, result as rslt, str as string};
 
 // ---------------------------------------------------------------------------
 // Prelude type definitions (for the typechecker)
@@ -71,6 +71,15 @@ pub fn prelude_builtins() -> Vec<Arc<dyn BuiltinFunction>> {
         Arc::new(numeric::ToI32),
         Arc::new(numeric::ToF64),
         Arc::new(numeric::ToStr),
+        // Numeric functions
+        Arc::new(numeric::Sqrt),
+        // Array utilities
+        Arc::new(array::ArrayDrop),
+        Arc::new(array::ArrayTake),
+        // Tag utilities
+        Arc::new(ops::Unwrap),
+        // IO standalones
+        Arc::new(io::ReadLine),
     ]
 }
 
@@ -421,6 +430,11 @@ mod tests {
         assert!(names.contains(&"to_i32"));
         assert!(names.contains(&"to_f64"));
         assert!(names.contains(&"to_str"));
+        assert!(names.contains(&"sqrt"));
+        assert!(names.contains(&"drop"));
+        assert!(names.contains(&"take"));
+        assert!(names.contains(&"unwrap"));
+        assert!(names.contains(&"readLine"));
     }
 
     #[test]

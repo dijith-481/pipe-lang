@@ -44,6 +44,18 @@ pub struct ArrayFlatMap;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ArrayPrepend;
 
+/// Array drop builtin: `drop(array, count)`.
+///
+/// Returns a new array with the first `count` elements removed.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ArrayDrop;
+
+/// Array take builtin: `take(array, count)`.
+///
+/// Returns a new array containing only the first `count` elements.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ArrayTake;
+
 impl BuiltinFunction for ArrayMap {
     fn name(&self) -> &str {
         "map"
@@ -55,13 +67,32 @@ impl BuiltinFunction for ArrayMap {
 
     fn execute(&self, args: &[Value]) -> Result<Value, String> {
         expect_arity(self.name(), args, self.arity())?;
-        let array = expect_array(self.name(), &args[0])?;
-        let closure = expect_closure(self.name(), &args[1])?;
-        let mut mapped = Vec::with_capacity(array.len());
-        for value in array {
-            mapped.push(call_closure(&closure, std::slice::from_ref(value))?);
+        // Type dispatch: if first arg is a Tag (Option/Result), delegate
+        if let Value::Tag { tag, payload } = &args[0] {
+            let closure = expect_closure(self.name(), &args[1])?;
+            match tag {
+                0 => Ok(Value::tag(0, vec![])), // None/Err passthrough
+                1 => {
+                    if payload.is_empty() {
+                        return Err(format!(
+                            "`{}` expected tag with payload, got empty",
+                            self.name()
+                        ));
+                    }
+                    let mapped = call_closure(&closure, payload)?;
+                    Ok(Value::tag(1, vec![mapped]))
+                }
+                other => Err(format!("`{}` unexpected tag {other}", self.name())),
+            }
+        } else {
+            let array = expect_array(self.name(), &args[0])?;
+            let closure = expect_closure(self.name(), &args[1])?;
+            let mut mapped = Vec::with_capacity(array.len());
+            for value in array {
+                mapped.push(call_closure(&closure, std::slice::from_ref(value))?);
+            }
+            Ok(Value::array(mapped))
         }
-        Ok(Value::array(mapped))
     }
 }
 
@@ -209,22 +240,99 @@ impl BuiltinFunction for ArrayFlatMap {
 
     fn execute(&self, args: &[Value]) -> Result<Value, String> {
         expect_arity(self.name(), args, self.arity())?;
-        let array = expect_array(self.name(), &args[0])?;
-        let closure = expect_closure(self.name(), &args[1])?;
-        let mut results = Vec::new();
-        for value in array {
-            let mapped = call_closure(&closure, std::slice::from_ref(value))?;
-            match mapped {
-                Value::Array(elements) => results.extend(elements.iter().cloned()),
-                actual => {
-                    return Err(format!(
-                        "`{}` expected closure to return Array, got {actual:?}",
-                        self.name()
-                    ));
+        // Type dispatch: if first arg is a Tag (Option/Result), delegate
+        if let Value::Tag { tag, payload } = &args[0] {
+            let closure = expect_closure(self.name(), &args[1])?;
+            match tag {
+                0 => Ok(Value::tag(0, vec![])), // None/Err passthrough
+                1 => {
+                    if payload.is_empty() {
+                        return Err(format!(
+                            "`{}` expected tag with payload, got empty",
+                            self.name()
+                        ));
+                    }
+                    let result = call_closure(&closure, payload)?;
+                    match &result {
+                        Value::Tag { tag: 0..=1, .. } => Ok(result),
+                        actual => Err(format!(
+                            "`{}` expected closure to return Option/Result, got {actual:?}",
+                            self.name()
+                        )),
+                    }
+                }
+                other => Err(format!("`{}` unexpected tag {other}", self.name())),
+            }
+        } else {
+            let array = expect_array(self.name(), &args[0])?;
+            let closure = expect_closure(self.name(), &args[1])?;
+            let mut results = Vec::new();
+            for value in array {
+                let mapped = call_closure(&closure, std::slice::from_ref(value))?;
+                match mapped {
+                    Value::Array(elements) => results.extend(elements.iter().cloned()),
+                    actual => {
+                        return Err(format!(
+                            "`{}` expected closure to return Array, got {actual:?}",
+                            self.name()
+                        ));
+                    }
                 }
             }
+            Ok(Value::array(results))
         }
-        Ok(Value::array(results))
+    }
+}
+
+impl BuiltinFunction for ArrayDrop {
+    fn name(&self) -> &str {
+        "drop"
+    }
+
+    fn arity(&self) -> usize {
+        2
+    }
+
+    fn execute(&self, args: &[Value]) -> Result<Value, String> {
+        expect_arity(self.name(), args, self.arity())?;
+        let array = expect_array(self.name(), &args[0])?;
+        let n: usize = match &args[1] {
+            Value::I32(n) => (*n).max(0) as usize,
+            actual => {
+                return Err(format!(
+                    "`{}` expected I32 for count, got {actual:?}",
+                    self.name()
+                ));
+            }
+        };
+        let start = n.min(array.len());
+        Ok(Value::array(array[start..].to_vec()))
+    }
+}
+
+impl BuiltinFunction for ArrayTake {
+    fn name(&self) -> &str {
+        "take"
+    }
+
+    fn arity(&self) -> usize {
+        2
+    }
+
+    fn execute(&self, args: &[Value]) -> Result<Value, String> {
+        expect_arity(self.name(), args, self.arity())?;
+        let array = expect_array(self.name(), &args[0])?;
+        let n: usize = match &args[1] {
+            Value::I32(n) => (*n).max(0) as usize,
+            actual => {
+                return Err(format!(
+                    "`{}` expected I32 for count, got {actual:?}",
+                    self.name()
+                ));
+            }
+        };
+        let end = n.min(array.len());
+        Ok(Value::array(array[..end].to_vec()))
     }
 }
 
@@ -581,5 +689,98 @@ mod tests {
             .expect_err("prepend should reject non-arrays");
 
         assert!(error.contains("expected Array"));
+    }
+
+    #[test]
+    fn drop_removes_first_n_elements() {
+        let result = ArrayDrop
+            .execute(&[int_array(&[1, 2, 3, 4, 5]), Value::I32(3)])
+            .expect("drop should remove first elements");
+
+        assert_eq!(result, int_array(&[4, 5]));
+    }
+
+    #[test]
+    fn drop_returns_empty_when_count_exceeds_length() {
+        let result = ArrayDrop
+            .execute(&[int_array(&[1, 2]), Value::I32(10)])
+            .expect("drop should handle overflow count");
+
+        assert_eq!(result, int_array(&[]));
+    }
+
+    #[test]
+    fn drop_clamps_negative_count_to_zero() {
+        let result = ArrayDrop
+            .execute(&[int_array(&[1, 2, 3]), Value::I32(-5)])
+            .expect("drop should handle negative count");
+
+        assert_eq!(result, int_array(&[1, 2, 3]));
+    }
+
+    #[test]
+    fn drop_rejects_non_i32_count() {
+        let error = ArrayDrop
+            .execute(&[int_array(&[]), Value::Str("bad".into())])
+            .expect_err("drop should reject non-I32 count");
+
+        assert!(error.contains("expected I32"));
+    }
+
+    #[test]
+    fn take_returns_first_n_elements() {
+        let result = ArrayTake
+            .execute(&[int_array(&[1, 2, 3, 4, 5]), Value::I32(3)])
+            .expect("take should return first elements");
+
+        assert_eq!(result, int_array(&[1, 2, 3]));
+    }
+
+    #[test]
+    fn take_returns_all_when_count_exceeds_length() {
+        let result = ArrayTake
+            .execute(&[int_array(&[1, 2]), Value::I32(10)])
+            .expect("take should handle overflow count");
+
+        assert_eq!(result, int_array(&[1, 2]));
+    }
+
+    #[test]
+    fn take_returns_empty_when_count_is_zero() {
+        let result = ArrayTake
+            .execute(&[int_array(&[1, 2, 3]), Value::I32(0)])
+            .expect("take should return empty for zero count");
+
+        assert_eq!(result, int_array(&[]));
+    }
+
+    #[test]
+    fn take_clamps_negative_count_to_zero() {
+        let result = ArrayTake
+            .execute(&[int_array(&[1, 2, 3]), Value::I32(-1)])
+            .expect("take should handle negative count");
+
+        assert_eq!(result, int_array(&[]));
+    }
+
+    #[test]
+    fn map_dispatch_on_tag_some() {
+        let result = ArrayMap
+            .execute(&[
+                Value::tag(1, vec![Value::I32(5)]),
+                closure(Arc::new(AddOne), 1),
+            ])
+            .expect("map should dispatch on Some tag");
+
+        assert_eq!(result, Value::tag(1, vec![Value::I32(6)]));
+    }
+
+    #[test]
+    fn map_dispatch_on_tag_none() {
+        let result = ArrayMap
+            .execute(&[Value::tag(0, vec![]), closure(Arc::new(AddOne), 1)])
+            .expect("map should dispatch on None tag");
+
+        assert_eq!(result, Value::tag(0, vec![]));
     }
 }

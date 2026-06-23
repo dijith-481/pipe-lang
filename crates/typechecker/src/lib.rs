@@ -1,5 +1,6 @@
 pub mod env;
 pub mod error;
+pub mod exhaustiveness;
 pub mod infer;
 pub mod types;
 pub mod unify;

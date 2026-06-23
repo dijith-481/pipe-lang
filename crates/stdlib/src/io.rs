@@ -19,6 +19,11 @@ pub struct IoReadLine;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct IoReadFile;
 
+/// Reads one line from stdin as a standalone builtin: `readLine(_module)`.
+/// The module argument is ignored.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ReadLine;
+
 impl BuiltinFunction for IoPrintln {
     fn name(&self) -> &str {
         "println"
@@ -92,6 +97,25 @@ impl BuiltinFunction for IoReadFile {
     }
 }
 
+impl BuiltinFunction for ReadLine {
+    fn name(&self) -> &str {
+        "readLine"
+    }
+
+    fn arity(&self) -> usize {
+        1
+    }
+
+    fn execute(&self, args: &[Value]) -> Result<Value, String> {
+        expect_arity(self.name(), args, self.arity())?;
+        let mut buffer = String::new();
+        io::stdin()
+            .read_line(&mut buffer)
+            .map_err(|e| e.to_string())?;
+        Ok(Value::str(buffer))
+    }
+}
+
 fn expect_str<'a>(name: &str, value: &'a Value) -> Result<&'a str, String> {
     match value {
         Value::Str(text) => Ok(text),
@@ -155,6 +179,22 @@ mod tests {
             .expect_err("readFile should reject non-strings");
 
         assert!(error.contains("expected Str"));
+    }
+
+    #[test]
+    fn read_line_accepts_arity_one() {
+        let result = ReadLine
+            .execute(&[Value::Unit])
+            .expect("readLine should accept module arg");
+        assert!(result.as_str().is_some());
+    }
+
+    #[test]
+    fn read_line_rejects_wrong_arity() {
+        let error = ReadLine
+            .execute(&[])
+            .expect_err("readLine should reject no args");
+        assert!(error.contains("expected 1 argument"));
     }
 
     #[test]

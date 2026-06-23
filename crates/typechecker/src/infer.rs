@@ -7,6 +7,7 @@ use ast::span::Span;
 
 use crate::env::TypeEnv;
 use crate::error::TypeError;
+use crate::exhaustiveness::check_exhaustive;
 use crate::types::{MonoType, PolyType, TypeId};
 use crate::unify::{Substitution, unify};
 
@@ -654,6 +655,8 @@ fn infer_inner<'a>(
             for arm in arms {
                 infer_arm(env, sub, type_map, arm, &subj_ty, span, &mut result_ty)?;
             }
+            let subj_applied = sub.apply(&subj_ty);
+            check_exhaustive(&env.tag_variants, &subj_applied, arms, *span)?;
             Ok(sub.apply(result_ty.as_ref().unwrap()))
         }
 
