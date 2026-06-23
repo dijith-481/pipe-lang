@@ -16,6 +16,7 @@
 //! individual test functions verify only the loader and diffing
 //! logic; the end-to-end test is added on Day 10.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// A single test fixture: source file + expected stdout.
@@ -112,18 +113,48 @@ pub struct RunResult {
 
 /// Runs a single fixture end-to-end and returns the captured output.
 ///
-/// **Status:** the function signature is stable; the implementation
-/// is filled in on Day 10 once Track A (parser/typechecker/lowerer) is
-/// ready. For now, it returns a stub result that reads the source
-/// (so the loader path is exercised) but does not yet execute code.
-pub fn run_fixture(_fixture: &Fixture) -> RunResult {
-    // Day 10 hook: replace this stub with the real pipeline.
-    // For now we run the binary as a subprocess so the integration
-    // test exercises the same path that the user will.
-    RunResult {
-        stdout: String::new(),
-        stderr: String::new(),
-        exit_code: 0,
+/// Runs the full lex → parse → typecheck → lower → JIT → execute
+/// pipeline, captures stdout via the runtime capture API, and returns
+/// the result.
+///
+/// # Panics
+///
+/// Panics if reading the fixture source fails.
+pub fn run_fixture(fixture: &Fixture) -> RunResult {
+    let source = fixture
+        .read_source()
+        .expect("fixture source should be readable");
+
+    // Enable global output capture in the runtime. Builtins like `println`
+    // will append to this buffer instead of writing to fd 1.
+    runtime::enable_capture();
+
+    // Run the pipeline.
+    let config = crate::session::SessionConfig::new(fixture.source.clone())
+        .with_mode(crate::session::CompileMode::Run);
+    let mut session_handle = crate::session::CompilerSession::new(config);
+    session_handle.set_source(source);
+
+    // Flush stdout before running so libtest's buffered output doesn't
+    // get mixed with ours. This is harmless — we already enabled capture.
+    let _ = std::io::stdout().flush();
+
+    let result = session_handle.run_pipeline();
+
+    // Disable capture and retrieve the accumulated output.
+    let stdout_output = runtime::disable_capture();
+
+    match result {
+        Ok(res) => RunResult {
+            stdout: stdout_output,
+            stderr: String::new(),
+            exit_code: res.exit_code,
+        },
+        Err(diag) => RunResult {
+            stdout: stdout_output,
+            stderr: format!("{diag:?}"),
+            exit_code: 1,
+        },
     }
 }
 

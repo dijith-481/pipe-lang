@@ -8,6 +8,65 @@ use std::sync::Arc;
 use runtime::{BuiltinFunction, BuiltinRegistry, Value};
 
 // ---------------------------------------------------------------------------
+// Array literal builtin
+// ---------------------------------------------------------------------------
+
+#[test]
+fn builtin_array_literal_empty() {
+    let registry = full_registry();
+    let result = registry
+        .execute("array_literal", &[])
+        .expect("array_literal should work");
+    match result {
+        Value::Array(elems) => assert_eq!(elems.len(), 0),
+        other => panic!("expected Array, got {other:?}"),
+    }
+}
+
+#[test]
+fn builtin_array_literal_three_elements() {
+    let registry = full_registry();
+    let result = registry
+        .execute(
+            "array_literal",
+            &[Value::I32(1), Value::I32(2), Value::I32(3)],
+        )
+        .expect("array_literal should work");
+    match result {
+        Value::Array(elems) => {
+            assert_eq!(elems.len(), 3);
+            assert_eq!(elems[0], Value::I32(1));
+            assert_eq!(elems[1], Value::I32(2));
+            assert_eq!(elems[2], Value::I32(3));
+        }
+        other => panic!("expected Array, got {other:?}"),
+    }
+}
+
+#[test]
+fn builtin_array_literal_mixed_types() {
+    let registry = full_registry();
+    let result = registry
+        .execute(
+            "array_literal",
+            &[
+                Value::I32(42),
+                Value::Str("hello".into()),
+                Value::Bool(true),
+            ],
+        )
+        .expect("array_literal should work");
+    match result {
+        Value::Array(elems) => {
+            assert_eq!(elems.len(), 3);
+            assert_eq!(elems[0], Value::I32(42));
+            assert_eq!(elems[2], Value::Bool(true));
+        }
+        other => panic!("expected Array, got {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Prelude — always available
 // ---------------------------------------------------------------------------
 
