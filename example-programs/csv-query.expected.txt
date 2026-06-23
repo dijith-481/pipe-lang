@@ -1,0 +1,45 @@
+=== CSV Query Tool ===
+12 rows loaded
+
+=== All data ===
+Laptop | Electronics | $1200 | 5 | New York
+Phone | Electronics | $800 | 12 | New York
+Tablet | Electronics | $450 | 8 | Boston
+Shirt | Clothing | $40 | 30 | Chicago
+Jeans | Clothing | $80 | 20 | Chicago
+Shoes | Clothing | $120 | 15 | Boston
+Desk | Furniture | $350 | 3 | New York
+Chair | Furniture | $200 | 10 | Boston
+Lamp | Furniture | $60 | 25 | Chicago
+Monitor | Electronics | $500 | 7 | New York
+Keyboard | Electronics | $100 | 20 | Boston
+Mouse | Electronics | $40 | 35 | Chicago
+
+=== Revenue by category ===
+  Electronics: $36500
+  Clothing: $4800
+  Furniture: $5800
+
+=== Average price by category ===
+  Electronics: $515
+  Clothing: $80
+  Furniture: $203.33333333333334
+
+=== Top 5 products ===
+  Mouse: $40 (Chicago)
+  Keyboard: $100 (Boston)
+  Monitor: $500 (New York)
+  Desk: $350 (New York)
+  Lamp: $60 (Chicago)
+
+=== Electronics in New York ===
+  Laptop: $1200 x 5
+  Phone: $800 x 12
+  Monitor: $500 x 7
+
+=== City breakdown ===
+  New York: 4 items, $27700 revenue
+  Boston: 4 items, $6100 revenue
+  Chicago: 4 items, $4300 revenue
+
+Processed 12 rows across 3 categories.

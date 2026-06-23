@@ -1,5 +1,5 @@
 // IO and Effect system — pure/impure separation
-// `io.readLine` is the only operation that genuinely requires the `io` import;
+// `read_line` is the only IO operation that takes/modifies state;
 // `println` is in the prelude.
 use stdlib::io
 
@@ -9,10 +9,10 @@ let greet : (str) -> str = (name) => `Hello, ${name}!`
 // Pure numeric conversion
 let celsiusToFahrenheit : (f64) -> f64 = (c) => c * 9.0 / 5.0 + 32.0
 
-// Effectful computation — using flatMap to chain effects
+// Effectful computation — using flat_map to chain effects
 let main = () =>
-    io.readLine()
-        .flatMap((name) => {
+    read_line()
+        .flat_map((name) => {
             println(greet(name))
             println(``)
             println(`Temperature conversions:`)
@@ -22,9 +22,9 @@ let main = () =>
                 println(`${c}C = ${f}F`)
             })
         })
-        .flatMap((_) => {
+        .flat_map((_) => {
             println(``)
             println(`Reading from stdin...`)
-            io.readLine()
+            read_line()
         })
         .map((line) => println(`You said: ${line}`))

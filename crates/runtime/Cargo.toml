@@ -14,7 +14,9 @@ cranelift-jit = "0.132.0"
 cranelift-module = "0.132.0"
 cranelift-native = "0.132.0"
 ir = { version = "0.1.0", path = "../ir" }
+libc = "0.2"
 thiserror = "2.0.18"
+tracing = "0.1"
 
 [dev-dependencies]
 bumpalo = "3"

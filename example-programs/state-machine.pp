@@ -43,7 +43,7 @@ let main = () => {
     println(``)
     println(`Transitions:`)
     let states = events.fold([Idle], (acc, event) => {
-        let last = acc[acc.len() - 1]
+        let last = acc[acc.len() - 1usize]
         let next = transition(last, event)
         acc.concat([next])
     })

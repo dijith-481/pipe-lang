@@ -32,7 +32,7 @@ pub struct ArrayHead;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ArrayTail;
 
-/// Array flatMap builtin: `flatMap(array, function)`.
+/// Array flat_map builtin: `flat_map(array, function)`.
 ///
 /// Applies the closure to each element and flattens the resulting arrays.
 #[derive(Clone, Copy, Debug, Default)]
@@ -43,6 +43,18 @@ pub struct ArrayFlatMap;
 /// Returns a new array with the value prepended at the front.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ArrayPrepend;
+
+/// Array drop builtin: `drop(array, count)`.
+///
+/// Returns a new array with the first `count` elements removed.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ArrayDrop;
+
+/// Array take builtin: `take(array, count)`.
+///
+/// Returns a new array containing only the first `count` elements.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ArrayTake;
 
 impl BuiltinFunction for ArrayMap {
     fn name(&self) -> &str {
@@ -200,7 +212,7 @@ impl BuiltinFunction for ArrayTail {
 
 impl BuiltinFunction for ArrayFlatMap {
     fn name(&self) -> &str {
-        "flatMap"
+        "flat_map"
     }
 
     fn arity(&self) -> usize {
@@ -228,6 +240,58 @@ impl BuiltinFunction for ArrayFlatMap {
     }
 }
 
+impl BuiltinFunction for ArrayDrop {
+    fn name(&self) -> &str {
+        "drop"
+    }
+
+    fn arity(&self) -> usize {
+        2
+    }
+
+    fn execute(&self, args: &[Value]) -> Result<Value, String> {
+        expect_arity(self.name(), args, self.arity())?;
+        let array = expect_array(self.name(), &args[0])?;
+        let n: usize = match &args[1] {
+            Value::I32(n) => (*n).max(0) as usize,
+            actual => {
+                return Err(format!(
+                    "`{}` expected I32 for count, got {actual:?}",
+                    self.name()
+                ));
+            }
+        };
+        let start = n.min(array.len());
+        Ok(Value::array(array[start..].to_vec()))
+    }
+}
+
+impl BuiltinFunction for ArrayTake {
+    fn name(&self) -> &str {
+        "take"
+    }
+
+    fn arity(&self) -> usize {
+        2
+    }
+
+    fn execute(&self, args: &[Value]) -> Result<Value, String> {
+        expect_arity(self.name(), args, self.arity())?;
+        let array = expect_array(self.name(), &args[0])?;
+        let n: usize = match &args[1] {
+            Value::I32(n) => (*n).max(0) as usize,
+            actual => {
+                return Err(format!(
+                    "`{}` expected I32 for count, got {actual:?}",
+                    self.name()
+                ));
+            }
+        };
+        let end = n.min(array.len());
+        Ok(Value::array(array[..end].to_vec()))
+    }
+}
+
 impl BuiltinFunction for ArrayPrepend {
     fn name(&self) -> &str {
         "prepend"
@@ -248,6 +312,24 @@ impl BuiltinFunction for ArrayPrepend {
         values.push(args[1].clone());
         values.extend_from_slice(array);
         Ok(Value::array(values))
+    }
+}
+
+/// Variadic array literal builtin: `array_literal(elem0, elem1, ...)`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ArrayLiteral;
+
+impl BuiltinFunction for ArrayLiteral {
+    fn name(&self) -> &str {
+        "array_literal"
+    }
+
+    fn arity(&self) -> usize {
+        0 // variadic
+    }
+
+    fn execute(&self, args: &[Value]) -> Result<Value, String> {
+        Ok(Value::array(args.to_vec()))
     }
 }
 
@@ -581,5 +663,77 @@ mod tests {
             .expect_err("prepend should reject non-arrays");
 
         assert!(error.contains("expected Array"));
+    }
+
+    #[test]
+    fn drop_removes_first_n_elements() {
+        let result = ArrayDrop
+            .execute(&[int_array(&[1, 2, 3, 4, 5]), Value::I32(3)])
+            .expect("drop should remove first elements");
+
+        assert_eq!(result, int_array(&[4, 5]));
+    }
+
+    #[test]
+    fn drop_returns_empty_when_count_exceeds_length() {
+        let result = ArrayDrop
+            .execute(&[int_array(&[1, 2]), Value::I32(10)])
+            .expect("drop should handle overflow count");
+
+        assert_eq!(result, int_array(&[]));
+    }
+
+    #[test]
+    fn drop_clamps_negative_count_to_zero() {
+        let result = ArrayDrop
+            .execute(&[int_array(&[1, 2, 3]), Value::I32(-5)])
+            .expect("drop should handle negative count");
+
+        assert_eq!(result, int_array(&[1, 2, 3]));
+    }
+
+    #[test]
+    fn drop_rejects_non_i32_count() {
+        let error = ArrayDrop
+            .execute(&[int_array(&[]), Value::Str("bad".into())])
+            .expect_err("drop should reject non-I32 count");
+
+        assert!(error.contains("expected I32"));
+    }
+
+    #[test]
+    fn take_returns_first_n_elements() {
+        let result = ArrayTake
+            .execute(&[int_array(&[1, 2, 3, 4, 5]), Value::I32(3)])
+            .expect("take should return first elements");
+
+        assert_eq!(result, int_array(&[1, 2, 3]));
+    }
+
+    #[test]
+    fn take_returns_all_when_count_exceeds_length() {
+        let result = ArrayTake
+            .execute(&[int_array(&[1, 2]), Value::I32(10)])
+            .expect("take should handle overflow count");
+
+        assert_eq!(result, int_array(&[1, 2]));
+    }
+
+    #[test]
+    fn take_returns_empty_when_count_is_zero() {
+        let result = ArrayTake
+            .execute(&[int_array(&[1, 2, 3]), Value::I32(0)])
+            .expect("take should return empty for zero count");
+
+        assert_eq!(result, int_array(&[]));
+    }
+
+    #[test]
+    fn take_clamps_negative_count_to_zero() {
+        let result = ArrayTake
+            .execute(&[int_array(&[1, 2, 3]), Value::I32(-1)])
+            .expect("take should handle negative count");
+
+        assert_eq!(result, int_array(&[]));
     }
 }

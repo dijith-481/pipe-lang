@@ -16,7 +16,7 @@ let getName = (p) => p.name
 let isAdult = (p) => p.age >= 18
 
 // Record update (functional style — creates new record)
-let withAge = (p, newAge) => { name: p.name, age: newAge, city: p.city }
+let withAge = (p: Person, newAge) => { name: p.name, age: newAge, city: p.city }
 
 // Higher-order with records
 let adults = (people) => people.filter(isAdult)

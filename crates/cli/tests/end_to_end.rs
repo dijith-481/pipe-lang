@@ -15,11 +15,11 @@ use cli::fixtures::{
     Fixture, assert_stdout_matches, discover_fixtures, examples_dir, run_fixture, workspace_root,
 };
 
-/// Smoke test: the test infrastructure can find all 14 example files.
+/// Smoke test: the test infrastructure can find all example files.
 #[test]
-fn fixtures_discover_14_programs() {
+fn fixtures_discover_20_programs() {
     let fixtures = discover_fixtures(&examples_dir()).expect("discover");
-    assert_eq!(fixtures.len(), 14);
+    assert_eq!(fixtures.len(), 20);
 }
 
 /// One stub test per example program. Each will be promoted to a

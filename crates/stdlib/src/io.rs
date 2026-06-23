@@ -1,6 +1,6 @@
-use std::io::{self, Write};
+use std::io;
 
-use runtime::{BuiltinFunction, Value, expect_arity};
+use runtime::{BuiltinFunction, Value, expect_arity, write_stdout};
 
 /// Prints a string followed by a newline: `println(value)`.
 #[derive(Clone, Copy, Debug, Default)]
@@ -10,11 +10,12 @@ pub struct IoPrintln;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct IoPrint;
 
-/// Reads one line from standard input: `read_line()`.
+/// Reads one line from standard input: `read_line(_module)`.
+/// The module argument is ignored.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct IoReadLine;
 
-/// Reads an entire file into a string: `readFile(path)`.
+/// Reads an entire file into a string: `read_file(path)`.
 /// Returns `Ok(content)` on success, `Err(error)` on failure.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct IoReadFile;
@@ -31,7 +32,8 @@ impl BuiltinFunction for IoPrintln {
     fn execute(&self, args: &[Value]) -> Result<Value, String> {
         expect_arity(self.name(), args, self.arity())?;
         let message = expect_str(self.name(), &args[0])?;
-        println!("{message}");
+        let output = format!("{message}\n");
+        write_stdout(&output);
         Ok(Value::Unit)
     }
 }
@@ -48,8 +50,7 @@ impl BuiltinFunction for IoPrint {
     fn execute(&self, args: &[Value]) -> Result<Value, String> {
         expect_arity(self.name(), args, self.arity())?;
         let message = expect_str(self.name(), &args[0])?;
-        print!("{message}");
-        io::stdout().flush().map_err(|e| e.to_string())?;
+        write_stdout(message);
         Ok(Value::Unit)
     }
 }
@@ -60,7 +61,7 @@ impl BuiltinFunction for IoReadLine {
     }
 
     fn arity(&self) -> usize {
-        0
+        1
     }
 
     fn execute(&self, args: &[Value]) -> Result<Value, String> {
@@ -75,7 +76,7 @@ impl BuiltinFunction for IoReadLine {
 
 impl BuiltinFunction for IoReadFile {
     fn name(&self) -> &str {
-        "readFile"
+        "read_file"
     }
 
     fn arity(&self) -> usize {
@@ -140,12 +141,19 @@ mod tests {
     }
 
     #[test]
-    fn read_line_rejects_arguments() {
-        let error = IoReadLine
+    fn read_line_accepts_module_arg() {
+        let result = IoReadLine
             .execute(&[Value::Unit])
-            .expect_err("read_line should reject arguments");
+            .expect("readLine should accept module arg");
+        assert!(result.as_str().is_some());
+    }
 
-        assert!(error.contains("expected 0 argument"));
+    #[test]
+    fn read_line_rejects_wrong_arity() {
+        let error = IoReadLine
+            .execute(&[])
+            .expect_err("readLine should reject no args");
+        assert!(error.contains("expected 1 argument"));
     }
 
     #[test]

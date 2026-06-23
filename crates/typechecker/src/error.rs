@@ -101,12 +101,12 @@ impl From<TypeError> for CompilerError {
                 annotation,
                 inferred,
                 span,
-            } => {
-                let msg = format!(
+            } => CompilerError::type_error(
+                span,
+                format!(
                     "type annotation conflict: annotation says {annotation}, inferred {inferred}"
-                );
-                CompilerError::type_error(span, msg)
-            }
+                ),
+            ),
             TypeError::NonExhaustiveMatch { span } => CompilerError::non_exhaustive_match(span),
             TypeError::FieldNotFound { field, span } => {
                 CompilerError::type_error(span, format!("field `{field}` not found on record"))

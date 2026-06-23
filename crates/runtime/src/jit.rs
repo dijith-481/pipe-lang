@@ -216,6 +216,50 @@ pub fn compile_ir(ir_module: &IrModule) -> Result<CompiledModule, JitError> {
         module.define_data(str_concat_ptr_data_id, &data_desc)?;
     }
 
+    // Scan all functions for CallNamed instructions referencing
+    // builtins (not local functions) and create name data objects.
+    let mut unique_builtin_names: Vec<String> = Vec::new();
+    let mut seen_builtin_names: HashSet<String> = HashSet::new();
+    for func in ir_module.functions() {
+        for block in &func.blocks {
+            for (_, inst) in &block.instructions {
+                if let ir::Instruction::CallNamed(data) = inst {
+                    let name_str = data.name.to_string();
+                    if !name_to_func.contains_key(&name_str)
+                        && seen_builtin_names.insert(name_str.clone())
+                    {
+                        unique_builtin_names.push(name_str);
+                    }
+                }
+            }
+        }
+    }
+    let mut builtin_name_data_ids: HashMap<String, DataId> = HashMap::new();
+    for builtin_name in &unique_builtin_names {
+        let data_name = format!("__builtin_name_{}", builtin_name);
+        let data_id = module.declare_data(&data_name, Linkage::Local, false, false)?;
+        let mut data_desc = DataDescription::new();
+        let bytes = builtin_name.as_bytes();
+        let len = bytes.len() as u32;
+        let mut data = Vec::with_capacity(4 + bytes.len());
+        data.extend_from_slice(&len.to_ne_bytes());
+        data.extend_from_slice(bytes);
+        data_desc.define(data.into_boxed_slice());
+        module.define_data(data_id, &data_desc)?;
+        builtin_name_data_ids.insert(builtin_name.clone(), data_id);
+    }
+
+    // Declare a data object for the pipe_rt_call_builtin function pointer.
+    let call_builtin_ptr = pipe_rt_call_builtin as *const ();
+    let call_builtin_ptr_data_id =
+        module.declare_data("__pipe_call_builtin_ptr", Linkage::Local, false, false)?;
+    {
+        let mut data_desc = DataDescription::new();
+        let ptr_bytes: Vec<u8> = (call_builtin_ptr as u64).to_ne_bytes().to_vec();
+        data_desc.define(ptr_bytes.into_boxed_slice());
+        module.define_data(call_builtin_ptr_data_id, &data_desc)?;
+    }
+
     // Compile each function. The function bodies are populated here;
     // finalize_definitions happens once at the end.
     for (name, func_id, ret_type) in &func_ids {
@@ -231,6 +275,8 @@ pub fn compile_ir(ir_module: &IrModule) -> Result<CompiledModule, JitError> {
             string_data_ids: &string_data_ids,
             println_ptr_data_id,
             str_concat_ptr_data_id,
+            call_builtin_ptr_data_id,
+            builtin_name_data_ids: &builtin_name_data_ids,
         };
         compile_function_body(&mut params, func, *func_id, ret_type)?;
     }
@@ -272,6 +318,7 @@ fn make_signature(module: &JITModule) -> cranelift_codegen::ir::Signature {
 ///
 /// Does NOT own the `FunctionBuilder` — that is passed separately to avoid
 /// self-referential borrow issues with `finalize()` taking ownership.
+#[allow(dead_code)]
 struct BlockContext<'a> {
     value_types: &'a HashMap<ValueId, IrType>,
     func_name: &'a str,
@@ -282,6 +329,9 @@ struct BlockContext<'a> {
     println_sig: SigRef,
     str_concat_fn_ptr: Value,
     str_concat_sig: SigRef,
+    call_builtin_fn_ptr: Value,
+    call_builtin_sig: SigRef,
+    builtin_name_globals: &'a HashMap<String, GlobalValue>,
     blocks: &'a HashMap<BlockId, Block>,
     ret_ptr: Value,
     ret_type: &'a IrType,
@@ -295,6 +345,8 @@ struct FunctionBodyParams<'a> {
     string_data_ids: &'a HashMap<String, DataId>,
     println_ptr_data_id: DataId,
     str_concat_ptr_data_id: DataId,
+    call_builtin_ptr_data_id: DataId,
+    builtin_name_data_ids: &'a HashMap<String, DataId>,
 }
 
 /// Compiles the body of one IR function into the module's slot
@@ -344,6 +396,7 @@ fn compile_function_body(
     )?;
 
     // Pre-import all callees referenced by CallNamed in this function.
+    // Builtins (not in name_to_func) will be resolved via the builtin bridge.
     let mut callee_funcs: HashMap<String, FuncRef> = HashMap::new();
     for ir_block in &func.blocks {
         for (_, inst) in &ir_block.instructions {
@@ -352,13 +405,10 @@ fn compile_function_body(
                 if callee_funcs.contains_key(&name_str) {
                     continue;
                 }
-                let (callee_id, _) =
-                    params.name_to_func.get(name_str.as_str()).ok_or_else(|| {
-                        JitError::UnimplementedInstruction {
-                            instruction: format!("CallNamed to unknown function {name_str}"),
-                            function: func.name.to_string(),
-                        }
-                    })?;
+                let Some((callee_id, _)) = params.name_to_func.get(name_str.as_str()) else {
+                    // Not a local function — will be resolved via builtin bridge.
+                    continue;
+                };
                 let func_ref = {
                     let f: &mut Function = builder.func;
                     params.module.declare_func_in_func(*callee_id, f)
@@ -430,6 +480,53 @@ fn compile_function_body(
         f.import_signature(sig)
     };
 
+    // Import the pipe_rt_call_builtin function pointer from a data object.
+    let call_builtin_fn_ptr_gv = {
+        let f: &mut Function = builder.func;
+        params
+            .module
+            .declare_data_in_func(params.call_builtin_ptr_data_id, f)
+    };
+    let call_builtin_fn_ptr_addr = builder
+        .ins()
+        .global_value(types::I64, call_builtin_fn_ptr_gv);
+    let call_builtin_fn_ptr =
+        builder
+            .ins()
+            .load(types::I64, MemFlags::trusted(), call_builtin_fn_ptr_addr, 0);
+    let call_builtin_sig = {
+        let sig = make_signature(params.module);
+        let f: &mut Function = builder.func;
+        f.import_signature(sig)
+    };
+
+    // Pre-import builtin name data objects referenced by CallNamed in this function.
+    let mut builtin_name_globals: HashMap<String, GlobalValue> = HashMap::new();
+    for ir_block in &func.blocks {
+        for (_, inst) in &ir_block.instructions {
+            if let ir::Instruction::CallNamed(data) = inst {
+                let name_str = data.name.to_string();
+                if builtin_name_globals.contains_key(&name_str) {
+                    continue;
+                }
+                if params.name_to_func.contains_key(&name_str) {
+                    continue;
+                }
+                let data_id = params.builtin_name_data_ids.get(&name_str).ok_or_else(|| {
+                    JitError::UnimplementedInstruction {
+                        instruction: format!("builtin name data not found for {name_str}"),
+                        function: func.name.to_string(),
+                    }
+                })?;
+                let gv = {
+                    let f: &mut Function = builder.func;
+                    params.module.declare_data_in_func(*data_id, f)
+                };
+                builtin_name_globals.insert(name_str, gv);
+            }
+        }
+    }
+
     let blocks = declare_blocks(&mut builder, func, &mut values)?;
     let first_ir_block = &func.blocks[0];
     if !first_ir_block.params.is_empty() {
@@ -451,6 +548,9 @@ fn compile_function_body(
         println_sig,
         str_concat_fn_ptr,
         str_concat_sig,
+        call_builtin_fn_ptr,
+        call_builtin_sig,
+        builtin_name_globals: &builtin_name_globals,
         blocks: &blocks,
         ret_ptr,
         ret_type,
@@ -862,58 +962,146 @@ fn compile_call_named(
     values: &HashMap<ValueId, Value>,
 ) -> Result<Value, JitError> {
     let callee_name = data.name.as_str();
-    let func_ref = ctx.callee_funcs.get(callee_name).copied().ok_or_else(|| {
-        JitError::UnimplementedInstruction {
-            instruction: format!("CallNamed: no FuncRef for {callee_name}"),
-            function: ctx.func_name.to_string(),
-        }
-    })?;
-    let ret_type =
-        ctx.fn_return_types
-            .get(callee_name)
-            .ok_or_else(|| JitError::UnimplementedInstruction {
+
+    // Try local function first.
+    if let Some(func_ref) = ctx.callee_funcs.get(callee_name).copied() {
+        let ret_type = ctx.fn_return_types.get(callee_name).ok_or_else(|| {
+            JitError::UnimplementedInstruction {
                 instruction: format!("CallNamed: no return type for {callee_name}"),
                 function: ctx.func_name.to_string(),
-            })?;
+            }
+        })?;
 
-    let total_size: u32 = data
-        .args
-        .iter()
-        .map(|arg_id| {
-            let ty = lookup_type(ctx.value_types, *arg_id, ctx.func_name)?;
-            storage_size(ty, ctx.func_name)
-        })
-        .sum::<Result<i32, _>>()?
-        .max(1) as u32;
+        let total_size: u32 = data
+            .args
+            .iter()
+            .map(|arg_id| {
+                let ty = lookup_type(ctx.value_types, *arg_id, ctx.func_name)?;
+                storage_size(ty, ctx.func_name)
+            })
+            .sum::<Result<i32, _>>()?
+            .max(1) as u32;
+
+        let arg_slot = builder.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            total_size,
+            0,
+        ));
+        let args_buf = builder.ins().stack_addr(types::I64, arg_slot, 0);
+
+        let mut offset: i32 = 0;
+        for arg_id in &data.args {
+            let arg_type = lookup_type(ctx.value_types, *arg_id, ctx.func_name)?;
+            if !matches!(arg_type, IrType::Unit) {
+                let arg_val = lookup_value(values, *arg_id, ctx.func_name)?;
+                builder
+                    .ins()
+                    .store(MemFlags::trusted(), arg_val, args_buf, offset);
+            }
+            offset += storage_size(arg_type, ctx.func_name)?;
+        }
+
+        let ret_size = storage_size(ret_type, ctx.func_name)?.max(1) as u32;
+        let ret_slot = builder.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            ret_size,
+            0,
+        ));
+        let ret_buf = builder.ins().stack_addr(types::I64, ret_slot, 0);
+
+        builder.ins().call(func_ref, &[args_buf, ret_buf]);
+
+        let result = load_primitive_value(builder, ret_buf, 0, ret_type, ctx.func_name)?;
+        return Ok(result);
+    }
+
+    // Fall through to builtin bridge when the callee is not a local
+    // function — look it up from the process-wide builtin registry.
+    compile_builtin_call(builder, ctx, callee_name, data, values)
+}
+
+fn compile_builtin_call(
+    builder: &mut FunctionBuilder,
+    ctx: &BlockContext,
+    callee_name: &str,
+    data: &ir::CallNamedData,
+    values: &HashMap<ValueId, Value>,
+) -> Result<Value, JitError> {
+    let ret_type = &data.return_type;
+    let arg_count = data.args.len();
+    let buf_size: u32 = 16 + arg_count as u32 * 12;
 
     let arg_slot = builder.create_sized_stack_slot(StackSlotData::new(
         StackSlotKind::ExplicitSlot,
-        total_size,
+        buf_size,
         0,
     ));
     let args_buf = builder.ins().stack_addr(types::I64, arg_slot, 0);
 
-    let mut offset: i32 = 0;
-    for arg_id in &data.args {
+    // Store name pointer from the pre-declared data object.
+    let name_gv = ctx.builtin_name_globals.get(callee_name).ok_or_else(|| {
+        JitError::UnimplementedInstruction {
+            instruction: format!("CallNamed builtin: no name data for {callee_name}"),
+            function: ctx.func_name.to_string(),
+        }
+    })?;
+    let name_ptr = builder.ins().global_value(types::I64, *name_gv);
+    builder
+        .ins()
+        .store(MemFlags::trusted(), name_ptr, args_buf, 0);
+
+    // Store name length.
+    let name_len = builder.ins().iconst(I32, callee_name.len() as i64);
+    builder
+        .ins()
+        .store(MemFlags::trusted(), name_len, args_buf, 8);
+
+    // Store argument count.
+    let arg_count_val = builder.ins().iconst(I32, arg_count as i64);
+    builder
+        .ins()
+        .store(MemFlags::trusted(), arg_count_val, args_buf, 12);
+
+    // Store each argument as (val: i64, tag: u32).
+    for (i, arg_id) in data.args.iter().enumerate() {
         let arg_type = lookup_type(ctx.value_types, *arg_id, ctx.func_name)?;
         if !matches!(arg_type, IrType::Unit) {
             let arg_val = lookup_value(values, *arg_id, ctx.func_name)?;
+            let widened = widen_to_i64(builder, arg_val, arg_type, ctx.func_name)?;
+            let offset = 16 + i as i32 * 12;
             builder
                 .ins()
-                .store(MemFlags::trusted(), arg_val, args_buf, offset);
+                .store(MemFlags::trusted(), widened, args_buf, offset);
+            let tag =
+                ir_type_tag(arg_type).ok_or_else(|| unsupported_type(ctx.func_name, arg_type))?;
+            let tag_val = builder.ins().iconst(I32, i64::from(tag));
+            builder
+                .ins()
+                .store(MemFlags::trusted(), tag_val, args_buf, offset + 8);
+        } else {
+            // Unit args: store 0 val + tag 12.
+            let zero = builder.ins().iconst(types::I64, 0);
+            let offset = 16 + i as i32 * 12;
+            builder
+                .ins()
+                .store(MemFlags::trusted(), zero, args_buf, offset);
+            let tag_val = builder.ins().iconst(I32, 12);
+            builder
+                .ins()
+                .store(MemFlags::trusted(), tag_val, args_buf, offset + 8);
         }
-        offset += storage_size(arg_type, ctx.func_name)?;
     }
 
-    let ret_size = storage_size(ret_type, ctx.func_name)?.max(1) as u32;
-    let ret_slot = builder.create_sized_stack_slot(StackSlotData::new(
-        StackSlotKind::ExplicitSlot,
-        ret_size,
-        0,
-    ));
+    // Allocate 12-byte return buffer [val: i64, tag: u32].
+    let ret_slot =
+        builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 12, 0));
     let ret_buf = builder.ins().stack_addr(types::I64, ret_slot, 0);
 
-    builder.ins().call(func_ref, &[args_buf, ret_buf]);
+    builder.ins().call_indirect(
+        ctx.call_builtin_sig,
+        ctx.call_builtin_fn_ptr,
+        &[args_buf, ret_buf],
+    );
 
     let result = load_primitive_value(builder, ret_buf, 0, ret_type, ctx.func_name)?;
     Ok(result)
@@ -1280,6 +1468,11 @@ fn storage_type(ty: &IrType, func_name: &str) -> Result<Type, JitError> {
         IrType::Bool => Ok(types::I8),
         IrType::Str => Ok(types::I64),
         IrType::Unit => Ok(I32),
+        IrType::Array(_)
+        | IrType::Record(_)
+        | IrType::Closure(_)
+        | IrType::Tag(_)
+        | IrType::Effect(_) => Ok(types::I64),
         _ => Err(unsupported_type(func_name, ty)),
     }
 }
@@ -1290,6 +1483,11 @@ fn storage_size(ty: &IrType, func_name: &str) -> Result<i32, JitError> {
         IrType::I16 | IrType::U16 => Ok(2),
         IrType::I32 | IrType::U32 | IrType::F32 | IrType::Unit => Ok(4),
         IrType::I64 | IrType::U64 | IrType::Usize | IrType::F64 | IrType::Str => Ok(8),
+        IrType::Array(_)
+        | IrType::Record(_)
+        | IrType::Closure(_)
+        | IrType::Tag(_)
+        | IrType::Effect(_) => Ok(8),
         _ => Err(unsupported_type(func_name, ty)),
     }
 }
@@ -1339,7 +1537,7 @@ fn decode_main_i32(ret_type: &IrType, ret_buf: &[u8; 16]) -> Result<i32, JitErro
         IrType::U32 => {
             Ok(u32::from_ne_bytes([ret_buf[0], ret_buf[1], ret_buf[2], ret_buf[3]]) as i32)
         }
-        IrType::Unit => Ok(0),
+        IrType::Unit | IrType::Effect(_) => Ok(0),
         _ => Err(JitError::UnimplementedInstruction {
             instruction: format!(
                 "call_main does not support lossy return type {ret_type}; use call_main_raw instead"
@@ -1366,30 +1564,36 @@ fn decode_main_i32(ret_type: &IrType, ret_buf: &[u8; 16]) -> Result<i32, JitErro
 ///
 /// For `Str` the value is a pointer to length‑prefixed UTF‑8 bytes:
 /// bytes 0–3 store the length as `u32`, followed by the string content.
+/// External function called by `Println` JIT code (when emitted).
+/// Uses `libc::write` to respect `dup2` redirection for test capture.
 #[unsafe(no_mangle)]
 unsafe extern "C" fn __pipe_println(args: *const u8, ret: *mut u8) -> i32 {
     let raw = unsafe { std::ptr::read_unaligned(args as *const i64) };
     let type_tag = unsafe { std::ptr::read_unaligned(args.add(8) as *const u32) };
-    match type_tag {
-        0 => println!("{}", raw as i8),
-        1 => println!("{}", raw as i16),
-        2 => println!("{}", raw as i32),
-        3 => println!("{}", raw),
-        4 => println!("{}", raw as u8),
-        5 => println!("{}", raw as u16),
-        6 => println!("{}", raw as u32),
-        7 => println!("{}", raw as u64),
-        8 => println!("{}", f32::from_bits(raw as u32)),
-        9 => println!("{}", f64::from_bits(raw as u64)),
-        10 => println!("{}", raw != 0),
+    let s = match type_tag {
+        0 => format!("{}", raw as i8),
+        1 => format!("{}", raw as i16),
+        2 => format!("{}", raw as i32),
+        3 => format!("{}", raw),
+        4 => format!("{}", raw as u8),
+        5 => format!("{}", raw as u16),
+        6 => format!("{}", raw as u32),
+        7 => format!("{}", raw as u64),
+        8 => format!("{}", f32::from_bits(raw as u32)),
+        9 => format!("{}", f64::from_bits(raw as u64)),
+        10 => format!("{}", raw != 0),
         11 => {
             let ptr = raw as *const u8;
             let len = unsafe { std::ptr::read_unaligned(ptr as *const u32) } as usize;
             let bytes = unsafe { std::slice::from_raw_parts(ptr.add(4), len) };
             let s = unsafe { std::str::from_utf8_unchecked(bytes) };
-            println!("{s}");
+            s.to_string()
         }
-        _ => {}
+        _ => String::new(),
+    };
+    let output = if s.is_empty() { s } else { s + "\n" };
+    unsafe {
+        libc::write(1, output.as_ptr() as *const libc::c_void, output.len().try_into().expect("output length exceeds u32"));
     }
     unsafe {
         *(ret as *mut i32) = 0;
@@ -1468,7 +1672,104 @@ fn ir_type_tag(ty: &IrType) -> Option<u32> {
         IrType::Bool => Some(10),
         IrType::Str => Some(11),
         IrType::Unit => Some(12),
+        IrType::Effect(_) => Some(15),
         _ => None,
+    }
+}
+
+/// Runtime helper dispatched by the JIT when `CallNamed` targets a
+/// registered builtin instead of a local function.
+///
+/// # Safety
+///
+/// `args` points to a buffer in this layout:
+///   - bytes 0–7:   `u64` pointer to len-prefixed name string data
+///   - bytes 8–11:  `u32` name length (redundant, for validation)
+///   - bytes 12–15: `u32` count of arguments
+///   - bytes 16+:   for each arg: value as `i64` (8 bytes) then type tag
+///     as `u32` (4 bytes)
+///
+/// `ret` points to a 12-byte buffer receiving the result in
+/// `[val: i64, tag: u32]` layout.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn pipe_rt_call_builtin(args: *const u8, ret: *mut u8) -> i32 {
+    use crate::value::Value as RuntimeValue;
+
+    let name_ptr = unsafe { std::ptr::read_unaligned(args as *const u64) };
+    let name_len = unsafe { std::ptr::read_unaligned(args.add(8) as *const u32) } as usize;
+    let arg_count = unsafe { std::ptr::read_unaligned(args.add(12) as *const u32) } as usize;
+
+    let name_bytes =
+        unsafe { std::slice::from_raw_parts((name_ptr as *const u8).add(4), name_len) };
+    let name = unsafe { std::str::from_utf8_unchecked(name_bytes) };
+
+    let mut vals = Vec::with_capacity(arg_count);
+    for i in 0..arg_count {
+        let base = unsafe { args.add(16 + i * 12) };
+        let raw = unsafe { std::ptr::read_unaligned(base as *const i64) };
+        let tag = unsafe { std::ptr::read_unaligned(base.add(8) as *const u32) };
+        let value = match tag {
+            0..=2 => RuntimeValue::I32(raw as i32),
+            3 => RuntimeValue::I64(raw),
+            4..=5 => RuntimeValue::I32(raw as i32),
+            6 => RuntimeValue::I64(i64::from(raw as u32)),
+            7 => RuntimeValue::I64(raw),
+            8 => RuntimeValue::F64(f64::from(f32::from_bits(raw as u32))),
+            9 => RuntimeValue::F64(f64::from_bits(raw as u64)),
+            10 => RuntimeValue::Bool(raw != 0),
+            11 => {
+                let ptr = raw as *const u8;
+                let len = unsafe { std::ptr::read_unaligned(ptr as *const u32) } as usize;
+                let bytes = unsafe { std::slice::from_raw_parts(ptr.add(4), len) };
+                let s = unsafe { std::str::from_utf8_unchecked(bytes) };
+                RuntimeValue::str(s.to_owned())
+            }
+            _ => RuntimeValue::Unit,
+        };
+        vals.push(value);
+    }
+
+    let result = crate::bridge::global_registry().execute(name, &vals);
+    match result {
+        Ok(value) => {
+            value_to_ret_buf(value, ret);
+            0
+        }
+        Err(msg) => {
+            unsafe {
+                std::ptr::write_unaligned(ret as *mut i64, 0i64);
+                std::ptr::write_unaligned(ret.add(8) as *mut u32, 0u32);
+            }
+            tracing::error!("builtin `{name}` failed: {msg}");
+            1
+        }
+    }
+}
+
+/// Encodes a [`crate::value::Value`] into the 12-byte `[val: i64, tag: u32]`
+/// ret buffer expected by the JIT's builtin call bridge.
+fn value_to_ret_buf(value: crate::value::Value, ret: *mut u8) {
+    use crate::value::Value as RuntimeValue;
+    let (raw, tag): (i64, u32) = match value {
+        RuntimeValue::I32(n) => (n as i64, 2),
+        RuntimeValue::I64(n) => (n, 3),
+        RuntimeValue::F64(f) => (f.to_bits() as i64, 9),
+        RuntimeValue::Bool(b) => (i64::from(b), 10),
+        RuntimeValue::Unit => (0, 12),
+        RuntimeValue::Str(s) => {
+            let bytes = s.as_bytes();
+            let len = bytes.len() as u32;
+            let mut buf = Vec::with_capacity(4 + bytes.len());
+            buf.extend_from_slice(&len.to_ne_bytes());
+            buf.extend_from_slice(bytes);
+            let ptr = Box::leak(buf.into_boxed_slice()).as_ptr();
+            (ptr as i64, 11)
+        }
+        _ => (0, 0),
+    };
+    unsafe {
+        std::ptr::write_unaligned(ret as *mut i64, raw);
+        std::ptr::write_unaligned(ret.add(8) as *mut u32, tag);
     }
 }
 

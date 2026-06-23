@@ -20,8 +20,13 @@ clap = { version = "4.6.1", features = ["derive"] }
 diagnostics = { version = "0.1.0", path = "../diagnostics" }
 ir = { version = "0.1.0", path = "../ir" }
 miette = { version = "7.6.0", features = ["fancy-no-backtrace"] }
+pipe-lang-lsp = { version = "0.1.0", path = "../pipe-lang-lsp" }
+tokio = { version = "1.48.0", features = ["rt", "io-std", "macros"] }
+tower-lsp = "0.20.0"
 lexer = { version = "0.1.0", path = "../lexer" }
 parser = { version = "0.1.0", path = "../parser" }
 runtime = { version = "0.1.0", path = "../runtime" }
 stdlib = { version = "0.1.0", path = "../stdlib" }
 typechecker = { version = "0.1.0", path = "../typechecker" }
+
+

@@ -1,0 +1,44 @@
+=== Markdown to HTML Renderer ===
+
+Document stats:
+  Blocks: 11
+  Inlines in paragraphs: 9
+
+=== Generated HTML ===
+<!DOCTYPE html>
+<html>
+<head>
+  <title>pipe-lang Documentation</title>
+  <style>
+    body { font-family: sans-serif; max-width: 800px; margin: 0 auto; padding: 2em; }
+    code { background: #f0f0f0; padding: 2px 4px; border-radius: 3px; }
+    pre { background: #f5f5f5; padding: 1em; border-radius: 5px; overflow-x: auto; }
+    hr { border: none; border-top: 1px solid #ccc; margin: 2em 0; }
+  </style>
+</head>
+<body>
+<h1>Welcome to pipe-lang</h1>
+<p>pipe-lang is a <strong>functional</strong> programming language with <code>Effect&lt;T&gt;</code> for side effects.</p>
+<h2>Features</h2>
+<p>Here are some key features:</p>
+<li>Hindley-Milner type inference</li>
+<li>Algebraic data types with pattern matching</li>
+<li>First-class functions and closures</li>
+<li>Effect system for pure/impure separation</li>
+<li>JIT compilation via Cranelift</li>
+<hr>
+<h2>Code Example</h2>
+<pre><code class="language-pipe-lang">
+let factorial = (n) => match n {
+    0 => 1
+    1 => 1
+    n => n * factorial(n - 1)
+}
+
+let main = () => println(factorial(5))
+</code></pre>
+<p>The <code>factorial</code> function demonstrates recursion and pattern matching.</p>
+<h3>More Information</h3>
+<p>Visit the <a href="https://pipe-lang.dev/docs">documentation</a> for more details.</p>
+</body>
+</html>

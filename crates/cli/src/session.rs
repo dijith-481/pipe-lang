@@ -87,7 +87,7 @@ fn failure_from_errors(
     CompileResult {
         diagnostics,
         success: false,
-        exit_code: 0,
+        exit_code: 1,
     }
 }
 

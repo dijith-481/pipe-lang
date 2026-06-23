@@ -3,11 +3,11 @@
 // the self-reference; non-recursive helpers stay inferred.
 
 let quicksort : (Array<i32>) -> Array<i32> = (arr) => match arr.len() {
-    0 => []
-    1 => [arr[0]]
+    0usize => []
+    1usize => [arr[0usize]]
     _ => {
-        let pivot = arr[0]
-        let rest = arr.drop(1)
+        let pivot = arr[0usize]
+        let rest = arr.drop(1usize)
         let less = rest.filter((x) => x <= pivot)
         let greater = rest.filter((x) => x > pivot)
         quicksort(less).concat([pivot]).concat(quicksort(greater))
@@ -16,27 +16,27 @@ let quicksort : (Array<i32>) -> Array<i32> = (arr) => match arr.len() {
 
 // Merge sort — divide and conquer
 let split = (arr) => {
-    let mid = arr.len() / 2
+    let mid = arr.len() / 2usize
     (arr.take(mid), arr.drop(mid))
 }
 
 let merge : (Array<i32>, Array<i32>) -> Array<i32> = (a, b) => match (a.len(), b.len()) {
-    (0, _) => b
-    (_, 0) => a
+    (0usize, _) => b
+    (_, 0usize) => a
     _ => {
-        let aHead = a[0]
-        let bHead = b[0]
+        let aHead = a[0usize]
+        let bHead = b[0usize]
         if aHead <= bHead {
-            [aHead].concat(merge(a.drop(1), b))
+            [aHead].concat(merge(a.drop(1usize), b))
         } else {
-            [bHead].concat(merge(a, b.drop(1)))
+            [bHead].concat(merge(a, b.drop(1usize)))
         }
     }
 }
 
 let mergesort : (Array<i32>) -> Array<i32> = (arr) => match arr.len() {
-    0 => []
-    1 => [arr[0]]
+    0usize => []
+    1usize => [arr[0usize]]
     _ => {
         let (left, right) = split(arr)
         merge(mergesort(left), mergesort(right))

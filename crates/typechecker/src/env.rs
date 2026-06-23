@@ -310,6 +310,577 @@ impl TypeEnv {
             },
         );
         self.insert("apply", apply_type);
+
+        // ====================================================================
+        // I/O builtins
+        // ====================================================================
+
+        // println : (str) -> Effect<()>
+        self.insert(
+            "println",
+            PolyType::mono(MonoType::Func {
+                params: Rc::from([MonoType::Str]),
+                ret: Rc::new(MonoType::Effect(Box::new(MonoType::Unit))),
+            }),
+        );
+
+        // print : (str) -> Effect<()>
+        self.insert(
+            "print",
+            PolyType::mono(MonoType::Func {
+                params: Rc::from([MonoType::Str]),
+                ret: Rc::new(MonoType::Effect(Box::new(MonoType::Unit))),
+            }),
+        );
+
+        // read_line : () -> Effect<str>
+        self.insert(
+            "read_line",
+            PolyType::mono(MonoType::Func {
+                params: Rc::from([]),
+                ret: Rc::new(MonoType::Effect(Box::new(MonoType::Str))),
+            }),
+        );
+
+        // read_file : (str) -> Effect<Result<str, str>>
+        // Result payload: [T, E] = [str, str]
+        self.insert(
+            "read_file",
+            PolyType::mono(MonoType::Func {
+                params: Rc::from([MonoType::Str]),
+                ret: Rc::new(MonoType::Effect(Box::new(MonoType::Tag {
+                    name: "Result".into(),
+                    payload: Rc::from([MonoType::Str, MonoType::Str]),
+                }))),
+            }),
+        );
+
+        // ====================================================================
+        // Effect combinators
+        // ====================================================================
+
+        // Effect.map : <a, b>(Effect<a>, (a) -> b) -> Effect<b>
+        let em_a = self.fresh_var();
+        let em_b = self.fresh_var();
+        self.insert(
+            "Effect.map",
+            PolyType::poly(
+                vec![em_a, em_b],
+                MonoType::Func {
+                    params: Rc::from([
+                        MonoType::Effect(Box::new(MonoType::Var(em_a))),
+                        MonoType::Func {
+                            params: Rc::from([MonoType::Var(em_a)]),
+                            ret: Rc::new(MonoType::Var(em_b)),
+                        },
+                    ]),
+                    ret: Rc::new(MonoType::Effect(Box::new(MonoType::Var(em_b)))),
+                },
+            ),
+        );
+
+        // Effect.flat_map : <a, b>(Effect<a>, (a) -> Effect<b>) -> Effect<b>
+        let efm_a = self.fresh_var();
+        let efm_b = self.fresh_var();
+        self.insert(
+            "Effect.flat_map",
+            PolyType::poly(
+                vec![efm_a, efm_b],
+                MonoType::Func {
+                    params: Rc::from([
+                        MonoType::Effect(Box::new(MonoType::Var(efm_a))),
+                        MonoType::Func {
+                            params: Rc::from([MonoType::Var(efm_a)]),
+                            ret: Rc::new(MonoType::Effect(Box::new(MonoType::Var(efm_b)))),
+                        },
+                    ]),
+                    ret: Rc::new(MonoType::Effect(Box::new(MonoType::Var(efm_b)))),
+                },
+            ),
+        );
+
+        // ====================================================================
+        // Array builtins
+        // ====================================================================
+
+        // map : <a, b>(Array<a>, (a) -> b) -> Array<b>
+        let map_a = self.fresh_var();
+        let map_b = self.fresh_var();
+        self.insert(
+            "map",
+            PolyType::poly(
+                vec![map_a, map_b],
+                MonoType::Func {
+                    params: Rc::from([
+                        MonoType::Array(Rc::new(MonoType::Var(map_a))),
+                        MonoType::Func {
+                            params: Rc::from([MonoType::Var(map_a)]),
+                            ret: Rc::new(MonoType::Var(map_b)),
+                        },
+                    ]),
+                    ret: Rc::new(MonoType::Array(Rc::new(MonoType::Var(map_b)))),
+                },
+            ),
+        );
+
+        // filter : <a>(Array<a>, (a) -> Bool) -> Array<a>
+        let filter_a = self.fresh_var();
+        self.insert(
+            "filter",
+            PolyType::poly(
+                vec![filter_a],
+                MonoType::Func {
+                    params: Rc::from([
+                        MonoType::Array(Rc::new(MonoType::Var(filter_a))),
+                        MonoType::Func {
+                            params: Rc::from([MonoType::Var(filter_a)]),
+                            ret: Rc::new(MonoType::Bool),
+                        },
+                    ]),
+                    ret: Rc::new(MonoType::Array(Rc::new(MonoType::Var(filter_a)))),
+                },
+            ),
+        );
+
+        // fold : <a, b>(Array<a>, b, (b, a) -> b) -> b
+        let fold_a = self.fresh_var();
+        let fold_b = self.fresh_var();
+        self.insert(
+            "fold",
+            PolyType::poly(
+                vec![fold_a, fold_b],
+                MonoType::Func {
+                    params: Rc::from([
+                        MonoType::Array(Rc::new(MonoType::Var(fold_a))),
+                        MonoType::Var(fold_b),
+                        MonoType::Func {
+                            params: Rc::from([MonoType::Var(fold_b), MonoType::Var(fold_a)]),
+                            ret: Rc::new(MonoType::Var(fold_b)),
+                        },
+                    ]),
+                    ret: Rc::new(MonoType::Var(fold_b)),
+                },
+            ),
+        );
+
+        // flat_map : <a, b>(Array<a>, (a) -> Array<b>) -> Array<b>
+        let flata = self.fresh_var();
+        let flatb = self.fresh_var();
+        self.insert(
+            "flat_map",
+            PolyType::poly(
+                vec![flata, flatb],
+                MonoType::Func {
+                    params: Rc::from([
+                        MonoType::Array(Rc::new(MonoType::Var(flata))),
+                        MonoType::Func {
+                            params: Rc::from([MonoType::Var(flata)]),
+                            ret: Rc::new(MonoType::Array(Rc::new(MonoType::Var(flatb)))),
+                        },
+                    ]),
+                    ret: Rc::new(MonoType::Array(Rc::new(MonoType::Var(flatb)))),
+                },
+            ),
+        );
+
+        // len : <a>(Array<a>) -> Usize
+        let len_a = self.fresh_var();
+        self.insert(
+            "len",
+            PolyType::poly(
+                vec![len_a],
+                MonoType::Func {
+                    params: Rc::from([MonoType::Array(Rc::new(MonoType::Var(len_a)))]),
+                    ret: Rc::new(MonoType::Usize),
+                },
+            ),
+        );
+
+        // concat : <a>(Array<a>, Array<a>) -> Array<a>
+        let concat_a = self.fresh_var();
+        self.insert(
+            "concat",
+            PolyType::poly(
+                vec![concat_a],
+                MonoType::Func {
+                    params: Rc::from([
+                        MonoType::Array(Rc::new(MonoType::Var(concat_a))),
+                        MonoType::Array(Rc::new(MonoType::Var(concat_a))),
+                    ]),
+                    ret: Rc::new(MonoType::Array(Rc::new(MonoType::Var(concat_a)))),
+                },
+            ),
+        );
+
+        // prepend : <a>(Array<a>, a) -> Array<a>
+        let prepend_a = self.fresh_var();
+        self.insert(
+            "prepend",
+            PolyType::poly(
+                vec![prepend_a],
+                MonoType::Func {
+                    params: Rc::from([
+                        MonoType::Array(Rc::new(MonoType::Var(prepend_a))),
+                        MonoType::Var(prepend_a),
+                    ]),
+                    ret: Rc::new(MonoType::Array(Rc::new(MonoType::Var(prepend_a)))),
+                },
+            ),
+        );
+
+        // head : <a>(Array<a>) -> Option<a>
+        let head_a = self.fresh_var();
+        self.insert(
+            "head",
+            PolyType::poly(
+                vec![head_a],
+                MonoType::Func {
+                    params: Rc::from([MonoType::Array(Rc::new(MonoType::Var(head_a)))]),
+                    ret: Rc::new(MonoType::Tag {
+                        name: "Option".into(),
+                        payload: Rc::from([MonoType::Var(head_a)]),
+                    }),
+                },
+            ),
+        );
+
+        // tail : <a>(Array<a>) -> Option<Array<a>>
+        let tail_a = self.fresh_var();
+        self.insert(
+            "tail",
+            PolyType::poly(
+                vec![tail_a],
+                MonoType::Func {
+                    params: Rc::from([MonoType::Array(Rc::new(MonoType::Var(tail_a)))]),
+                    ret: Rc::new(MonoType::Tag {
+                        name: "Option".into(),
+                        payload: Rc::from([MonoType::Array(Rc::new(MonoType::Var(tail_a)))]),
+                    }),
+                },
+            ),
+        );
+
+        // ====================================================================
+        // String methods
+        // ====================================================================
+
+        // Str.concat : (str, str) -> str
+        self.insert(
+            "Str.concat",
+            PolyType::mono(MonoType::Func {
+                params: Rc::from([MonoType::Str, MonoType::Str]),
+                ret: Rc::new(MonoType::Str),
+            }),
+        );
+
+        // Str.len : (str) -> Usize
+        self.insert(
+            "Str.len",
+            PolyType::mono(MonoType::Func {
+                params: Rc::from([MonoType::Str]),
+                ret: Rc::new(MonoType::Usize),
+            }),
+        );
+
+        // Str.split : (str, str) -> Array<str>
+        self.insert(
+            "Str.split",
+            PolyType::mono(MonoType::Func {
+                params: Rc::from([MonoType::Str, MonoType::Str]),
+                ret: Rc::new(MonoType::Array(Rc::new(MonoType::Str))),
+            }),
+        );
+
+        // Str.trim : (str) -> str
+        self.insert(
+            "Str.trim",
+            PolyType::mono(MonoType::Func {
+                params: Rc::from([MonoType::Str]),
+                ret: Rc::new(MonoType::Str),
+            }),
+        );
+
+        // Str.parse_i32 : (str) -> Result<i32, str>
+        self.insert(
+            "Str.parse_i32",
+            PolyType::mono(MonoType::Func {
+                params: Rc::from([MonoType::Str]),
+                ret: Rc::new(MonoType::Tag {
+                    name: "Result".into(),
+                    payload: Rc::from([MonoType::I32, MonoType::Str]),
+                }),
+            }),
+        );
+
+        // ====================================================================
+        // Option methods
+        // ====================================================================
+
+        // Option.map : <a, b>(Option<a>, (a) -> b) -> Option<b>
+        let om_a = self.fresh_var();
+        let om_b = self.fresh_var();
+        self.insert(
+            "Option.map",
+            PolyType::poly(
+                vec![om_a, om_b],
+                MonoType::Func {
+                    params: Rc::from([
+                        MonoType::Tag {
+                            name: "Option".into(),
+                            payload: Rc::from([MonoType::Var(om_a)]),
+                        },
+                        MonoType::Func {
+                            params: Rc::from([MonoType::Var(om_a)]),
+                            ret: Rc::new(MonoType::Var(om_b)),
+                        },
+                    ]),
+                    ret: Rc::new(MonoType::Tag {
+                        name: "Option".into(),
+                        payload: Rc::from([MonoType::Var(om_b)]),
+                    }),
+                },
+            ),
+        );
+
+        // Option.flat_map : <a, b>(Option<a>, (a) -> Option<b>) -> Option<b>
+        let ofm_a = self.fresh_var();
+        let ofm_b = self.fresh_var();
+        self.insert(
+            "Option.flat_map",
+            PolyType::poly(
+                vec![ofm_a, ofm_b],
+                MonoType::Func {
+                    params: Rc::from([
+                        MonoType::Tag {
+                            name: "Option".into(),
+                            payload: Rc::from([MonoType::Var(ofm_a)]),
+                        },
+                        MonoType::Func {
+                            params: Rc::from([MonoType::Var(ofm_a)]),
+                            ret: Rc::new(MonoType::Tag {
+                                name: "Option".into(),
+                                payload: Rc::from([MonoType::Var(ofm_b)]),
+                            }),
+                        },
+                    ]),
+                    ret: Rc::new(MonoType::Tag {
+                        name: "Option".into(),
+                        payload: Rc::from([MonoType::Var(ofm_b)]),
+                    }),
+                },
+            ),
+        );
+
+        // Option.unwrap_or : <a>(Option<a>, a) -> a
+        let uo_a = self.fresh_var();
+        self.insert(
+            "Option.unwrap_or",
+            PolyType::poly(
+                vec![uo_a],
+                MonoType::Func {
+                    params: Rc::from([
+                        MonoType::Tag {
+                            name: "Option".into(),
+                            payload: Rc::from([MonoType::Var(uo_a)]),
+                        },
+                        MonoType::Var(uo_a),
+                    ]),
+                    ret: Rc::new(MonoType::Var(uo_a)),
+                },
+            ),
+        );
+
+        // ====================================================================
+        // Result methods
+        // ====================================================================
+
+        // Result.map : <t, e, u>(Result<t, e>, (t) -> u) -> Result<u, e>
+        let rm_t = self.fresh_var();
+        let rm_e = self.fresh_var();
+        let rm_u = self.fresh_var();
+        self.insert(
+            "Result.map",
+            PolyType::poly(
+                vec![rm_t, rm_e, rm_u],
+                MonoType::Func {
+                    params: Rc::from([
+                        MonoType::Tag {
+                            name: "Result".into(),
+                            payload: Rc::from([MonoType::Var(rm_t), MonoType::Var(rm_e)]),
+                        },
+                        MonoType::Func {
+                            params: Rc::from([MonoType::Var(rm_t)]),
+                            ret: Rc::new(MonoType::Var(rm_u)),
+                        },
+                    ]),
+                    ret: Rc::new(MonoType::Tag {
+                        name: "Result".into(),
+                        payload: Rc::from([MonoType::Var(rm_u), MonoType::Var(rm_e)]),
+                    }),
+                },
+            ),
+        );
+
+        // Result.flat_map : <t, e, u>(Result<t, e>, (t) -> Result<u, e>) -> Result<u, e>
+        let rfm_t = self.fresh_var();
+        let rfm_e = self.fresh_var();
+        let rfm_u = self.fresh_var();
+        self.insert(
+            "Result.flat_map",
+            PolyType::poly(
+                vec![rfm_t, rfm_e, rfm_u],
+                MonoType::Func {
+                    params: Rc::from([
+                        MonoType::Tag {
+                            name: "Result".into(),
+                            payload: Rc::from([MonoType::Var(rfm_t), MonoType::Var(rfm_e)]),
+                        },
+                        MonoType::Func {
+                            params: Rc::from([MonoType::Var(rfm_t)]),
+                            ret: Rc::new(MonoType::Tag {
+                                name: "Result".into(),
+                                payload: Rc::from([MonoType::Var(rfm_u), MonoType::Var(rfm_e)]),
+                            }),
+                        },
+                    ]),
+                    ret: Rc::new(MonoType::Tag {
+                        name: "Result".into(),
+                        payload: Rc::from([MonoType::Var(rfm_u), MonoType::Var(rfm_e)]),
+                    }),
+                },
+            ),
+        );
+
+        // ====================================================================
+        // Numeric conversion functions
+        // ====================================================================
+
+        // to_i64 : (i32) -> i64
+        self.insert(
+            "to_i64",
+            PolyType::mono(MonoType::Func {
+                params: Rc::from([MonoType::I32]),
+                ret: Rc::new(MonoType::I64),
+            }),
+        );
+
+        // to_i32 : (Usize) -> i32
+        self.insert(
+            "to_i32",
+            PolyType::mono(MonoType::Func {
+                params: Rc::from([MonoType::Usize]),
+                ret: Rc::new(MonoType::I32),
+            }),
+        );
+
+        // to_usize : (i32) -> Usize
+        self.insert(
+            "to_usize",
+            PolyType::mono(MonoType::Func {
+                params: Rc::from([MonoType::I32]),
+                ret: Rc::new(MonoType::Usize),
+            }),
+        );
+
+        // to_f64 : (i32) -> f64
+        self.insert(
+            "to_f64",
+            PolyType::mono(MonoType::Func {
+                params: Rc::from([MonoType::I32]),
+                ret: Rc::new(MonoType::F64),
+            }),
+        );
+
+        // to_str : (i32) -> str
+        self.insert(
+            "to_str",
+            PolyType::mono(MonoType::Func {
+                params: Rc::from([MonoType::I32]),
+                ret: Rc::new(MonoType::Str),
+            }),
+        );
+
+        // I64.to_str : (i64) -> str
+        self.insert(
+            "I64.to_str",
+            PolyType::mono(MonoType::Func {
+                params: Rc::from([MonoType::I64]),
+                ret: Rc::new(MonoType::Str),
+            }),
+        );
+
+        // F64.to_str : (f64) -> str
+        self.insert(
+            "F64.to_str",
+            PolyType::mono(MonoType::Func {
+                params: Rc::from([MonoType::F64]),
+                ret: Rc::new(MonoType::Str),
+            }),
+        );
+
+        // ====================================================================
+        // Additional builtins needed by example programs
+        // ====================================================================
+
+        // drop : <a>(Array<a>, Usize) -> Array<a>
+        let drop_a = self.fresh_var();
+        self.insert(
+            "drop",
+            PolyType::poly(
+                vec![drop_a],
+                MonoType::Func {
+                    params: Rc::from([
+                        MonoType::Array(Rc::new(MonoType::Var(drop_a))),
+                        MonoType::Usize,
+                    ]),
+                    ret: Rc::new(MonoType::Array(Rc::new(MonoType::Var(drop_a)))),
+                },
+            ),
+        );
+
+        // take : <a>(Array<a>, Usize) -> Array<a>
+        let take_a = self.fresh_var();
+        self.insert(
+            "take",
+            PolyType::poly(
+                vec![take_a],
+                MonoType::Func {
+                    params: Rc::from([
+                        MonoType::Array(Rc::new(MonoType::Var(take_a))),
+                        MonoType::Usize,
+                    ]),
+                    ret: Rc::new(MonoType::Array(Rc::new(MonoType::Var(take_a)))),
+                },
+            ),
+        );
+
+        // sqrt : (f64) -> f64
+        self.insert(
+            "sqrt",
+            PolyType::mono(MonoType::Func {
+                params: Rc::from([MonoType::F64]),
+                ret: Rc::new(MonoType::F64),
+            }),
+        );
+
+        // unwrap : <a>(Option<a>, a) -> a   (or Result, uses tag dispatch)
+        let unwrap_a = self.fresh_var();
+        self.insert(
+            "unwrap",
+            PolyType::poly(
+                vec![unwrap_a],
+                MonoType::Func {
+                    params: Rc::from([
+                        MonoType::Tag {
+                            name: "Option".into(),
+                            payload: Rc::from([MonoType::Var(unwrap_a)]),
+                        },
+                        MonoType::Var(unwrap_a),
+                    ]),
+                    ret: Rc::new(MonoType::Var(unwrap_a)),
+                },
+            ),
+        );
     }
 }
 
@@ -417,5 +988,65 @@ mod tests {
         let id_type = env.lookup("id").unwrap();
         assert!(id_type.quantified.len() == 1); // <a>
         assert!(matches!(id_type.body, MonoType::Func { .. }));
+    }
+
+    #[test]
+    fn load_prelude_has_all_builtin_names() {
+        let mut env = TypeEnv::new();
+        env.load_prelude();
+        for name in &[
+            "println",
+            "print",
+            "read_line",
+            "read_file",
+            "map",
+            "filter",
+            "fold",
+            "flat_map",
+            "concat",
+            "prepend",
+            "len",
+            "head",
+            "tail",
+            "Str.concat",
+            "Str.len",
+            "Str.split",
+            "Str.trim",
+            "Str.parse_i32",
+            "Option.map",
+            "Option.flat_map",
+            "Option.unwrap_or",
+            "Result.map",
+            "Result.flat_map",
+            "Effect.map",
+            "Effect.flat_map",
+            "to_i64",
+            "to_i32",
+            "to_f64",
+            "to_str",
+            "I64.to_str",
+            "F64.to_str",
+            "drop",
+            "take",
+            "sqrt",
+            "unwrap",
+        ] {
+            assert!(env.contains(name), "missing prelude binding: {name}");
+        }
+    }
+
+    #[test]
+    fn load_prelude_map_is_polymorphic() {
+        let mut env = TypeEnv::new();
+        env.load_prelude();
+        let map_ty = env.lookup("map").unwrap();
+        assert_eq!(map_ty.quantified.len(), 2);
+    }
+
+    #[test]
+    fn load_prelude_option_map_is_qualified() {
+        let mut env = TypeEnv::new();
+        env.load_prelude();
+        assert!(env.contains("Option.map"));
     }
 }

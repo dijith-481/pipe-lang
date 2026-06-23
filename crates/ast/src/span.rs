@@ -45,6 +45,12 @@ impl Span {
         self.start == self.end
     }
 
+    /// Returns true if `byte_offset` falls within this span.
+    #[must_use]
+    pub fn contains(self, byte_offset: usize) -> bool {
+        self.start <= byte_offset && byte_offset < self.end
+    }
+
     /// Extracts the source text for this span from the given source string.
     ///
     /// # Panics

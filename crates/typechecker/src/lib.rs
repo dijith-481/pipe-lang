@@ -1,12 +1,15 @@
 pub mod env;
 pub mod error;
+pub mod exhaustiveness;
 pub mod infer;
 pub mod types;
 pub mod unify;
 
 pub use crate::env::{TagVariants, TypeEnv};
 pub use crate::error::TypeError;
-pub use crate::infer::{infer_decl, infer_expr};
+pub use crate::infer::{
+    infer_decl, infer_expr, type_expr_to_mono_with_env, type_expr_to_mono_with_generics,
+};
 pub use crate::types::{MonoType, PolyType, TypeId};
 pub use crate::unify::{Substitution, unify};
 
@@ -77,7 +80,7 @@ fn forward_declare_top_level<'a>(env: &mut TypeEnv, ast: &Program<'a>) {
         {
             // If there's a type annotation, use it directly.
             if let Some(ann) = annotation
-                && let Ok(mono) = infer::type_expr_to_mono(ann)
+                && let Ok(mono) = infer::type_expr_to_mono_with_generics(env, ann)
             {
                 env.insert(*name, PolyType::mono(mono));
                 continue;
@@ -89,7 +92,8 @@ fn forward_declare_top_level<'a>(env: &mut TypeEnv, ast: &Program<'a>) {
                     .iter()
                     .map(|p| {
                         if let Some(ann) = p.ty {
-                            infer::type_expr_to_mono(ann).unwrap_or(MonoType::Var(env.fresh_var()))
+                            infer::type_expr_to_mono_with_env(env, ann)
+                                .unwrap_or(MonoType::Var(env.fresh_var()))
                         } else {
                             MonoType::Var(env.fresh_var())
                         }

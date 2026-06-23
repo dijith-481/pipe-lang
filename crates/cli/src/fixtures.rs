@@ -16,6 +16,7 @@
 //! individual test functions verify only the loader and diffing
 //! logic; the end-to-end test is added on Day 10.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// A single test fixture: source file + expected stdout.
@@ -112,18 +113,48 @@ pub struct RunResult {
 
 /// Runs a single fixture end-to-end and returns the captured output.
 ///
-/// **Status:** the function signature is stable; the implementation
-/// is filled in on Day 10 once Track A (parser/typechecker/lowerer) is
-/// ready. For now, it returns a stub result that reads the source
-/// (so the loader path is exercised) but does not yet execute code.
-pub fn run_fixture(_fixture: &Fixture) -> RunResult {
-    // Day 10 hook: replace this stub with the real pipeline.
-    // For now we run the binary as a subprocess so the integration
-    // test exercises the same path that the user will.
-    RunResult {
-        stdout: String::new(),
-        stderr: String::new(),
-        exit_code: 0,
+/// Runs the full lex → parse → typecheck → lower → JIT → execute
+/// pipeline, captures stdout via the runtime capture API, and returns
+/// the result.
+///
+/// # Panics
+///
+/// Panics if reading the fixture source fails.
+pub fn run_fixture(fixture: &Fixture) -> RunResult {
+    let source = fixture
+        .read_source()
+        .expect("fixture source should be readable");
+
+    // Enable global output capture in the runtime. Builtins like `println`
+    // will append to this buffer instead of writing to fd 1.
+    runtime::enable_capture();
+
+    // Run the pipeline.
+    let config = crate::session::SessionConfig::new(fixture.source.clone())
+        .with_mode(crate::session::CompileMode::Run);
+    let mut session_handle = crate::session::CompilerSession::new(config);
+    session_handle.set_source(source);
+
+    // Flush stdout before running so libtest's buffered output doesn't
+    // get mixed with ours. This is harmless — we already enabled capture.
+    let _ = std::io::stdout().flush();
+
+    let result = session_handle.run_pipeline();
+
+    // Disable capture and retrieve the accumulated output.
+    let stdout_output = runtime::disable_capture();
+
+    match result {
+        Ok(res) => RunResult {
+            stdout: stdout_output,
+            stderr: String::new(),
+            exit_code: res.exit_code,
+        },
+        Err(diag) => RunResult {
+            stdout: stdout_output,
+            stderr: format!("{diag:?}"),
+            exit_code: 1,
+        },
     }
 }
 
@@ -205,14 +236,20 @@ mod tests {
     }
 
     #[test]
-    fn discover_fixtures_finds_14_example_programs() {
+    fn discover_fixtures_finds_20_example_programs() {
         let fixtures = discover_fixtures(&examples_dir()).expect("discover");
         let names: Vec<_> = fixtures.iter().map(|f| f.name.clone()).collect();
-        assert_eq!(fixtures.len(), 14, "found: {names:?}");
+        assert_eq!(fixtures.len(), 20, "found: {names:?}");
         assert!(names.contains(&"hello".to_string()));
         assert!(names.contains(&"factorial".to_string()));
         assert!(names.contains(&"io-effects".to_string()));
         assert!(names.contains(&"state-machine".to_string()));
+        assert!(names.contains(&"expression-evaluator".to_string()));
+        assert!(names.contains(&"csv-query".to_string()));
+        assert!(names.contains(&"json-parser".to_string()));
+        assert!(names.contains(&"pathfinding-bfs".to_string()));
+        assert!(names.contains(&"tiny-repl".to_string()));
+        assert!(names.contains(&"markdown-renderer".to_string()));
     }
 
     #[test]
@@ -234,16 +271,18 @@ mod tests {
     }
 
     #[test]
-    fn missing_golden_file_yields_none() {
+    fn golden_files_exist_for_known_programs() {
         let fixtures = discover_fixtures(&examples_dir()).expect("discover");
-        for f in &fixtures {
-            // We haven't created .expected.txt files yet.
-            assert!(
-                f.read_expected().expect("read").is_none(),
-                "{} has an unexpected .expected.txt",
-                f.name
-            );
-        }
+        let with_golden: Vec<_> = fixtures
+            .iter()
+            .filter(|f| f.read_expected().expect("read").is_some())
+            .map(|f| f.name.clone())
+            .collect();
+        // hello.pp, factorial.pp, fibonacci.pp now have golden files
+        assert!(
+            with_golden.contains(&"hello".to_string()),
+            "hello should have golden"
+        );
     }
 
     #[test]
