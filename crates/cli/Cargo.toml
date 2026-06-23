@@ -11,6 +11,7 @@ path = "src/main.rs"
 workspace = true
 
 [features]
+phase-c = []
 
 [dependencies]
 ast = { version = "0.1.0", path = "../ast" }

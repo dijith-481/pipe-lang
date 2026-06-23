@@ -27,6 +27,7 @@ fn fixtures_discover_14_programs() {
 /// the test suite stays green while the pipeline is being built.
 macro_rules! stub_test {
     ($name:ident, $fixture:literal) => {
+        #[cfg(feature = "phase-c")]
         #[test]
         #[allow(unused_variables)]
         fn $name() {

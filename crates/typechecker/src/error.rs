@@ -84,7 +84,7 @@ impl From<TypeError> for CompilerError {
                 format!("type mismatch: expected {expected}, got {got}"),
             ),
             TypeError::UnboundVariable { name, span } => {
-                CompilerError::type_error(span, format!("unbound variable `{name}`"))
+                CompilerError::unbound_variable(span, name)
             }
             TypeError::ArityMismatch {
                 expected,
@@ -107,9 +107,7 @@ impl From<TypeError> for CompilerError {
                 );
                 CompilerError::type_error(span, msg)
             }
-            TypeError::NonExhaustiveMatch { span } => {
-                CompilerError::type_error(span, "non-exhaustive match")
-            }
+            TypeError::NonExhaustiveMatch { span } => CompilerError::non_exhaustive_match(span),
             TypeError::FieldNotFound { field, span } => {
                 CompilerError::type_error(span, format!("field `{field}` not found on record"))
             }

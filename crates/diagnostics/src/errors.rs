@@ -46,6 +46,23 @@ pub enum CompilerError {
         msg: String,
     },
 
+    /// A variable was used but not bound in the scope.
+    #[error("unbound variable `{name}`")]
+    #[diagnostic(code(pipe_lang::unbound))]
+    UnboundVariable {
+        name: String,
+        #[label]
+        span: Span,
+    },
+
+    /// Pattern match is not exhaustive (missing arms).
+    #[error("non-exhaustive pattern match")]
+    #[diagnostic(code(pipe_lang::non_exhaustive))]
+    NonExhaustiveMatch {
+        #[label]
+        span: Span,
+    },
+
     /// Error produced during runtime execution.
     #[error("runtime error: {msg}")]
     #[diagnostic(code(pipe_lang::runtime))]
@@ -169,6 +186,19 @@ impl CompilerError {
         }
     }
 
+    /// Creates a new unbound variable error.
+    pub fn unbound_variable(span: Span, name: impl Into<String>) -> Self {
+        CompilerError::UnboundVariable {
+            span,
+            name: name.into(),
+        }
+    }
+
+    /// Creates a new non-exhaustive match error.
+    pub fn non_exhaustive_match(span: Span) -> Self {
+        CompilerError::NonExhaustiveMatch { span }
+    }
+
     /// Returns the source span for this error, if available.
     #[must_use]
     pub fn span(&self) -> Option<Span> {
@@ -176,7 +206,9 @@ impl CompilerError {
             CompilerError::LexError { span, .. }
             | CompilerError::ParseError { span, .. }
             | CompilerError::TypeError { span, .. }
-            | CompilerError::IrError { span, .. } => Some(*span),
+            | CompilerError::IrError { span, .. }
+            | CompilerError::UnboundVariable { span, .. }
+            | CompilerError::NonExhaustiveMatch { span, .. } => Some(*span),
             CompilerError::RuntimeError { span, .. } | CompilerError::EffectError { span, .. } => {
                 *span
             }
