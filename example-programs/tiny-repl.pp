@@ -1,10 +1,10 @@
 // Tiny REPL — interactive expression evaluator
 //
-// Demonstrates: IO effects (readLine/println), recursion at module level,
+// Demonstrates: IO effects (read_line/println), recursion at module level,
 // string processing, Option/Result, pattern matching, closures
 //
 // In v0.1, inputs are simulated since stdin effects are evaluated
-// immediately. A real REPL would call readLine() in a loop.
+// immediately. A real REPL would call read_line() in a loop.
 
 // Supported operations
 type Expr =
@@ -37,10 +37,10 @@ let eval = (expr) => match expr {
             true  => Err(`division by zero`)
             false => Ok(l / r)
         }
-    Add(l, r) => eval(l).flatMap((lv) => eval(r).flatMap((rv) => Ok(lv + rv)))
-    Sub(l, r) => eval(l).flatMap((lv) => eval(r).flatMap((rv) => Ok(lv - rv)))
-    Mul(l, r) => eval(l).flatMap((lv) => eval(r).flatMap((rv) => Ok(lv * rv)))
-    Div(l, r) => eval(l).flatMap((lv) => eval(r).flatMap((rv) =>
+    Add(l, r) => eval(l).flat_map((lv) => eval(r).flat_map((rv) => Ok(lv + rv)))
+    Sub(l, r) => eval(l).flat_map((lv) => eval(r).flat_map((rv) => Ok(lv - rv)))
+    Mul(l, r) => eval(l).flat_map((lv) => eval(r).flat_map((rv) => Ok(lv * rv)))
+    Div(l, r) => eval(l).flat_map((lv) => eval(r).flat_map((rv) =>
         match rv == 0.0 {
             true  => Err(`division by zero`)
             false => Ok(lv / rv)

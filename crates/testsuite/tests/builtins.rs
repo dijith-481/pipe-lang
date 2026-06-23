@@ -314,7 +314,7 @@ fn builtin_effect_flat_map_chains() {
     let registry = full_registry();
     let effect = Value::Effect(Arc::new(EchoBuiltin));
     let chain_fn = Value::Unit; // placeholder
-    let result = registry.execute("Effect.flatMap", &[effect, chain_fn]);
+    let result = registry.execute("Effect.flat_map", &[effect, chain_fn]);
     assert!(result.is_err() || result.is_ok());
 }
 

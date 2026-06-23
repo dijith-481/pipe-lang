@@ -10,12 +10,12 @@ pub struct IoPrintln;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct IoPrint;
 
-/// Reads one line from standard input: `readLine(_module)`.
+/// Reads one line from standard input: `read_line(_module)`.
 /// The module argument is ignored.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct IoReadLine;
 
-/// Reads an entire file into a string: `readFile(path)`.
+/// Reads an entire file into a string: `read_file(path)`.
 /// Returns `Ok(content)` on success, `Err(error)` on failure.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct IoReadFile;
@@ -57,7 +57,7 @@ impl BuiltinFunction for IoPrint {
 
 impl BuiltinFunction for IoReadLine {
     fn name(&self) -> &str {
-        "readLine"
+        "read_line"
     }
 
     fn arity(&self) -> usize {
@@ -76,7 +76,7 @@ impl BuiltinFunction for IoReadLine {
 
 impl BuiltinFunction for IoReadFile {
     fn name(&self) -> &str {
-        "readFile"
+        "read_file"
     }
 
     fn arity(&self) -> usize {

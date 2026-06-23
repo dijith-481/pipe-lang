@@ -342,19 +342,10 @@ impl TypeEnv {
             }),
         );
 
-        // readLine : () -> Effect<str>
-        self.insert(
-            "readLine",
-            PolyType::mono(MonoType::Func {
-                params: Rc::from([]),
-                ret: Rc::new(MonoType::Effect(Box::new(MonoType::Str))),
-            }),
-        );
-
-        // readFile : (str) -> Effect<Result<str, str>>
+        // read_file : (str) -> Effect<Result<str, str>>
         // Result payload: [T, E] = [str, str]
         self.insert(
-            "readFile",
+            "read_file",
             PolyType::mono(MonoType::Func {
                 params: Rc::from([MonoType::Str]),
                 ret: Rc::new(MonoType::Effect(Box::new(MonoType::Tag {
@@ -388,11 +379,11 @@ impl TypeEnv {
             ),
         );
 
-        // Effect.flatMap : <a, b>(Effect<a>, (a) -> Effect<b>) -> Effect<b>
+        // Effect.flat_map : <a, b>(Effect<a>, (a) -> Effect<b>) -> Effect<b>
         let efm_a = self.fresh_var();
         let efm_b = self.fresh_var();
         self.insert(
-            "Effect.flatMap",
+            "Effect.flat_map",
             PolyType::poly(
                 vec![efm_a, efm_b],
                 MonoType::Func {
@@ -472,11 +463,11 @@ impl TypeEnv {
             ),
         );
 
-        // flatMap : <a, b>(Array<a>, (a) -> Array<b>) -> Array<b>
+        // flat_map : <a, b>(Array<a>, (a) -> Array<b>) -> Array<b>
         let flata = self.fresh_var();
         let flatb = self.fresh_var();
         self.insert(
-            "flatMap",
+            "flat_map",
             PolyType::poly(
                 vec![flata, flatb],
                 MonoType::Func {
@@ -651,11 +642,11 @@ impl TypeEnv {
             ),
         );
 
-        // Option.flatMap : <a, b>(Option<a>, (a) -> Option<b>) -> Option<b>
+        // Option.flat_map : <a, b>(Option<a>, (a) -> Option<b>) -> Option<b>
         let ofm_a = self.fresh_var();
         let ofm_b = self.fresh_var();
         self.insert(
-            "Option.flatMap",
+            "Option.flat_map",
             PolyType::poly(
                 vec![ofm_a, ofm_b],
                 MonoType::Func {
@@ -680,10 +671,10 @@ impl TypeEnv {
             ),
         );
 
-        // Option.unwrapOr : <a>(Option<a>, a) -> a
+        // Option.unwrap_or : <a>(Option<a>, a) -> a
         let uo_a = self.fresh_var();
         self.insert(
-            "Option.unwrapOr",
+            "Option.unwrap_or",
             PolyType::poly(
                 vec![uo_a],
                 MonoType::Func {
@@ -730,12 +721,12 @@ impl TypeEnv {
             ),
         );
 
-        // Result.flatMap : <t, e, u>(Result<t, e>, (t) -> Result<u, e>) -> Result<u, e>
+        // Result.flat_map : <t, e, u>(Result<t, e>, (t) -> Result<u, e>) -> Result<u, e>
         let rfm_t = self.fresh_var();
         let rfm_e = self.fresh_var();
         let rfm_u = self.fresh_var();
         self.insert(
-            "Result.flatMap",
+            "Result.flat_map",
             PolyType::poly(
                 vec![rfm_t, rfm_e, rfm_u],
                 MonoType::Func {
@@ -1007,12 +998,11 @@ mod tests {
             "println",
             "print",
             "read_line",
-            "readLine",
-            "readFile",
+            "read_file",
             "map",
             "filter",
             "fold",
-            "flatMap",
+            "flat_map",
             "concat",
             "prepend",
             "len",
@@ -1024,12 +1014,12 @@ mod tests {
             "Str.trim",
             "Str.parse_i32",
             "Option.map",
-            "Option.flatMap",
-            "Option.unwrapOr",
+            "Option.flat_map",
+            "Option.unwrap_or",
             "Result.map",
-            "Result.flatMap",
+            "Result.flat_map",
             "Effect.map",
-            "Effect.flatMap",
+            "Effect.flat_map",
             "to_i64",
             "to_i32",
             "to_f64",

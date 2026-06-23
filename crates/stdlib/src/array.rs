@@ -32,7 +32,7 @@ pub struct ArrayHead;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ArrayTail;
 
-/// Array flatMap builtin: `flatMap(array, function)`.
+/// Array flat_map builtin: `flat_map(array, function)`.
 ///
 /// Applies the closure to each element and flattens the resulting arrays.
 #[derive(Clone, Copy, Debug, Default)]
@@ -212,7 +212,7 @@ impl BuiltinFunction for ArrayTail {
 
 impl BuiltinFunction for ArrayFlatMap {
     fn name(&self) -> &str {
-        "flatMap"
+        "flat_map"
     }
 
     fn arity(&self) -> usize {

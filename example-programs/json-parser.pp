@@ -42,7 +42,7 @@ let jsonToString = (json) => match json {
 let getField = (name, json) => match json {
     JObj(pairs) => {
         let matched = pairs.filter((p) => match p { (k, _) => k == name })
-        matched.head().flatMap((p) => match p { (_, v) => Some(v) })
+        matched.head().flat_map((p) => match p { (_, v) => Some(v) })
     }
     _ => None
 }
@@ -191,7 +191,7 @@ let main = () => {
 
     println(``)
     println(`Nested query: author email from blog post`)
-    let email = getField(`author`, blogPost).flatMap((a) => getField(`email`, a))
+    let email = getField(`author`, blogPost).flat_map((a) => getField(`email`, a))
     match email {
         Some(JStr(e)) => println(`  Result: ${e}`)
         _             => println(`  Not found`)
