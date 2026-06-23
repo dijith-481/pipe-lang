@@ -78,11 +78,11 @@ pub fn discover_fixtures(dir: &Path) -> std::io::Result<Vec<Fixture>> {
         if path.extension().and_then(|e| e.to_str()) != Some("pp") {
             continue;
         }
-        let stem = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .map(str::to_string)
-            .unwrap_or_default();
+        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        if stem.starts_with('_') {
+            continue;
+        }
+        let stem = stem.to_string();
         let mut expected = path.clone();
         expected.set_extension("expected.txt");
         let expected = if expected.exists() {

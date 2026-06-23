@@ -296,6 +296,36 @@ pub fn compile_ir(ir_module: &IrModule) -> Result<CompiledModule, JitError> {
         module.define_data(call_builtin_ptr_data_id, &data_desc)?;
     }
 
+    // Pre-compute each function's actual return type (with full closure
+    // params including captures) so CallNamed can propagate the richer
+    // type to downstream CallIndirect instructions.
+    let mut fn_actual_return_types: HashMap<String, IrType> = HashMap::new();
+    let fn_declared_return_types: HashMap<String, IrType> = name_to_func
+        .iter()
+        .map(|(n, (_, r))| (n.clone(), r.clone()))
+        .collect();
+    let empty_actual: HashMap<String, IrType> = HashMap::new();
+    for (name, _func_id, _ret_type) in &func_ids {
+        let Some(func) = ir_module.function(name) else {
+            continue;
+        };
+        if let Ok(value_types) = infer_value_types(
+            func,
+            &fn_declared_return_types,
+            &fn_param_types,
+            &empty_actual,
+        ) {
+            for block in &func.blocks {
+                if let ir::Terminator::Return(value_id) = &block.terminator {
+                    if let Some(ty) = value_types.get(value_id) {
+                        fn_actual_return_types.insert(name.clone(), ty.clone());
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
     // Compile each function. The function bodies are populated here;
     // finalize_definitions happens once at the end.
     for (name, func_id, ret_type) in &func_ids {
@@ -309,6 +339,7 @@ pub fn compile_ir(ir_module: &IrModule) -> Result<CompiledModule, JitError> {
             fn_builder_ctx: &mut fn_builder_ctx,
             name_to_func: &name_to_func,
             fn_param_types: &fn_param_types,
+            fn_actual_return_types: &fn_actual_return_types,
             string_data_ids: &string_data_ids,
             println_ptr_data_id,
             str_concat_ptr_data_id,
@@ -365,6 +396,7 @@ struct BlockContext<'a> {
     callee_funcs: &'a HashMap<String, FuncRef>,
     fn_return_types: &'a HashMap<String, IrType>,
     fn_param_types: &'a HashMap<String, Vec<IrType>>,
+    fn_actual_return_types: &'a HashMap<String, IrType>,
     string_globals: &'a HashMap<String, GlobalValue>,
     println_fn_ptr: Value,
     println_sig: SigRef,
@@ -391,6 +423,7 @@ struct FunctionBodyParams<'a> {
     fn_builder_ctx: &'a mut FunctionBuilderContext,
     name_to_func: &'a HashMap<String, (cranelift_module::FuncId, IrType)>,
     fn_param_types: &'a HashMap<String, Vec<IrType>>,
+    fn_actual_return_types: &'a HashMap<String, IrType>,
     string_data_ids: &'a HashMap<String, DataId>,
     println_ptr_data_id: DataId,
     str_concat_ptr_data_id: DataId,
@@ -436,7 +469,12 @@ fn compile_function_body(
     builder.switch_to_block(entry_block);
     let args_ptr = builder.block_params(entry_block)[0];
     let ret_ptr = builder.block_params(entry_block)[1];
-    let value_types = infer_value_types(func, &fn_return_types, params.fn_param_types)?;
+    let value_types = infer_value_types(
+        func,
+        &fn_return_types,
+        params.fn_param_types,
+        params.fn_actual_return_types,
+    )?;
     let mut values = HashMap::new();
 
     load_function_params(
@@ -682,6 +720,7 @@ fn compile_function_body(
         callee_funcs: &callee_funcs,
         fn_return_types: &fn_return_types,
         fn_param_types: params.fn_param_types,
+        fn_actual_return_types: params.fn_actual_return_types,
         string_globals: &string_globals,
         println_fn_ptr,
         println_sig,
@@ -1402,7 +1441,7 @@ fn widen_to_i64(
     builder: &mut FunctionBuilder,
     val: Value,
     ty: &IrType,
-    func_name: &str,
+    _func_name: &str,
 ) -> Result<Value, JitError> {
     match ty {
         IrType::I8 => Ok(builder.ins().sextend(types::I64, val)),
@@ -1423,13 +1462,14 @@ fn widen_to_i64(
             Ok(builder.ins().bitcast(types::I64, mf, val))
         }
         IrType::Bool => Ok(builder.ins().uextend(types::I64, val)),
+        IrType::Unit => Ok(builder.ins().iconst(types::I64, 0)),
         IrType::Str
         | IrType::Array(_)
         | IrType::Record(_)
         | IrType::Tag(_)
         | IrType::Closure(_)
+        | IrType::Func(_)
         | IrType::Effect(_) => Ok(val),
-        _ => Err(unsupported_type(func_name, ty)),
     }
 }
 
@@ -2398,6 +2438,7 @@ fn infer_value_types(
     func: &IrFunction,
     fn_return_types: &HashMap<String, IrType>,
     fn_param_types: &HashMap<String, Vec<IrType>>,
+    fn_actual_return_types: &HashMap<String, IrType>,
 ) -> Result<HashMap<ValueId, IrType>, JitError> {
     let mut types = HashMap::new();
     for (value_id, _, ty) in &func.params {
@@ -2415,6 +2456,7 @@ fn infer_value_types(
                     func.name.as_ref(),
                     fn_return_types,
                     fn_param_types,
+                    fn_actual_return_types,
                 )?;
                 types.insert(*value_id, ty);
             }
@@ -2429,6 +2471,7 @@ fn infer_instruction_type(
     func_name: &str,
     fn_return_types: &HashMap<String, IrType>,
     fn_param_types: &HashMap<String, Vec<IrType>>,
+    fn_actual_return_types: &HashMap<String, IrType>,
 ) -> Result<IrType, JitError> {
     // Override MakeClosure inference to include proper param types
     // (capture types + declared param types) in the FuncType.
@@ -2449,6 +2492,23 @@ fn infer_instruction_type(
             }
         };
         return Ok(IrType::Closure(Box::new(func_type)));
+    }
+    // Override CallNamed inference for closures: use fn_actual_return_types
+    // to preserve full capture params in the closure FuncType.
+    if let ir::Instruction::CallNamed(data) = inst {
+        let base_ty =
+            ir::infer_instruction_type(inst, types, fn_return_types).ok_or_else(|| {
+                JitError::UnimplementedInstruction {
+                    instruction: format!("{inst:?}"),
+                    function: func_name.to_string(),
+                }
+            })?;
+        if matches!(base_ty, IrType::Closure(_))
+            && let Some(actual_ty) = fn_actual_return_types.get(data.name.as_str())
+        {
+            return Ok(actual_ty.clone());
+        }
+        return Ok(base_ty);
     }
     ir::infer_instruction_type(inst, types, fn_return_types).ok_or_else(|| {
         JitError::UnimplementedInstruction {
@@ -2472,7 +2532,7 @@ fn lookup_value(
         })
 }
 
-fn storage_type(ty: &IrType, func_name: &str) -> Result<Type, JitError> {
+fn storage_type(ty: &IrType, _func_name: &str) -> Result<Type, JitError> {
     match ty {
         IrType::I8 | IrType::U8 => Ok(types::I8),
         IrType::I16 | IrType::U16 => Ok(types::I16),
@@ -2486,13 +2546,13 @@ fn storage_type(ty: &IrType, func_name: &str) -> Result<Type, JitError> {
         IrType::Array(_)
         | IrType::Record(_)
         | IrType::Closure(_)
+        | IrType::Func(_)
         | IrType::Tag(_)
         | IrType::Effect(_) => Ok(types::I64),
-        _ => Err(unsupported_type(func_name, ty)),
     }
 }
 
-fn storage_size(ty: &IrType, func_name: &str) -> Result<i32, JitError> {
+fn storage_size(ty: &IrType, _func_name: &str) -> Result<i32, JitError> {
     match ty {
         IrType::I8 | IrType::U8 | IrType::Bool => Ok(1),
         IrType::I16 | IrType::U16 => Ok(2),
@@ -2501,9 +2561,9 @@ fn storage_size(ty: &IrType, func_name: &str) -> Result<i32, JitError> {
         IrType::Array(_)
         | IrType::Record(_)
         | IrType::Closure(_)
+        | IrType::Func(_)
         | IrType::Tag(_)
         | IrType::Effect(_) => Ok(8),
-        _ => Err(unsupported_type(func_name, ty)),
     }
 }
 
@@ -2552,7 +2612,17 @@ fn decode_main_i32(ret_type: &IrType, ret_buf: &[u8; 16]) -> Result<i32, JitErro
         IrType::U32 => {
             Ok(u32::from_ne_bytes([ret_buf[0], ret_buf[1], ret_buf[2], ret_buf[3]]) as i32)
         }
-        IrType::Unit | IrType::Effect(_) => Ok(0),
+        IrType::Unit
+        | IrType::Effect(_)
+        | IrType::Array(_)
+        | IrType::Closure(_)
+        | IrType::Tag(_)
+        | IrType::Record(_)
+        | IrType::Str
+        | IrType::I64
+        | IrType::U64
+        | IrType::F32
+        | IrType::F64 => Ok(0),
         _ => Err(JitError::UnimplementedInstruction {
             instruction: format!(
                 "call_main does not support lossy return type {ret_type}; use call_main_raw instead"
