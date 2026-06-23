@@ -1,6 +1,6 @@
 // Option and Result — error handling without exceptions
 // `Some`, `None`, `Ok`, `Err`, `Option<T>`, `Result<T, E>`, and their methods
-// (`.map`, `.unwrap`, `.flatMap`, ...) are all in the prelude.
+// (`.map`, `.unwrap`, `.flat_map`, ...) are all in the prelude.
 
 type User = {
     id    : i32
@@ -34,13 +34,13 @@ let greetUser = (userId) =>
 // Validate age
 let validateAge = (input) =>
     parseAge(input)
-        .flatMap((age) => if age >= 0 { if age <= 150 { Ok(age) } else { Err(`age out of range`) } } else { Err(`age out of range`) })
+        .flat_map((age) => if age >= 0 { if age <= 150 { Ok(age) } else { Err(`age out of range`) } } else { Err(`age out of range`) })
 
 let main = () => {
     // Option usage
     println(`--- Option ---`)
-    println(greetUser(1).unwrap(`User not found`))
-    println(greetUser(99).unwrap(`User not found`))
+    println(greetUser(1).unwrap_or(`User not found`))
+    println(greetUser(99).unwrap_or(`User not found`))
 
     // Result usage
     println(`--- Result ---`)
@@ -48,7 +48,7 @@ let main = () => {
     let age2 = validateAge(`abc`)
     let age3 = validateAge(`200`)
 
-    println(age1.unwrap(`error`))
-    println(age2.unwrap(`error`))
-    println(age3.unwrap(`error`))
+    println(age1.unwrap_or(`error`))
+    println(age2.unwrap_or(`error`))
+    println(age3.unwrap_or(`error`))
 }

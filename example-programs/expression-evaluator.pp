@@ -33,17 +33,17 @@ let eval = (expr) => match expr {
             false => Ok(v.sqrt())
         }
     // Recursive cases
-    Add(left, right) => eval(left).flatMap((l) => eval(right).flatMap((r) => Ok(l + r)))
-    Sub(left, right) => eval(left).flatMap((l) => eval(right).flatMap((r) => Ok(l - r)))
-    Mul(left, right) => eval(left).flatMap((l) => eval(right).flatMap((r) => Ok(l * r)))
-    Div(left, right) => eval(left).flatMap((l) => eval(right).flatMap((r) =>
+    Add(left, right) => eval(left).flat_map((l) => eval(right).flat_map((r) => Ok(l + r)))
+    Sub(left, right) => eval(left).flat_map((l) => eval(right).flat_map((r) => Ok(l - r)))
+    Mul(left, right) => eval(left).flat_map((l) => eval(right).flat_map((r) => Ok(l * r)))
+    Div(left, right) => eval(left).flat_map((l) => eval(right).flat_map((r) =>
         match r == 0.0 {
             true  => Err(`division by zero`)
             false => Ok(l / r)
         }
     ))
-    Neg(val)         => eval(val).flatMap((v) => Ok(-v))
-    Sqrt(val)        => eval(val).flatMap((v) =>
+    Neg(val)         => eval(val).flat_map((v) => Ok(-v))
+    Sqrt(val)        => eval(val).flat_map((v) =>
         match v < 0.0 {
             true  => Err(`sqrt of negative number`)
             false => Ok(v.sqrt())

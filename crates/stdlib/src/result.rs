@@ -8,7 +8,7 @@ use crate::closure::call_closure;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ResultMap;
 
-/// `Result.flatMap(result, function)` — applies function returning Result, flattens one level.
+/// `Result.flat_map(result, function)` — applies function returning Result, flattens one level.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ResultFlatMap;
 
@@ -59,7 +59,7 @@ impl BuiltinFunction for ResultMap {
 
 impl BuiltinFunction for ResultFlatMap {
     fn name(&self) -> &str {
-        "Result.flatMap"
+        "Result.flat_map"
     }
 
     fn arity(&self) -> usize {

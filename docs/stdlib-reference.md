@@ -21,8 +21,8 @@ All prelude functions are available in every pipe-lang program without an import
 |----------|-----------|-------------|
 | `println` | `(value: str) -> Effect<()>` | Prints value followed by newline to stdout |
 | `print` | `(value: str) -> Effect<()>` | Prints value to stdout without newline |
-| `readLine` | `() -> Effect<str>` | Reads one line from stdin (includes trailing newline) |
-| `readFile` | `(path: str) -> Effect<Result<str, str>>` | Reads file contents; returns `Ok(content)` or `Err(msg)` |
+| `read_line` | `() -> Effect<str>` | Reads one line from stdin (includes trailing newline) |
+| `read_file` | `(path: str) -> Effect<Result<str, str>>` | Reads file contents; returns `Ok(content)` or `Err(msg)` |
 
 ### Numeric Conversions
 
@@ -61,14 +61,14 @@ Left fold. Reduces the array to a single value by applying `f` cumulatively.
 [1, 2, 3].fold(0, (acc, x) => acc + x)   // → 6
 ```
 
-### `flatMap`
+### `flat_map`
 ```
-flatMap<A, B>(array: Array<A>, f: (A) -> Array<B>) -> Array<B>
+flat_map<A, B>(array: Array<A>, f: (A) -> Array<B>) -> Array<B>
 ```
 Maps each element to an array, then flattens the result.
 
 ```
-[[1, 2], [3]].flatMap((x) => x)  // → [1, 2, 3]
+[[1, 2], [3]].flat_map((x) => x)  // → [1, 2, 3]
 ```
 
 ### `concat`
@@ -113,15 +113,15 @@ map<A, B>(opt: Option<A>, f: (A) -> B) -> Option<B>
 ```
 Transforms the inner value if `Some`, returns `None` unchanged.
 
-### `flatMap`
+### `flat_map`
 ```
-flatMap<A, B>(opt: Option<A>, f: (A) -> Option<B>) -> Option<B>
+flat_map<A, B>(opt: Option<A>, f: (A) -> Option<B>) -> Option<B>
 ```
 Chains optional operations. Returns `None` if any step returns `None`.
 
-### `unwrapOr`
+### `unwrap_or`
 ```
-unwrapOr<A>(opt: Option<A>, default: A) -> A
+unwrap_or<A>(opt: Option<A>, default: A) -> A
 ```
 Returns the inner value if `Some`, otherwise returns `default`.
 
@@ -137,9 +137,9 @@ map<T, E, U>(result: Result<T, E>, f: (T) -> U) -> Result<U, E>
 ```
 Transforms the `Ok` value, passes `Err` through unchanged.
 
-### `flatMap`
+### `flat_map`
 ```
-flatMap<T, E, U>(result: Result<T, E>, f: (T) -> Result<U, E>) -> Result<U, E>
+flat_map<T, E, U>(result: Result<T, E>, f: (T) -> Result<U, E>) -> Result<U, E>
 ```
 Chains fallible operations. Short-circuits on `Err`.
 
@@ -193,12 +193,12 @@ Requires an explicit import. Provides the same IO functions as the prelude, scop
 use stdlib::io
 
 let main = () =>
-    io.readLine()
-        .flatMap((line) => println(`You typed: ${line}`))
+    read_line()
+        .flat_map((line) => println(`You typed: ${line}`))
 ```
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `io.println` | `(str) -> Effect<()>` | Same as prelude `println` |
-| `io.readLine` | `() -> Effect<str>` | Same as prelude `readLine` |
-| `io.readFile` | `(str) -> Effect<Result<str, str>>` | Same as prelude `readFile` |
+| `io.read_line` | `() -> Effect<str>` | Same as prelude `read_line` |
+| `io.read_file` | `(str) -> Effect<Result<str, str>>` | Same as prelude `read_file` |

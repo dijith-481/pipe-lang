@@ -7,6 +7,7 @@ use ast::span::Span;
 
 use crate::env::TypeEnv;
 use crate::error::TypeError;
+use crate::exhaustiveness::check_exhaustive;
 use crate::types::{MonoType, PolyType, TypeId};
 use crate::unify::{Substitution, unify};
 
@@ -685,31 +686,8 @@ fn infer_inner<'a>(
             for arm in arms {
                 infer_arm(env, sub, type_map, arm, &subj_ty, span, &mut result_ty)?;
             }
-            // Check exhaustiveness for tag types (sum type variant coverage).
-            let resolved = sub.apply(&subj_ty);
-            if let MonoType::Tag { name, .. } = &resolved {
-                let Some(variants) = env.tag_variants.get(name) else {
-                    return Ok(sub.apply(result_ty.as_ref().unwrap()));
-                };
-                let mut covered: HashSet<SmolStr> = HashSet::new();
-                let mut has_wildcard = false;
-                for arm in arms {
-                    match &arm.pattern {
-                        Pattern::Constructor { name, .. } => {
-                            covered.insert(SmolStr::from(*name));
-                        }
-                        Pattern::Wildcard(_) => has_wildcard = true,
-                        _ => {}
-                    }
-                }
-                if !has_wildcard {
-                    for (vname, _) in variants {
-                        if !covered.contains(vname) {
-                            return Err(TypeError::NonExhaustiveMatch { span: *span });
-                        }
-                    }
-                }
-            }
+            let subj_applied = sub.apply(&subj_ty);
+            check_exhaustive(&env.tag_variants, &subj_applied, arms, *span)?;
             Ok(sub.apply(result_ty.as_ref().unwrap()))
         }
 
