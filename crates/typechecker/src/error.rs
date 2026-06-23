@@ -78,46 +78,50 @@ impl From<TypeError> for diagnostics::CompilerError {
                 span,
                 expected,
                 got,
-            } => diagnostics::CompilerError::type_error(
+            } => diagnostics::CompilerError::type_mismatch(
+                expected.to_string(),
+                got.to_string(),
                 span,
-                format!("type mismatch: expected {expected}, got {got}"),
             ),
             TypeError::UnboundVariable { name, span } => {
-                diagnostics::CompilerError::type_error(span, format!("unbound variable `{name}`"))
+                diagnostics::CompilerError::unbound_variable(name, span)
             }
             TypeError::ArityMismatch {
                 expected,
                 got,
                 span,
-            } => diagnostics::CompilerError::type_error(
+            } => diagnostics::CompilerError::type_mismatch(
+                format!("{expected} arguments"),
+                format!("{got} arguments"),
                 span,
-                format!("arity mismatch: expected {expected} arguments, got {got}"),
             ),
-            TypeError::InfiniteType { var, ty, span } => diagnostics::CompilerError::type_error(
+            TypeError::InfiniteType { var, ty, span } => diagnostics::CompilerError::TypeMismatch {
+                expected: "finite type".to_string(),
+                got: format!("Type var {var} occurs in {ty}"),
                 span,
-                format!("infinite type: {var} occurs in {ty}"),
-            ),
+            },
             TypeError::AnnotationConflict {
                 annotation,
                 inferred,
                 span,
-            } => diagnostics::CompilerError::type_error(
+            } => diagnostics::CompilerError::type_mismatch(
+                annotation.to_string(),
+                inferred.to_string(),
                 span,
-                format!(
-                    "type annotation conflict: annotation says {annotation}, inferred {inferred}"
-                ),
             ),
             TypeError::NonExhaustiveMatch { span } => {
-                diagnostics::CompilerError::type_error(span, "non-exhaustive match")
+                diagnostics::CompilerError::non_exhaustive_match(span)
             }
-            TypeError::FieldNotFound { field, span } => diagnostics::CompilerError::type_error(
+            TypeError::FieldNotFound { field, span } => diagnostics::CompilerError::type_mismatch(
+                "record with field".to_string(),
+                field,
                 span,
-                format!("field `{field}` not found on record"),
             ),
-            TypeError::NumericOverflow { ty, span } => diagnostics::CompilerError::type_error(
+            TypeError::NumericOverflow { ty, span } => diagnostics::CompilerError::TypeMismatch {
+                expected: format!("value within range of {ty}"),
+                got: "overflow".to_string(),
                 span,
-                format!("numeric literal overflows type `{ty}`"),
-            ),
+            },
         }
     }
 }

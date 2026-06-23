@@ -1593,7 +1593,11 @@ unsafe extern "C" fn __pipe_println(args: *const u8, ret: *mut u8) -> i32 {
     };
     let output = if s.is_empty() { s } else { s + "\n" };
     unsafe {
-        libc::write(1, output.as_ptr() as *const libc::c_void, output.len());
+        libc::write(
+            1,
+            output.as_ptr() as *const libc::c_void,
+            output.len() as u32,
+        );
     }
     unsafe {
         *(ret as *mut i32) = 0;

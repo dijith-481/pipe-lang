@@ -35,7 +35,7 @@ pub fn write_stdout(s: &str) {
         buf.extend_from_slice(s.as_bytes());
     } else {
         unsafe {
-            libc::write(1, s.as_ptr() as *const libc::c_void, s.len());
+            libc::write(1, s.as_ptr() as *const libc::c_void, s.len() as u32);
         }
     }
 }

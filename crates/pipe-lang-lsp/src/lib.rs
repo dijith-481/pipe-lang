@@ -128,43 +128,36 @@ fn compiler_error_from_type_error(error: TypeError) -> CompilerError {
             expected,
             got,
             span,
-        } => CompilerError::type_error(
-            span,
-            format!("type mismatch: expected {expected}, got {got}"),
-        ),
-        TypeError::UnboundVariable { name, span } => {
-            CompilerError::type_error(span, format!("unbound variable `{name}`"))
-        }
+        } => CompilerError::type_mismatch(expected.to_string(), got.to_string(), span),
+        TypeError::UnboundVariable { name, span } => CompilerError::unbound_variable(name, span),
         TypeError::ArityMismatch {
             expected,
             got,
             span,
-        } => CompilerError::type_error(
+        } => CompilerError::type_mismatch(
+            format!("{expected} arguments"),
+            format!("{got} arguments"),
             span,
-            format!("arity mismatch: expected {expected} arguments, got {got}"),
         ),
-        TypeError::InfiniteType { var, ty, span } => {
-            CompilerError::type_error(span, format!("infinite type: {var} occurs in {ty}"))
-        }
+        TypeError::InfiniteType { var, ty, span } => CompilerError::TypeMismatch {
+            expected: "finite type".to_string(),
+            got: format!("Type var {var} occurs in {ty}"),
+            span,
+        },
         TypeError::AnnotationConflict {
             annotation,
             inferred,
             span,
-        } => {
-            let msg = format!(
-                "type annotation conflict: annotation says {annotation}, inferred {inferred}"
-            );
-            CompilerError::type_error(span, msg)
-        }
-        TypeError::NonExhaustiveMatch { span } => {
-            CompilerError::type_error(span, "non-exhaustive match")
-        }
+        } => CompilerError::type_mismatch(annotation.to_string(), inferred.to_string(), span),
+        TypeError::NonExhaustiveMatch { span } => CompilerError::non_exhaustive_match(span),
         TypeError::FieldNotFound { field, span } => {
-            CompilerError::type_error(span, format!("field `{field}` not found on record"))
+            CompilerError::type_mismatch("record with field".to_string(), field, span)
         }
-        TypeError::NumericOverflow { ty, span } => {
-            CompilerError::type_error(span, format!("numeric literal overflows type `{ty}`"))
-        }
+        TypeError::NumericOverflow { ty, span } => CompilerError::TypeMismatch {
+            expected: format!("value within range of {ty}"),
+            got: "overflow".to_string(),
+            span,
+        },
     }
 }
 

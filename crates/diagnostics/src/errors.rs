@@ -10,7 +10,7 @@ use std::sync::Arc;
 #[derive(Debug, Clone, thiserror::Error, Diagnostic)]
 pub enum CompilerError {
     /// Error produced by the lexer.
-    #[error("lex error: {msg}")]
+    #[error("Lex error: {msg}")]
     #[diagnostic(code(pipe_lang::lex))]
     LexError {
         #[label]
@@ -19,26 +19,44 @@ pub enum CompilerError {
     },
 
     /// Error produced by the parser.
-    #[error("parse error: {msg}")]
+    #[error("Parse error: expected {expected}, found {found}")]
     #[diagnostic(code(pipe_lang::parse))]
     ParseError {
-        #[label]
+        expected: String,
+        found: String,
+        #[label("expected {expected}, found {found}")]
         span: Span,
-        msg: String,
-        expected: Vec<String>,
     },
 
-    /// Error produced by the type checker.
-    #[error("type error: {msg}")]
-    #[diagnostic(code(pipe_lang::ty))]
-    TypeError {
-        #[label]
+    /// Error produced when a type mismatch is detected.
+    #[error("Type mismatch: expected {expected}, got {got}")]
+    #[diagnostic(code(pipe_lang::type_mismatch))]
+    TypeMismatch {
+        expected: String,
+        got: String,
+        #[label("expected {expected}, got {got}")]
         span: Span,
-        msg: String,
+    },
+
+    /// Error produced when a variable is used but not bound.
+    #[error("Unbound variable: {name}")]
+    #[diagnostic(code(pipe_lang::unbound))]
+    UnboundVariable {
+        name: String,
+        #[label("`{name}` is not defined in this scope")]
+        span: Span,
+    },
+
+    /// Error produced when a pattern match is not exhaustive.
+    #[error("Non-exhaustive pattern match")]
+    #[diagnostic(code(pipe_lang::non_exhaustive_match))]
+    NonExhaustiveMatch {
+        #[label("This match does not cover all possible values")]
+        span: Span,
     },
 
     /// Error produced during IR lowering.
-    #[error("ir error: {msg}")]
+    #[error("IR error: {msg}")]
     #[diagnostic(code(pipe_lang::ir))]
     IrError {
         #[label]
@@ -46,31 +64,18 @@ pub enum CompilerError {
         msg: String,
     },
 
-    /// Error produced during runtime execution.
-    #[error("runtime error: {msg}")]
-    #[diagnostic(code(pipe_lang::runtime))]
-    RuntimeError {
-        #[label]
-        span: Option<Span>,
-        msg: String,
-    },
-
-    /// Error during effect execution.
-    #[error("effect error: {msg}")]
-    #[diagnostic(code(pipe_lang::effect))]
-    EffectError {
-        #[label]
-        span: Option<Span>,
-        msg: String,
-    },
+    /// Error produced during JIT compilation.
+    #[error("JIT compile error: {msg}")]
+    #[diagnostic(code(pipe_lang::jit))]
+    JitCompileError { msg: String },
 
     /// I/O error (file not found, permission denied, etc.).
-    #[error("io error: {0}")]
+    #[error("I/O error: {0}")]
     #[diagnostic(code(pipe_lang::io))]
     IoError(String),
 
     /// Multiple errors collected together (for error recovery).
-    #[error("encountered {count} error(s)")]
+    #[error("Encountered {count} error(s)")]
     #[diagnostic(code(pipe_lang::multiple))]
     Multiple {
         count: usize,
@@ -129,15 +134,21 @@ impl From<parser::error::ParseError> for CompilerError {
                 expected,
                 found,
                 span,
-            } => CompilerError::parse_error(span, format!("unexpected token `{found}`"), expected),
+            } => {
+                let expected_str = expected.join(" or ");
+                CompilerError::parse_error(expected_str, found, span)
+            }
             parser::error::ParseError::UnexpectedEof { expected, span } => {
-                CompilerError::parse_error(span, "unexpected end of input", expected)
+                let expected_str = expected.join(" or ");
+                CompilerError::parse_error(expected_str, "end of file".to_string(), span)
             }
-            parser::error::ParseError::ExpectedExpression { span } => {
-                CompilerError::parse_error(span, "expected expression", vec![])
-            }
+            parser::error::ParseError::ExpectedExpression { span } => CompilerError::parse_error(
+                "expression".to_string(),
+                "something else".to_string(),
+                span,
+            ),
             parser::error::ParseError::Unimplemented { span } => {
-                CompilerError::parse_error(span, "parser stub in use", vec![])
+                CompilerError::parse_error("unimplemented".to_string(), String::new(), span)
             }
         }
     }
@@ -153,20 +164,47 @@ impl CompilerError {
     }
 
     /// Creates a new parse error.
-    pub fn parse_error(span: Span, msg: impl Into<String>, expected: Vec<String>) -> Self {
+    pub fn parse_error(expected: impl Into<String>, found: impl Into<String>, span: Span) -> Self {
         CompilerError::ParseError {
+            expected: expected.into(),
+            found: found.into(),
             span,
-            msg: msg.into(),
-            expected,
         }
     }
 
-    /// Creates a new type error.
-    pub fn type_error(span: Span, msg: impl Into<String>) -> Self {
-        CompilerError::TypeError {
+    /// Creates a new type mismatch error.
+    pub fn type_mismatch(expected: impl Into<String>, got: impl Into<String>, span: Span) -> Self {
+        CompilerError::TypeMismatch {
+            expected: expected.into(),
+            got: got.into(),
+            span,
+        }
+    }
+
+    /// Creates a new unbound variable error.
+    pub fn unbound_variable(name: impl Into<String>, span: Span) -> Self {
+        CompilerError::UnboundVariable {
+            name: name.into(),
+            span,
+        }
+    }
+
+    /// Creates a new non-exhaustive match error.
+    pub fn non_exhaustive_match(span: Span) -> Self {
+        CompilerError::NonExhaustiveMatch { span }
+    }
+
+    /// Creates a new IR error.
+    pub fn ir_error(span: Span, msg: impl Into<String>) -> Self {
+        CompilerError::IrError {
             span,
             msg: msg.into(),
         }
+    }
+
+    /// Creates a new JIT compile error.
+    pub fn jit_compile_error(msg: impl Into<String>) -> Self {
+        CompilerError::JitCompileError { msg: msg.into() }
     }
 
     /// Returns the source span for this error, if available.
@@ -175,12 +213,11 @@ impl CompilerError {
         match self {
             CompilerError::LexError { span, .. }
             | CompilerError::ParseError { span, .. }
-            | CompilerError::TypeError { span, .. }
+            | CompilerError::TypeMismatch { span, .. }
+            | CompilerError::UnboundVariable { span, .. }
+            | CompilerError::NonExhaustiveMatch { span, .. }
             | CompilerError::IrError { span, .. } => Some(*span),
-            CompilerError::RuntimeError { span, .. } | CompilerError::EffectError { span, .. } => {
-                *span
-            }
-            CompilerError::IoError(_) => None,
+            CompilerError::JitCompileError { .. } | CompilerError::IoError(_) => None,
             CompilerError::Multiple { span, .. } => *span,
         }
     }
@@ -200,31 +237,61 @@ mod tests {
     fn lex_error_is_display() {
         let err = CompilerError::lex_error(Span::new(0, 1), "unexpected character");
         let msg = format!("{err}");
-        assert!(msg.contains("lex error"));
+        assert!(msg.contains("Lex error"));
         assert!(msg.contains("unexpected character"));
     }
 
     #[test]
-    fn parse_error_includes_expected_tokens() {
-        let err = CompilerError::parse_error(
-            Span::new(15, 16),
-            "expected `)` ",
-            vec!["`(`".into(), "identifier".into()],
-        );
-        match &err {
-            CompilerError::ParseError { expected, .. } => {
-                assert_eq!(expected.len(), 2);
-            }
-            _ => panic!("expected ParseError variant"),
-        }
+    fn parse_error_uses_expected_found() {
+        let err = CompilerError::parse_error("`(`", "identifier", Span::new(1, 2));
+        let msg = format!("{err}");
+        assert!(msg.contains("expected"));
+        assert!(msg.contains("`(`"));
+        assert!(msg.contains("identifier"));
     }
 
     #[test]
-    fn type_error_display() {
-        let err = CompilerError::type_error(Span::new(14, 20), "cannot add `Int` and `Str` ");
+    fn type_mismatch_display() {
+        let err = CompilerError::type_mismatch("i32", "str", Span::new(5, 10));
         let msg = format!("{err}");
-        assert!(msg.contains("type error"));
-        assert!(msg.contains("cannot add"));
+        assert!(msg.contains("Type mismatch"));
+        assert!(msg.contains("i32"));
+        assert!(msg.contains("str"));
+    }
+
+    #[test]
+    fn type_mismatch_has_span() {
+        let err = CompilerError::type_mismatch("i32", "str", Span::new(5, 10));
+        assert_eq!(err.span(), Some(Span::new(5, 10)));
+    }
+
+    #[test]
+    fn unbound_variable_display() {
+        let err = CompilerError::unbound_variable("x", Span::new(0, 1));
+        let msg = format!("{err}");
+        assert!(msg.contains("Unbound variable"));
+        assert!(msg.contains("x"));
+    }
+
+    #[test]
+    fn nonexhaustive_match_display() {
+        let err = CompilerError::non_exhaustive_match(Span::new(10, 20));
+        let msg = format!("{err}");
+        assert!(msg.contains("Non-exhaustive pattern match"));
+    }
+
+    #[test]
+    fn jit_compile_error_display() {
+        let err = CompilerError::jit_compile_error("segfault at 0x0");
+        let msg = format!("{err}");
+        assert!(msg.contains("JIT compile error"));
+        assert!(msg.contains("segfault"));
+    }
+
+    #[test]
+    fn jit_compile_error_has_no_span() {
+        let err = CompilerError::jit_compile_error("oops");
+        assert!(err.span().is_none());
     }
 
     #[test]
@@ -249,26 +316,8 @@ mod tests {
     fn io_error_display() {
         let err = CompilerError::IoError("file not found: test.ln".into());
         let msg = format!("{err}");
-        assert!(msg.contains("io error"));
+        assert!(msg.contains("I/O error"));
         assert!(msg.contains("file not found"));
-    }
-
-    #[test]
-    fn runtime_error_with_optional_span() {
-        let err = CompilerError::RuntimeError {
-            span: None,
-            msg: "division by zero".into(),
-        };
-        assert_eq!(err.span(), None);
-    }
-
-    #[test]
-    fn runtime_error_with_span() {
-        let err = CompilerError::RuntimeError {
-            span: Some(Span::new(10, 12)),
-            msg: "out of bounds".into(),
-        };
-        assert_eq!(err.span(), Some(Span::new(10, 12)));
     }
 
     #[test]
@@ -277,5 +326,15 @@ mod tests {
         let err = CompilerError::lex_error(Span::new(0, 3), "test error");
         let diag = SourceDiagnostic::new("test.pp", source, err);
         assert!(format!("{diag}").contains("test error"));
+    }
+
+    #[test]
+    fn source_diagnostic_graphical_rendering() {
+        let source = Arc::from("let x = 42");
+        let err = CompilerError::type_mismatch("i32", "str", Span::new(0, 3));
+        let diag = SourceDiagnostic::new("test.pp", source, err);
+        let report = miette::Report::new(diag);
+        let rendered = format!("{report:?}");
+        assert!(rendered.contains("Type mismatch"), "rendered: {rendered}");
     }
 }

@@ -207,10 +207,7 @@ impl CompilerSession {
             Box::new(SourceDiagnostic::new(
                 filename.clone(),
                 source_arc.clone(),
-                CompilerError::IrError {
-                    span: ast::span::Span::empty(0),
-                    msg: e.to_string(),
-                },
+                CompilerError::ir_error(ast::span::Span::empty(0), e.to_string()),
             ))
         })?;
 
@@ -236,10 +233,7 @@ impl CompilerSession {
             Box::new(SourceDiagnostic::new(
                 filename.clone(),
                 source_arc.clone(),
-                CompilerError::RuntimeError {
-                    span: None,
-                    msg: e.to_string(),
-                },
+                CompilerError::jit_compile_error(e.to_string()),
             ))
         })?;
 
@@ -252,10 +246,7 @@ impl CompilerSession {
             Err(e) => Err(Box::new(SourceDiagnostic::new(
                 filename.clone(),
                 source_arc.clone(),
-                CompilerError::RuntimeError {
-                    span: None,
-                    msg: e.to_string(),
-                },
+                CompilerError::jit_compile_error(e.to_string()),
             ))),
         }
     }
