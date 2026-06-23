@@ -194,7 +194,7 @@ fn closure_builtins_are_registered() {
 }
 
 // ---------------------------------------------------------------------------
-// Drop, Take, Sqrt, Unwrap — IMPLEMENTED in stdlib
+// Drop, Take, Sqrt, UnwrapOr — IMPLEMENTED in stdlib
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -273,22 +273,22 @@ fn builtin_sqrt_zero() {
 }
 
 #[test]
-fn builtin_unwrap_some() {
+fn builtin_unwrap_or_some() {
     let registry = full_registry();
     let some = Value::tag(1, vec![Value::I32(42)]);
     let result = registry
-        .execute("unwrap", &[some, Value::I32(0)])
-        .expect("unwrap Some should work");
+        .execute("unwrap_or", &[some, Value::I32(0)])
+        .expect("unwrap_or Some should work");
     assert_eq!(result, Value::I32(42));
 }
 
 #[test]
-fn builtin_unwrap_none_returns_default() {
+fn builtin_unwrap_or_none_returns_default() {
     let registry = full_registry();
     let none = Value::tag(0, vec![]);
     let result = registry
-        .execute("unwrap", &[none, Value::I32(99)])
-        .expect("unwrap None should return default");
+        .execute("unwrap_or", &[none, Value::I32(99)])
+        .expect("unwrap_or None should return default");
     assert_eq!(result, Value::I32(99));
 }
 

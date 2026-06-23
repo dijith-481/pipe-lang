@@ -67,32 +67,13 @@ impl BuiltinFunction for ArrayMap {
 
     fn execute(&self, args: &[Value]) -> Result<Value, String> {
         expect_arity(self.name(), args, self.arity())?;
-        // Type dispatch: if first arg is a Tag (Option/Result), delegate
-        if let Value::Tag { tag, payload } = &args[0] {
-            let closure = expect_closure(self.name(), &args[1])?;
-            match tag {
-                0 => Ok(Value::tag(0, vec![])), // None/Err passthrough
-                1 => {
-                    if payload.is_empty() {
-                        return Err(format!(
-                            "`{}` expected tag with payload, got empty",
-                            self.name()
-                        ));
-                    }
-                    let mapped = call_closure(&closure, payload)?;
-                    Ok(Value::tag(1, vec![mapped]))
-                }
-                other => Err(format!("`{}` unexpected tag {other}", self.name())),
-            }
-        } else {
-            let array = expect_array(self.name(), &args[0])?;
-            let closure = expect_closure(self.name(), &args[1])?;
-            let mut mapped = Vec::with_capacity(array.len());
-            for value in array {
-                mapped.push(call_closure(&closure, std::slice::from_ref(value))?);
-            }
-            Ok(Value::array(mapped))
+        let array = expect_array(self.name(), &args[0])?;
+        let closure = expect_closure(self.name(), &args[1])?;
+        let mut mapped = Vec::with_capacity(array.len());
+        for value in array {
+            mapped.push(call_closure(&closure, std::slice::from_ref(value))?);
         }
+        Ok(Value::array(mapped))
     }
 }
 
@@ -240,47 +221,22 @@ impl BuiltinFunction for ArrayFlatMap {
 
     fn execute(&self, args: &[Value]) -> Result<Value, String> {
         expect_arity(self.name(), args, self.arity())?;
-        // Type dispatch: if first arg is a Tag (Option/Result), delegate
-        if let Value::Tag { tag, payload } = &args[0] {
-            let closure = expect_closure(self.name(), &args[1])?;
-            match tag {
-                0 => Ok(Value::tag(0, vec![])), // None/Err passthrough
-                1 => {
-                    if payload.is_empty() {
-                        return Err(format!(
-                            "`{}` expected tag with payload, got empty",
-                            self.name()
-                        ));
-                    }
-                    let result = call_closure(&closure, payload)?;
-                    match &result {
-                        Value::Tag { tag: 0..=1, .. } => Ok(result),
-                        actual => Err(format!(
-                            "`{}` expected closure to return Option/Result, got {actual:?}",
-                            self.name()
-                        )),
-                    }
-                }
-                other => Err(format!("`{}` unexpected tag {other}", self.name())),
-            }
-        } else {
-            let array = expect_array(self.name(), &args[0])?;
-            let closure = expect_closure(self.name(), &args[1])?;
-            let mut results = Vec::new();
-            for value in array {
-                let mapped = call_closure(&closure, std::slice::from_ref(value))?;
-                match mapped {
-                    Value::Array(elements) => results.extend(elements.iter().cloned()),
-                    actual => {
-                        return Err(format!(
-                            "`{}` expected closure to return Array, got {actual:?}",
-                            self.name()
-                        ));
-                    }
+        let array = expect_array(self.name(), &args[0])?;
+        let closure = expect_closure(self.name(), &args[1])?;
+        let mut results = Vec::new();
+        for value in array {
+            let mapped = call_closure(&closure, std::slice::from_ref(value))?;
+            match mapped {
+                Value::Array(elements) => results.extend(elements.iter().cloned()),
+                actual => {
+                    return Err(format!(
+                        "`{}` expected closure to return Array, got {actual:?}",
+                        self.name()
+                    ));
                 }
             }
-            Ok(Value::array(results))
         }
+        Ok(Value::array(results))
     }
 }
 
@@ -779,26 +735,5 @@ mod tests {
             .expect("take should handle negative count");
 
         assert_eq!(result, int_array(&[]));
-    }
-
-    #[test]
-    fn map_dispatch_on_tag_some() {
-        let result = ArrayMap
-            .execute(&[
-                Value::tag(1, vec![Value::I32(5)]),
-                closure(Arc::new(AddOne), 1),
-            ])
-            .expect("map should dispatch on Some tag");
-
-        assert_eq!(result, Value::tag(1, vec![Value::I32(6)]));
-    }
-
-    #[test]
-    fn map_dispatch_on_tag_none() {
-        let result = ArrayMap
-            .execute(&[Value::tag(0, vec![]), closure(Arc::new(AddOne), 1)])
-            .expect("map should dispatch on None tag");
-
-        assert_eq!(result, Value::tag(0, vec![]));
     }
 }

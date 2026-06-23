@@ -78,9 +78,7 @@ pub fn prelude_builtins() -> Vec<Arc<dyn BuiltinFunction>> {
         Arc::new(array::ArrayDrop),
         Arc::new(array::ArrayTake),
         // Tag utilities
-        Arc::new(ops::Unwrap),
-        // IO standalones
-        Arc::new(io::ReadLine),
+        Arc::new(ops::UnwrapOr),
     ]
 }
 
@@ -418,7 +416,7 @@ mod tests {
         assert!(names.contains(&"Str.parse_i32"));
         assert!(names.contains(&"println"));
         assert!(names.contains(&"print"));
-        assert!(names.contains(&"read_line"));
+        assert!(names.contains(&"readLine"));
         assert!(names.contains(&"readFile"));
         assert!(names.contains(&"flatMap"));
         assert!(names.contains(&"prepend"));
@@ -434,8 +432,7 @@ mod tests {
         assert!(names.contains(&"sqrt"));
         assert!(names.contains(&"drop"));
         assert!(names.contains(&"take"));
-        assert!(names.contains(&"unwrap"));
-        assert!(names.contains(&"readLine"));
+        assert!(names.contains(&"unwrap_or"));
     }
 
     #[test]
