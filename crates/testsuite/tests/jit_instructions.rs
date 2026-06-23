@@ -18,7 +18,7 @@ use ir::{
     BasicBlock, Instruction, IrDecl, IrFunction, IrModule, IrType, MakeClosureData,
     RecordAllocData, TagConstructData, Terminator, ValueId,
 };
-use runtime::{JitError, compile_ir};
+use runtime::compile_ir;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -272,76 +272,373 @@ fn jit_or() {
 // Arrays — ALL UNIMPLEMENTED
 // ---------------------------------------------------------------------------
 
-#[ignore = "Member 1: implement ArrayAlloc instruction in JIT"]
 #[test]
 fn jit_array_alloc_and_get() {
-    let _result = std::panic::catch_unwind(|| {
-        let module = make_main(IrType::I32, |func, entry| {
-            let len = push_inst(func, entry, Instruction::ConstI32(3));
-            let init = push_inst(func, entry, Instruction::ConstI32(42));
-            let arr = push_inst(func, entry, Instruction::ArrayAlloc { len, init });
-            let idx = push_inst(func, entry, Instruction::ConstI32(1));
-            push_inst(
-                func,
-                entry,
-                Instruction::ArrayGet {
-                    array: arr,
-                    index: idx,
-                },
-            )
-        });
-        compile_ir(&module)
+    let module = make_main(IrType::I32, |func, entry| {
+        let len = push_inst(func, entry, Instruction::ConstI32(3));
+        let init = push_inst(func, entry, Instruction::ConstI32(42));
+        let arr = push_inst(func, entry, Instruction::ArrayAlloc { len, init });
+        let idx = push_inst(func, entry, Instruction::ConstI32(1));
+        push_inst(
+            func,
+            entry,
+            Instruction::ArrayGet {
+                array: arr,
+                index: idx,
+            },
+        )
     });
-    if let Ok(Err(JitError::UnimplementedInstruction { instruction, .. })) = &_result
-        && instruction.contains("ArrayAlloc")
-    {}
+    let compiled = compile_ir(&module).expect("ArrayAlloc + ArrayGet should compile");
+    assert_eq!(compiled.call_main().expect("main should run"), 42);
 }
 
-#[ignore = "Member 1: implement ArraySet instruction in JIT"]
+#[test]
+fn jit_array_get_multiple_indices() {
+    let module = make_main(IrType::I32, |func, entry| {
+        let len = push_inst(func, entry, Instruction::ConstI32(5));
+        let init = push_inst(func, entry, Instruction::ConstI32(7));
+        let arr = push_inst(func, entry, Instruction::ArrayAlloc { len, init });
+        // Read index 2
+        let idx = push_inst(func, entry, Instruction::ConstI32(2));
+        push_inst(
+            func,
+            entry,
+            Instruction::ArrayGet {
+                array: arr,
+                index: idx,
+            },
+        )
+    });
+    let compiled = compile_ir(&module).expect("ArrayAlloc + ArrayGet (index 2) should compile");
+    assert_eq!(compiled.call_main().expect("main should run"), 7);
+}
+
 #[test]
 fn jit_array_set() {
-    let _result = std::panic::catch_unwind(|| {
-        let module = make_main(IrType::I32, |func, entry| {
-            let len = push_inst(func, entry, Instruction::ConstI32(3));
-            let init = push_inst(func, entry, Instruction::ConstI32(0));
-            let arr = push_inst(func, entry, Instruction::ArrayAlloc { len, init });
-            let zero = push_inst(func, entry, Instruction::ConstI32(0));
-            let val = push_inst(func, entry, Instruction::ConstI32(99));
-            let _set = push_inst(
-                func,
-                entry,
-                Instruction::ArraySet {
-                    array: arr,
-                    index: zero,
-                    value: val,
-                },
-            );
-            push_inst(
-                func,
-                entry,
-                Instruction::ArrayGet {
-                    array: arr,
-                    index: zero,
-                },
-            )
-        });
-        compile_ir(&module)
+    let module = make_main(IrType::I32, |func, entry| {
+        let len = push_inst(func, entry, Instruction::ConstI32(3));
+        let init = push_inst(func, entry, Instruction::ConstI32(0));
+        let arr = push_inst(func, entry, Instruction::ArrayAlloc { len, init });
+        let zero = push_inst(func, entry, Instruction::ConstI32(0));
+        let val = push_inst(func, entry, Instruction::ConstI32(99));
+        let _set = push_inst(
+            func,
+            entry,
+            Instruction::ArraySet {
+                array: arr,
+                index: zero,
+                value: val,
+            },
+        );
+        push_inst(
+            func,
+            entry,
+            Instruction::ArrayGet {
+                array: arr,
+                index: zero,
+            },
+        )
     });
-    // Just ensure it doesn't crash
+    let compiled = compile_ir(&module).expect("ArraySet + ArrayGet should compile");
+    assert_eq!(compiled.call_main().expect("main should run"), 99);
 }
 
-#[ignore = "Member 1: implement ArrayLen instruction in JIT"]
+#[test]
+fn jit_array_set_multiple_indices() {
+    let module = make_main(IrType::I32, |func, entry| {
+        let len = push_inst(func, entry, Instruction::ConstI32(4));
+        let init = push_inst(func, entry, Instruction::ConstI32(0));
+        let arr = push_inst(func, entry, Instruction::ArrayAlloc { len, init });
+        // Set indices 1 and 3
+        let one = push_inst(func, entry, Instruction::ConstI32(1));
+        let val1 = push_inst(func, entry, Instruction::ConstI32(10));
+        let _set1 = push_inst(
+            func,
+            entry,
+            Instruction::ArraySet {
+                array: arr,
+                index: one,
+                value: val1,
+            },
+        );
+        let three = push_inst(func, entry, Instruction::ConstI32(3));
+        let val2 = push_inst(func, entry, Instruction::ConstI32(20));
+        let _set2 = push_inst(
+            func,
+            entry,
+            Instruction::ArraySet {
+                array: arr,
+                index: three,
+                value: val2,
+            },
+        );
+        // Read index 3 back
+        push_inst(
+            func,
+            entry,
+            Instruction::ArrayGet {
+                array: arr,
+                index: three,
+            },
+        )
+    });
+    let compiled = compile_ir(&module).expect("ArraySet multiple indices should compile");
+    assert_eq!(compiled.call_main().expect("main should run"), 20);
+}
+
+#[test]
+fn jit_array_set_overwrite() {
+    let module = make_main(IrType::I32, |func, entry| {
+        let len = push_inst(func, entry, Instruction::ConstI32(3));
+        let init = push_inst(func, entry, Instruction::ConstI32(0));
+        let arr = push_inst(func, entry, Instruction::ArrayAlloc { len, init });
+        // Write 42 to index 0
+        let zero = push_inst(func, entry, Instruction::ConstI32(0));
+        let val1 = push_inst(func, entry, Instruction::ConstI32(42));
+        let _set1 = push_inst(
+            func,
+            entry,
+            Instruction::ArraySet {
+                array: arr,
+                index: zero,
+                value: val1,
+            },
+        );
+        // Overwrite index 0 with 99
+        let val2 = push_inst(func, entry, Instruction::ConstI32(99));
+        let _set2 = push_inst(
+            func,
+            entry,
+            Instruction::ArraySet {
+                array: arr,
+                index: zero,
+                value: val2,
+            },
+        );
+        push_inst(
+            func,
+            entry,
+            Instruction::ArrayGet {
+                array: arr,
+                index: zero,
+            },
+        )
+    });
+    let compiled = compile_ir(&module).expect("ArraySet overwrite should compile");
+    assert_eq!(compiled.call_main().expect("main should run"), 99);
+}
+
+#[test]
+fn jit_array_set_other_indices_unchanged() {
+    let module = make_main(IrType::I32, |func, entry| {
+        let len = push_inst(func, entry, Instruction::ConstI32(3));
+        let init = push_inst(func, entry, Instruction::ConstI32(7));
+        let arr = push_inst(func, entry, Instruction::ArrayAlloc { len, init });
+        // Set index 1 to 99
+        let one = push_inst(func, entry, Instruction::ConstI32(1));
+        let val = push_inst(func, entry, Instruction::ConstI32(99));
+        let _set = push_inst(
+            func,
+            entry,
+            Instruction::ArraySet {
+                array: arr,
+                index: one,
+                value: val,
+            },
+        );
+        // Read index 0 — should still be 7
+        let zero = push_inst(func, entry, Instruction::ConstI32(0));
+        push_inst(
+            func,
+            entry,
+            Instruction::ArrayGet {
+                array: arr,
+                index: zero,
+            },
+        )
+    });
+    let compiled = compile_ir(&module).expect("ArraySet other indices unchanged should compile");
+    assert_eq!(compiled.call_main().expect("main should run"), 7);
+}
+
 #[test]
 fn jit_array_len() {
-    let _result = std::panic::catch_unwind(|| {
-        let module = make_main(IrType::Usize, |func, entry| {
-            let len = push_inst(func, entry, Instruction::ConstI32(5));
-            let init = push_inst(func, entry, Instruction::ConstI32(0));
-            let arr = push_inst(func, entry, Instruction::ArrayAlloc { len, init });
-            push_inst(func, entry, Instruction::ArrayLen(arr))
-        });
-        compile_ir(&module)
+    let module = make_main(IrType::Usize, |func, entry| {
+        let len = push_inst(func, entry, Instruction::ConstI32(5));
+        let init = push_inst(func, entry, Instruction::ConstI32(0));
+        let arr = push_inst(func, entry, Instruction::ArrayAlloc { len, init });
+        push_inst(func, entry, Instruction::ArrayLen(arr))
     });
+    compile_ir(&module).expect("ArrayLen should compile");
+}
+
+#[test]
+fn jit_array_len_empty() {
+    let module = make_main(IrType::Usize, |func, entry| {
+        let len = push_inst(func, entry, Instruction::ConstI32(0));
+        let init = push_inst(func, entry, Instruction::ConstI32(99));
+        let arr = push_inst(func, entry, Instruction::ArrayAlloc { len, init });
+        push_inst(func, entry, Instruction::ArrayLen(arr))
+    });
+    compile_ir(&module).expect("ArrayLen with empty array should compile");
+}
+
+#[test]
+fn jit_array_len_different_sizes() {
+    let module = make_main(IrType::Usize, |func, entry| {
+        let len = push_inst(func, entry, Instruction::ConstI32(10));
+        let init = push_inst(func, entry, Instruction::ConstI32(42));
+        let arr = push_inst(func, entry, Instruction::ArrayAlloc { len, init });
+        push_inst(func, entry, Instruction::ArrayLen(arr))
+    });
+    compile_ir(&module).expect("ArrayLen with 10 elements should compile");
+}
+
+// ---------------------------------------------------------------------------
+// ArrayConcat
+// ---------------------------------------------------------------------------
+
+#[test]
+fn jit_array_concat_empty_empty() {
+    let module = make_main(IrType::I32, |func, entry| {
+        let len0 = push_inst(func, entry, Instruction::ConstI32(0));
+        let init0 = push_inst(func, entry, Instruction::ConstI32(0));
+        let left = push_inst(
+            func,
+            entry,
+            Instruction::ArrayAlloc {
+                len: len0,
+                init: init0,
+            },
+        );
+        let right = push_inst(
+            func,
+            entry,
+            Instruction::ArrayAlloc {
+                len: len0,
+                init: init0,
+            },
+        );
+        let concat = push_inst(func, entry, Instruction::ArrayConcat(left, right));
+        push_inst(func, entry, Instruction::ArrayLen(concat))
+    });
+    compile_ir(&module).expect("ArrayConcat empty+empty should compile");
+}
+
+#[test]
+fn jit_array_concat_empty_nonempty() {
+    let module = make_main(IrType::I32, |func, entry| {
+        let len0 = push_inst(func, entry, Instruction::ConstI32(0));
+        let len2 = push_inst(func, entry, Instruction::ConstI32(2));
+        let init = push_inst(func, entry, Instruction::ConstI32(42));
+        let left = push_inst(func, entry, Instruction::ArrayAlloc { len: len0, init });
+        let right = push_inst(func, entry, Instruction::ArrayAlloc { len: len2, init });
+        let concat = push_inst(func, entry, Instruction::ArrayConcat(left, right));
+        push_inst(func, entry, Instruction::ArrayLen(concat))
+    });
+    compile_ir(&module).expect("ArrayConcat empty+nonempty should compile");
+}
+
+#[test]
+fn jit_array_concat_nonempty_empty() {
+    let module = make_main(IrType::I32, |func, entry| {
+        let len0 = push_inst(func, entry, Instruction::ConstI32(0));
+        let len3 = push_inst(func, entry, Instruction::ConstI32(3));
+        let init = push_inst(func, entry, Instruction::ConstI32(7));
+        let left = push_inst(func, entry, Instruction::ArrayAlloc { len: len3, init });
+        let right = push_inst(func, entry, Instruction::ArrayAlloc { len: len0, init });
+        let concat = push_inst(func, entry, Instruction::ArrayConcat(left, right));
+        push_inst(func, entry, Instruction::ArrayLen(concat))
+    });
+    compile_ir(&module).expect("ArrayConcat nonempty+empty should compile");
+}
+
+#[test]
+fn jit_array_concat_nonempty_nonempty() {
+    let module = make_main(IrType::I32, |func, entry| {
+        let len3 = push_inst(func, entry, Instruction::ConstI32(3));
+        let len2 = push_inst(func, entry, Instruction::ConstI32(2));
+        let init = push_inst(func, entry, Instruction::ConstI32(0));
+        let left = push_inst(func, entry, Instruction::ArrayAlloc { len: len3, init });
+        let right = push_inst(func, entry, Instruction::ArrayAlloc { len: len2, init });
+        let concat = push_inst(func, entry, Instruction::ArrayConcat(left, right));
+        push_inst(func, entry, Instruction::ArrayLen(concat))
+    });
+    compile_ir(&module).expect("ArrayConcat nonempty+nonempty should compile");
+}
+
+#[test]
+fn jit_array_concat_length_correct() {
+    // Allocate left[3], right[2], concat -> should have length 5
+    let module = make_main(IrType::I32, |func, entry| {
+        let left_init = push_inst(func, entry, Instruction::ConstI32(10));
+        let right_init = push_inst(func, entry, Instruction::ConstI32(20));
+        let len3 = push_inst(func, entry, Instruction::ConstI32(3));
+        let len2 = push_inst(func, entry, Instruction::ConstI32(2));
+        let left = push_inst(
+            func,
+            entry,
+            Instruction::ArrayAlloc {
+                len: len3,
+                init: left_init,
+            },
+        );
+        let right = push_inst(
+            func,
+            entry,
+            Instruction::ArrayAlloc {
+                len: len2,
+                init: right_init,
+            },
+        );
+        let concat = push_inst(func, entry, Instruction::ArrayConcat(left, right));
+        // Read length of concat
+        let _len = push_inst(func, entry, Instruction::ArrayLen(concat));
+        // Return a sentinel value since Usize can't be returned via call_main
+        push_inst(func, entry, Instruction::ConstI32(0))
+    });
+    let compiled = compile_ir(&module).expect("ArrayConcat length should compile");
+    compiled.call_main().expect("main should run");
+}
+
+#[test]
+fn jit_array_concat_element_order() {
+    // Create left = [1, 2, 3], right = [4, 5], concat -> get first element of right part
+    let module = make_main(IrType::I32, |func, entry| {
+        let len3 = push_inst(func, entry, Instruction::ConstI32(3));
+        let len2 = push_inst(func, entry, Instruction::ConstI32(2));
+        let val1 = push_inst(func, entry, Instruction::ConstI32(1));
+        let val4 = push_inst(func, entry, Instruction::ConstI32(4));
+        let left = push_inst(
+            func,
+            entry,
+            Instruction::ArrayAlloc {
+                len: len3,
+                init: val1,
+            },
+        );
+        let right = push_inst(
+            func,
+            entry,
+            Instruction::ArrayAlloc {
+                len: len2,
+                init: val4,
+            },
+        );
+        let concat = push_inst(func, entry, Instruction::ArrayConcat(left, right));
+        // Read element at index 3 (should be 4, the first element of right)
+        let idx = push_inst(func, entry, Instruction::ConstI32(3));
+        push_inst(
+            func,
+            entry,
+            Instruction::ArrayGet {
+                array: concat,
+                index: idx,
+            },
+        )
+    });
+    let compiled = compile_ir(&module).expect("ArrayConcat element order should compile");
+    assert_eq!(compiled.call_main().expect("main should run"), 4);
 }
 
 // ---------------------------------------------------------------------------
@@ -373,6 +670,44 @@ fn jit_record_alloc_and_get() {
     });
     let compiled = compile_ir(&module).expect("RecordAlloc + RecordGet should compile");
     assert_eq!(compiled.call_main().expect("main should run"), 30);
+}
+
+#[test]
+fn jit_record_set_and_get() {
+    let module = make_main(IrType::I32, |func, entry| {
+        let name = push_inst(func, entry, Instruction::ConstStr(SmolStr::new("Alice")));
+        let age = push_inst(func, entry, Instruction::ConstI32(30));
+        let rec = push_inst(
+            func,
+            entry,
+            Instruction::RecordAlloc(Box::new(RecordAllocData {
+                type_name: SmolStr::new("Person"),
+                fields: vec![name, age],
+            })),
+        );
+        let new_age = push_inst(func, entry, Instruction::ConstI32(35));
+        let _set = push_inst(
+            func,
+            entry,
+            Instruction::RecordSet {
+                record: rec,
+                field: SmolStr::new("age"),
+                field_index: 1,
+                value: new_age,
+            },
+        );
+        push_inst(
+            func,
+            entry,
+            Instruction::RecordGet {
+                record: rec,
+                field: SmolStr::new("age"),
+                field_index: 1,
+            },
+        )
+    });
+    let compiled = compile_ir(&module).expect("RecordSet + RecordGet should compile");
+    assert_eq!(compiled.call_main().expect("main should run"), 35);
 }
 
 // ---------------------------------------------------------------------------
@@ -468,7 +803,6 @@ fn jit_make_closure() {
 // Panic — UNIMPLEMENTED
 // ---------------------------------------------------------------------------
 
-#[ignore = "Member 1: implement Panic instruction in JIT"]
 #[test]
 fn jit_panic_traps() {
     let _result = std::panic::catch_unwind(|| {
@@ -491,7 +825,6 @@ fn jit_panic_traps() {
 // TailCall terminator — UNIMPLEMENTED
 // ---------------------------------------------------------------------------
 
-#[ignore = "Member 1: implement TailCall terminator in JIT"]
 #[test]
 fn jit_tail_call_terminator() {
     let _result = std::panic::catch_unwind(|| {
@@ -509,4 +842,97 @@ fn jit_tail_call_terminator() {
         module.decls.push(IrDecl::Function(func));
         compile_ir(&module)
     });
+}
+
+// ---------------------------------------------------------------------------
+// Heap type-tag discrimination (JIT + runtime)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn jit_println_array_uses_type_tag() {
+    let module = make_main(IrType::I32, |func, entry| {
+        let len = push_inst(func, entry, Instruction::ConstI32(3));
+        let init = push_inst(func, entry, Instruction::ConstI32(42));
+        let arr = push_inst(func, entry, Instruction::ArrayAlloc { len, init });
+        entry.instructions.push((None, Instruction::Println(arr)));
+        push_inst(func, entry, Instruction::ConstI32(0))
+    });
+    let compiled = compile_ir(&module).expect("Println array should compile");
+    compiled.call_main().expect("main should run");
+}
+
+#[test]
+fn jit_println_record_uses_type_tag() {
+    let module = make_main(IrType::I32, |func, entry| {
+        let val = push_inst(func, entry, Instruction::ConstI32(99));
+        let rec = push_inst(
+            func,
+            entry,
+            Instruction::RecordAlloc(Box::new(RecordAllocData {
+                type_name: SmolStr::new("Test"),
+                fields: vec![val],
+            })),
+        );
+        entry.instructions.push((None, Instruction::Println(rec)));
+        push_inst(func, entry, Instruction::ConstI32(0))
+    });
+    let compiled = compile_ir(&module).expect("Println record should compile");
+    compiled.call_main().expect("main should run");
+}
+
+#[test]
+fn jit_println_tag_uses_type_tag() {
+    let module = make_main(IrType::I32, |func, entry| {
+        let payload = push_inst(func, entry, Instruction::ConstI32(42));
+        let tag = push_inst(
+            func,
+            entry,
+            Instruction::TagConstruct(Box::new(TagConstructData {
+                type_name: SmolStr::new("Option"),
+                variant: SmolStr::new("Some"),
+                discriminant: 1,
+                payload: vec![payload],
+            })),
+        );
+        entry.instructions.push((None, Instruction::Println(tag)));
+        push_inst(func, entry, Instruction::ConstI32(0))
+    });
+    let compiled = compile_ir(&module).expect("Println tag should compile");
+    compiled.call_main().expect("main should run");
+}
+
+#[test]
+fn jit_println_closure_uses_type_tag() {
+    let helper_name = SmolStr::new("helper");
+    let mut helper = IrFunction::new(helper_name.clone(), IrType::I32);
+    let h_entry_id = helper.alloc_block();
+    let mut h_entry = BasicBlock::new(h_entry_id);
+    let cap = push_inst(&mut helper, &mut h_entry, Instruction::ConstI32(42));
+    h_entry.terminator = Terminator::Return(cap);
+    helper.blocks.push(h_entry);
+
+    let mut func = IrFunction::new(SmolStr::new("main"), IrType::I32);
+    let entry_id = func.alloc_block();
+    let mut entry = BasicBlock::new(entry_id);
+    let captured = push_inst(&mut func, &mut entry, Instruction::ConstI32(99));
+    let closure = push_inst(
+        &mut func,
+        &mut entry,
+        Instruction::MakeClosure(Box::new(MakeClosureData {
+            func_name: helper_name,
+            captures: vec![captured],
+        })),
+    );
+    entry
+        .instructions
+        .push((None, Instruction::Println(closure)));
+    let ret = push_inst(&mut func, &mut entry, Instruction::ConstI32(0));
+    entry.terminator = Terminator::Return(ret);
+    func.blocks.push(entry);
+
+    let mut module = IrModule::new();
+    module.decls.push(ir::IrDecl::Function(helper));
+    module.decls.push(ir::IrDecl::Function(func));
+    let compiled = compile_ir(&module).expect("Println closure should compile");
+    compiled.call_main().expect("main should run");
 }

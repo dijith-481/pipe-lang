@@ -230,6 +230,28 @@ pub fn compile_ir(ir_module: &IrModule) -> Result<CompiledModule, JitError> {
         module.define_data(alloc_closure_ptr_data_id, &data_desc)?;
     }
 
+    // Declare a data object for the pipe_rt_alloc_array function pointer.
+    let alloc_array_ptr = pipe_rt_alloc_array as *const ();
+    let alloc_array_ptr_data_id =
+        module.declare_data("__pipe_alloc_array_ptr", Linkage::Local, false, false)?;
+    {
+        let mut data_desc = DataDescription::new();
+        let ptr_bytes: Vec<u8> = (alloc_array_ptr as u64).to_ne_bytes().to_vec();
+        data_desc.define(ptr_bytes.into_boxed_slice());
+        module.define_data(alloc_array_ptr_data_id, &data_desc)?;
+    }
+
+    // Declare a data object for the pipe_rt_array_concat function pointer.
+    let array_concat_ptr = pipe_rt_array_concat as *const ();
+    let array_concat_ptr_data_id =
+        module.declare_data("__pipe_array_concat_ptr", Linkage::Local, false, false)?;
+    {
+        let mut data_desc = DataDescription::new();
+        let ptr_bytes: Vec<u8> = (array_concat_ptr as u64).to_ne_bytes().to_vec();
+        data_desc.define(ptr_bytes.into_boxed_slice());
+        module.define_data(array_concat_ptr_data_id, &data_desc)?;
+    }
+
     // Scan all functions for CallNamed instructions referencing
     // builtins (not local functions) and create name data objects.
     let mut unique_builtin_names: Vec<String> = Vec::new();
@@ -291,6 +313,8 @@ pub fn compile_ir(ir_module: &IrModule) -> Result<CompiledModule, JitError> {
             println_ptr_data_id,
             str_concat_ptr_data_id,
             alloc_closure_ptr_data_id,
+            alloc_array_ptr_data_id,
+            array_concat_ptr_data_id,
             call_builtin_ptr_data_id,
             builtin_name_data_ids: &builtin_name_data_ids,
         };
@@ -348,6 +372,10 @@ struct BlockContext<'a> {
     str_concat_sig: SigRef,
     alloc_closure_fn_ptr: Value,
     alloc_closure_sig: SigRef,
+    alloc_array_fn_ptr: Value,
+    alloc_array_sig: SigRef,
+    array_concat_fn_ptr: Value,
+    array_concat_sig: SigRef,
     call_builtin_fn_ptr: Value,
     call_builtin_sig: SigRef,
     builtin_name_globals: &'a HashMap<String, GlobalValue>,
@@ -367,6 +395,8 @@ struct FunctionBodyParams<'a> {
     println_ptr_data_id: DataId,
     str_concat_ptr_data_id: DataId,
     alloc_closure_ptr_data_id: DataId,
+    alloc_array_ptr_data_id: DataId,
+    array_concat_ptr_data_id: DataId,
     call_builtin_ptr_data_id: DataId,
     builtin_name_data_ids: &'a HashMap<String, DataId>,
 }
@@ -524,6 +554,46 @@ fn compile_function_body(
         f.import_signature(sig)
     };
 
+    // Import the pipe_rt_alloc_array function pointer from a data object.
+    let alloc_array_fn_ptr_gv = {
+        let f: &mut Function = builder.func;
+        params
+            .module
+            .declare_data_in_func(params.alloc_array_ptr_data_id, f)
+    };
+    let alloc_array_fn_ptr_addr = builder
+        .ins()
+        .global_value(types::I64, alloc_array_fn_ptr_gv);
+    let alloc_array_fn_ptr =
+        builder
+            .ins()
+            .load(types::I64, MemFlags::trusted(), alloc_array_fn_ptr_addr, 0);
+    let alloc_array_sig = {
+        let sig = make_signature(params.module);
+        let f: &mut Function = builder.func;
+        f.import_signature(sig)
+    };
+
+    // Import the pipe_rt_array_concat function pointer from a data object.
+    let array_concat_fn_ptr_gv = {
+        let f: &mut Function = builder.func;
+        params
+            .module
+            .declare_data_in_func(params.array_concat_ptr_data_id, f)
+    };
+    let array_concat_fn_ptr_addr = builder
+        .ins()
+        .global_value(types::I64, array_concat_fn_ptr_gv);
+    let array_concat_fn_ptr =
+        builder
+            .ins()
+            .load(types::I64, MemFlags::trusted(), array_concat_fn_ptr_addr, 0);
+    let array_concat_sig = {
+        let sig = make_signature(params.module);
+        let f: &mut Function = builder.func;
+        f.import_signature(sig)
+    };
+
     // Import the pipe_rt_call_builtin function pointer from a data object.
     let call_builtin_fn_ptr_gv = {
         let f: &mut Function = builder.func;
@@ -619,6 +689,10 @@ fn compile_function_body(
         str_concat_sig,
         alloc_closure_fn_ptr,
         alloc_closure_sig,
+        alloc_array_fn_ptr,
+        alloc_array_sig,
+        array_concat_fn_ptr,
+        array_concat_sig,
         call_builtin_fn_ptr,
         call_builtin_sig,
         builtin_name_globals: &builtin_name_globals,
@@ -735,14 +809,14 @@ fn compile_block(
             arms,
             default,
         } => compile_switch(builder, ctx, values, *discriminant, arms, default.as_ref()),
+        Terminator::TailCall { callee, args } => {
+            compile_tail_call(builder, ctx, *callee, args, values)?;
+            Ok(())
+        }
         Terminator::Unreachable => {
             builder.ins().trap(UNREACHABLE_TRAP);
             Ok(())
         }
-        _ => Err(JitError::UnimplementedInstruction {
-            instruction: format!("{:?}", block.terminator),
-            function: ctx.func_name.to_string(),
-        }),
     }
 }
 
@@ -1039,6 +1113,39 @@ fn compile_instruction(
             ..
         } => compile_record_get(builder, ctx, *record, *field_index, values)?,
 
+        ir::Instruction::ArrayAlloc { len, init } => {
+            compile_array_alloc(builder, ctx, *len, *init, values)?
+        }
+
+        ir::Instruction::ArrayGet { array, index } => {
+            compile_array_get(builder, ctx, *array, *index, values)?
+        }
+
+        ir::Instruction::ArrayLen(array_id) => compile_array_len(builder, ctx, *array_id, values)?,
+
+        ir::Instruction::ArrayConcat(left_id, right_id) => {
+            compile_array_concat(builder, ctx, *left_id, *right_id, values)?
+        }
+
+        ir::Instruction::RecordSet {
+            record,
+            field: _,
+            field_index,
+            value,
+        } => compile_record_set(builder, ctx, *record, *field_index, *value, values)?,
+
+        ir::Instruction::ArraySet {
+            array,
+            index,
+            value,
+        } => compile_array_set(builder, ctx, *array, *index, *value, values)?,
+
+        ir::Instruction::Panic { .. } => {
+            builder.ins().trap(UNREACHABLE_TRAP);
+            builder.ins().iconst(I32, 0)
+        }
+
+        #[allow(unreachable_patterns)]
         _ => {
             return Err(JitError::UnimplementedInstruction {
                 instruction: format!("{inst:?}"),
@@ -1316,7 +1423,12 @@ fn widen_to_i64(
             Ok(builder.ins().bitcast(types::I64, mf, val))
         }
         IrType::Bool => Ok(builder.ins().uextend(types::I64, val)),
-        IrType::Str => Ok(val),
+        IrType::Str
+        | IrType::Array(_)
+        | IrType::Record(_)
+        | IrType::Tag(_)
+        | IrType::Closure(_)
+        | IrType::Effect(_) => Ok(val),
         _ => Err(unsupported_type(func_name, ty)),
     }
 }
@@ -1550,6 +1662,125 @@ fn compile_call_indirect(
     Ok(result)
 }
 
+/// Compile a `TailCall` terminator.
+///
+/// Loads the closure's function pointer, builds the args buffer
+/// (captures from the closure + call args), calls via `call_indirect`,
+/// stores the return value, and returns from the current function.
+fn compile_tail_call(
+    builder: &mut FunctionBuilder,
+    ctx: &BlockContext,
+    callee: ValueId,
+    call_args: &[ValueId],
+    values: &HashMap<ValueId, Value>,
+) -> Result<(), JitError> {
+    let closure_val = lookup_value(values, callee, ctx.func_name)?;
+    let closure_type = lookup_type(ctx.value_types, callee, ctx.func_name)?;
+
+    let func_type = match closure_type {
+        IrType::Closure(ft) => ft.as_ref().clone(),
+        _ => {
+            return Err(JitError::UnimplementedInstruction {
+                instruction: format!("TailCall: callee is not a closure, got {closure_type}"),
+                function: ctx.func_name.to_string(),
+            });
+        }
+    };
+
+    let fn_ptr = builder
+        .ins()
+        .load(types::I64, MemFlags::trusted(), closure_val, 0);
+
+    let call_arg_count = call_args.len();
+    let total_param_count = func_type.params.len();
+    if call_arg_count > total_param_count {
+        return Err(JitError::UnimplementedInstruction {
+            instruction: format!(
+                "TailCall: expected at most {total_param_count} arguments, got {call_arg_count}"
+            ),
+            function: ctx.func_name.to_string(),
+        });
+    }
+    let capture_param_count = total_param_count - call_arg_count;
+    let capture_types: Vec<&IrType> = func_type.params[..capture_param_count].iter().collect();
+    let call_arg_types: Vec<&IrType> = call_args
+        .iter()
+        .map(
+            |id| match lookup_type(ctx.value_types, *id, ctx.func_name) {
+                Ok(t) => t,
+                Err(e) => panic!("{e}"),
+            },
+        )
+        .collect();
+
+    let capture_total_size: i32 = capture_types
+        .iter()
+        .map(|ty| storage_size(ty, ctx.func_name))
+        .collect::<Result<Vec<_>, _>>()?
+        .iter()
+        .sum();
+    let call_args_total_size: i32 = call_arg_types
+        .iter()
+        .map(|ty| storage_size(ty, ctx.func_name))
+        .collect::<Result<Vec<_>, _>>()?
+        .iter()
+        .sum();
+
+    let args_buf_size = (capture_total_size + call_args_total_size).max(1) as u32;
+    let arg_slot = builder.create_sized_stack_slot(StackSlotData::new(
+        StackSlotKind::ExplicitSlot,
+        args_buf_size,
+        0,
+    ));
+    let args_buf = builder.ins().stack_addr(types::I64, arg_slot, 0);
+
+    let mut offset: i32 = 0;
+    let mut closure_offset: i32 = 8;
+    for capture_ty in &capture_types {
+        let cap_val = builder.ins().load(
+            storage_type(capture_ty, ctx.func_name)?,
+            MemFlags::trusted(),
+            closure_val,
+            closure_offset,
+        );
+        builder
+            .ins()
+            .store(MemFlags::trusted(), cap_val, args_buf, offset);
+        let sz = storage_size(capture_ty, ctx.func_name)?;
+        offset += sz;
+        closure_offset += sz;
+    }
+
+    for arg_id in call_args {
+        let arg_type = lookup_type(ctx.value_types, *arg_id, ctx.func_name)?;
+        if !matches!(arg_type, IrType::Unit) {
+            let arg_val = lookup_value(values, *arg_id, ctx.func_name)?;
+            builder
+                .ins()
+                .store(MemFlags::trusted(), arg_val, args_buf, offset);
+        }
+        offset += storage_size(arg_type, ctx.func_name)?;
+    }
+
+    let ret_size = storage_size(ctx.ret_type, ctx.func_name)?.max(1) as u32;
+    let ret_slot = builder.create_sized_stack_slot(StackSlotData::new(
+        StackSlotKind::ExplicitSlot,
+        ret_size,
+        0,
+    ));
+    let ret_buf = builder.ins().stack_addr(types::I64, ret_slot, 0);
+
+    builder
+        .ins()
+        .call_indirect(ctx.alloc_closure_sig, fn_ptr, &[args_buf, ret_buf]);
+
+    let result = load_primitive_value(builder, ret_buf, 0, ctx.ret_type, ctx.func_name)?;
+    store_return_value(builder, ctx.ret_ptr, ctx.ret_type, result, ctx.func_name)?;
+    let zero = builder.ins().iconst(I32, 0);
+    builder.ins().return_(&[zero]);
+    Ok(())
+}
+
 /// Compile a `TagConstruct` instruction.
 ///
 /// Tag layout: `[discriminant: u32][payload packed by storage_size]`.
@@ -1763,6 +1994,224 @@ fn compile_record_get(
         record_val,
         offset,
     ))
+}
+
+/// Compile a `RecordSet` instruction.
+/// Stores `value` at `field_index` in a record heap block, returns unit.
+fn compile_record_set(
+    builder: &mut FunctionBuilder,
+    ctx: &BlockContext,
+    record_id: ValueId,
+    field_index: u32,
+    value_id: ValueId,
+    values: &HashMap<ValueId, Value>,
+) -> Result<Value, JitError> {
+    let record_val = lookup_value(values, record_id, ctx.func_name)?;
+    let ty = lookup_type(ctx.value_types, record_id, ctx.func_name)?;
+    let record_type = match ty {
+        IrType::Record(rt) => rt.clone(),
+        _ => return Err(unsupported_type(ctx.func_name, ty)),
+    };
+    let value = lookup_value(values, value_id, ctx.func_name)?;
+
+    let mut offset: i32 = 0;
+    for i in 0..field_index as usize {
+        offset += storage_size(&record_type.fields[i].1, ctx.func_name)?;
+    }
+
+    builder
+        .ins()
+        .store(MemFlags::trusted(), value, record_val, offset);
+    Ok(builder.ins().iconst(I32, 0))
+}
+
+/// Compile an `ArrayAlloc` instruction.
+///
+/// Array layout: `[len: u64 (8 bytes)][elements packed by element_size]`.
+/// Heap-allocated via `pipe_rt_alloc_array`.
+fn compile_array_alloc(
+    builder: &mut FunctionBuilder,
+    ctx: &BlockContext,
+    len_id: ValueId,
+    init_id: ValueId,
+    values: &HashMap<ValueId, Value>,
+) -> Result<Value, JitError> {
+    let init_ty = lookup_type(ctx.value_types, init_id, ctx.func_name)?;
+    let elem_size = storage_size(init_ty, ctx.func_name)?;
+
+    let len_val = lookup_value(values, len_id, ctx.func_name)?;
+    let init_val = lookup_value(values, init_id, ctx.func_name)?;
+    let init_widened = widen_to_i64(builder, init_val, init_ty, ctx.func_name)?;
+
+    // Build args buffer: [len: u32, element_size: u32, init_value: u64].
+    let args_slot =
+        builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 16, 0));
+    let args_buf = builder.ins().stack_addr(types::I64, args_slot, 0);
+
+    builder
+        .ins()
+        .store(MemFlags::trusted(), len_val, args_buf, 0);
+    let elem_size_val = builder.ins().iconst(I32, elem_size as i64);
+    builder
+        .ins()
+        .store(MemFlags::trusted(), elem_size_val, args_buf, 4);
+    builder
+        .ins()
+        .store(MemFlags::trusted(), init_widened, args_buf, 8);
+
+    let ret_slot =
+        builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 0));
+    let ret_buf = builder.ins().stack_addr(types::I64, ret_slot, 0);
+    builder.ins().call_indirect(
+        ctx.alloc_array_sig,
+        ctx.alloc_array_fn_ptr,
+        &[args_buf, ret_buf],
+    );
+
+    Ok(builder
+        .ins()
+        .load(types::I64, MemFlags::trusted(), ret_buf, 0))
+}
+
+/// Compile an `ArrayGet` instruction.
+///
+/// Array layout: `[len: u64 (8 bytes)][elements packed by element_size]`.
+/// Loads element at dynamic `index` from the array heap block.
+fn compile_array_get(
+    builder: &mut FunctionBuilder,
+    ctx: &BlockContext,
+    array_id: ValueId,
+    index_id: ValueId,
+    values: &HashMap<ValueId, Value>,
+) -> Result<Value, JitError> {
+    let array_val = lookup_value(values, array_id, ctx.func_name)?;
+    let index_val = lookup_value(values, index_id, ctx.func_name)?;
+
+    let arr_type = lookup_type(ctx.value_types, array_id, ctx.func_name)?;
+    let elem_ty = match arr_type {
+        IrType::Array(et) => et.as_ref(),
+        _ => return Err(unsupported_type(ctx.func_name, arr_type)),
+    };
+    let elem_size = storage_size(elem_ty, ctx.func_name)?;
+
+    // offset = 8 + index * element_size
+    let elem_size_val = builder.ins().iconst(I32, elem_size as i64);
+    let byte_offset = builder.ins().imul(index_val, elem_size_val);
+    let byte_offset_64 = builder.ins().uextend(types::I64, byte_offset);
+    let array_data_ptr = builder.ins().iadd_imm(array_val, 8);
+    let final_addr = builder.ins().iadd(array_data_ptr, byte_offset_64);
+
+    Ok(builder.ins().load(
+        storage_type(elem_ty, ctx.func_name)?,
+        MemFlags::trusted(),
+        final_addr,
+        0,
+    ))
+}
+
+/// Compile an `ArrayLen` instruction.
+///
+/// Array layout: `[len: u64 (8 bytes)][elements packed by element_size]`.
+/// Loads the length from offset 0 of the array heap block.
+fn compile_array_len(
+    builder: &mut FunctionBuilder,
+    ctx: &BlockContext,
+    array_id: ValueId,
+    values: &HashMap<ValueId, Value>,
+) -> Result<Value, JitError> {
+    let array_val = lookup_value(values, array_id, ctx.func_name)?;
+    Ok(builder
+        .ins()
+        .load(types::I64, MemFlags::trusted(), array_val, 0))
+}
+
+/// Compile an `ArraySet` instruction.
+///
+/// Array layout: `[len: u64 (8 bytes)][elements packed by element_size]`.
+/// Stores `value` at dynamic `index` in the array heap block.
+/// Returns Unit.
+fn compile_array_set(
+    builder: &mut FunctionBuilder,
+    ctx: &BlockContext,
+    array_id: ValueId,
+    index_id: ValueId,
+    value_id: ValueId,
+    values: &HashMap<ValueId, Value>,
+) -> Result<Value, JitError> {
+    let array_val = lookup_value(values, array_id, ctx.func_name)?;
+    let index_val = lookup_value(values, index_id, ctx.func_name)?;
+    let value_val = lookup_value(values, value_id, ctx.func_name)?;
+
+    let arr_type = lookup_type(ctx.value_types, array_id, ctx.func_name)?;
+    let elem_ty = match arr_type {
+        IrType::Array(et) => et.as_ref(),
+        _ => return Err(unsupported_type(ctx.func_name, arr_type)),
+    };
+    let elem_size = storage_size(elem_ty, ctx.func_name)?;
+
+    // Compute address: base + 8 + index * element_size
+    let elem_size_val = builder.ins().iconst(I32, elem_size as i64);
+    let byte_offset = builder.ins().imul(index_val, elem_size_val);
+    let byte_offset_64 = builder.ins().uextend(types::I64, byte_offset);
+    let array_data_ptr = builder.ins().iadd_imm(array_val, 8);
+    let final_addr = builder.ins().iadd(array_data_ptr, byte_offset_64);
+
+    builder
+        .ins()
+        .store(MemFlags::trusted(), value_val, final_addr, 0);
+
+    Ok(builder.ins().iconst(I32, 0))
+}
+
+/// Compile an `ArrayConcat` instruction.
+///
+/// Allocates a new array whose contents are the concatenation of
+/// `left` and `right`, using the `pipe_rt_array_concat` runtime helper.
+fn compile_array_concat(
+    builder: &mut FunctionBuilder,
+    ctx: &BlockContext,
+    left_id: ValueId,
+    right_id: ValueId,
+    values: &HashMap<ValueId, Value>,
+) -> Result<Value, JitError> {
+    let left_val = lookup_value(values, left_id, ctx.func_name)?;
+    let right_val = lookup_value(values, right_id, ctx.func_name)?;
+
+    let arr_type = lookup_type(ctx.value_types, left_id, ctx.func_name)?;
+    let elem_ty = match arr_type {
+        IrType::Array(et) => et.as_ref(),
+        _ => return Err(unsupported_type(ctx.func_name, arr_type)),
+    };
+    let elem_size = storage_size(elem_ty, ctx.func_name)?;
+
+    // Build args buffer: [left_ptr: u64, right_ptr: u64, element_size: u32].
+    let args_slot =
+        builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 20, 0));
+    let args_buf = builder.ins().stack_addr(types::I64, args_slot, 0);
+
+    builder
+        .ins()
+        .store(MemFlags::trusted(), left_val, args_buf, 0);
+    builder
+        .ins()
+        .store(MemFlags::trusted(), right_val, args_buf, 8);
+    let elem_size_val = builder.ins().iconst(I32, elem_size as i64);
+    builder
+        .ins()
+        .store(MemFlags::trusted(), elem_size_val, args_buf, 16);
+
+    let ret_slot =
+        builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 0));
+    let ret_buf = builder.ins().stack_addr(types::I64, ret_slot, 0);
+    builder.ins().call_indirect(
+        ctx.array_concat_sig,
+        ctx.array_concat_fn_ptr,
+        &[args_buf, ret_buf],
+    );
+
+    Ok(builder
+        .ins()
+        .load(types::I64, MemFlags::trusted(), ret_buf, 0))
 }
 
 fn compile_numeric_binary(
@@ -2155,6 +2604,12 @@ unsafe extern "C" fn __pipe_println(args: *const u8, ret: *mut u8) -> i32 {
             let s = unsafe { std::str::from_utf8_unchecked(bytes) };
             s.to_string()
         }
+        12 => "()".to_string(),
+        13 => "<array>".to_string(),
+        14 => "<record>".to_string(),
+        15 => "<effect>".to_string(),
+        16 => "<closure>".to_string(),
+        17 => "<tag>".to_string(),
         _ => String::new(),
     };
     let output = if s.is_empty() { s } else { s + "\n" };
@@ -2207,6 +2662,12 @@ unsafe extern "C" fn pipe_rt_str_concat(args: *const u8, ret: *mut u8) -> i32 {
                 let s = unsafe { std::str::from_utf8_unchecked(bytes) };
                 result.push_str(s);
             }
+            12 => result.push_str("()"),
+            13 => result.push_str("<array>"),
+            14 => result.push_str("<record>"),
+            15 => result.push_str("<effect>"),
+            16 => result.push_str("<closure>"),
+            17 => result.push_str("<tag>"),
             _ => {}
         }
     }
@@ -2248,6 +2709,96 @@ unsafe extern "C" fn pipe_rt_alloc_closure(args: *const u8, ret: *mut u8) -> i32
     0
 }
 
+/// External function called by `ArrayAlloc` JIT code.
+///
+/// Allocates a heap-allocated array block with the layout:
+///   [len: u64 (8 bytes)][elements packed by element_size]
+/// and writes the pointer to `ret`.
+///
+/// # Safety
+///
+/// `args` points to a buffer in this layout:
+///   - bytes 0–3:   `u32` length (number of elements)
+///   - bytes 4–7:   `u32` element size in bytes
+///   - bytes 8–15:  `u64` initial value bytes (only `element_size` bytes used)
+///
+/// `ret` points to an 8-byte buffer that receives the pointer to
+/// the heap-allocated array.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn pipe_rt_alloc_array(args: *const u8, ret: *mut u8) -> i32 {
+    let len = unsafe { std::ptr::read_unaligned(args as *const u32) } as usize;
+    let element_size = unsafe { std::ptr::read_unaligned(args.add(4) as *const u32) } as usize;
+    let init_raw = unsafe { std::ptr::read_unaligned(args.add(8) as *const u64) };
+
+    let total_size = 8 + len * element_size;
+    let mut buf = vec![0u8; total_size];
+
+    unsafe { std::ptr::write_unaligned(buf.as_mut_ptr() as *mut u64, len as u64) };
+
+    let data_ptr = unsafe { buf.as_mut_ptr().add(8) };
+    let init_bytes = &init_raw as *const u64 as *const u8;
+    for i in 0..len {
+        unsafe {
+            std::ptr::copy_nonoverlapping(init_bytes, data_ptr.add(i * element_size), element_size);
+        }
+    }
+
+    let ptr = Box::leak(buf.into_boxed_slice()).as_ptr();
+    unsafe {
+        *(ret as *mut u64) = ptr as u64;
+    }
+    0
+}
+
+/// External function called by `ArrayConcat` JIT code.
+///
+/// Takes a left array pointer, a right array pointer, and an element
+/// size. Allocates a new array whose contents are the concatenation of
+/// the two input arrays, and writes the pointer to `ret`.
+///
+/// Args buffer layout:
+///   - bytes 0–7:  `u64` left array pointer
+///   - bytes 8–15: `u64` right array pointer
+///   - bytes 16–19: `u32` element size in bytes
+///
+/// Ret buffer: 8-byte pointer to the new array.
+///
+/// # Safety
+///
+/// `args` must point to a valid 20-byte buffer. `ret` must point to an
+/// 8-byte buffer. Both arrays must have been allocated by the same
+/// allocator with the same element size.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn pipe_rt_array_concat(args: *const u8, ret: *mut u8) -> i32 {
+    let left_ptr = unsafe { std::ptr::read_unaligned(args as *const u64) } as *const u8;
+    let right_ptr = unsafe { std::ptr::read_unaligned(args.add(8) as *const u64) } as *const u8;
+    let element_size = unsafe { std::ptr::read_unaligned(args.add(16) as *const u32) } as usize;
+
+    let left_len = unsafe { std::ptr::read_unaligned(left_ptr as *const u64) } as usize;
+    let right_len = unsafe { std::ptr::read_unaligned(right_ptr as *const u64) } as usize;
+    let total_len = left_len + right_len;
+
+    let total_size = 8 + total_len * element_size;
+    let mut buf = vec![0u8; total_size];
+
+    unsafe { std::ptr::write_unaligned(buf.as_mut_ptr() as *mut u64, total_len as u64) };
+
+    let left_data = unsafe { left_ptr.add(8) };
+    let right_data = unsafe { right_ptr.add(8) };
+    let left_bytes = left_len * element_size;
+    let dst = unsafe { buf.as_mut_ptr().add(8) };
+    unsafe {
+        std::ptr::copy_nonoverlapping(left_data, dst, left_bytes);
+        std::ptr::copy_nonoverlapping(right_data, dst.add(left_bytes), right_len * element_size);
+    }
+
+    let ptr = Box::leak(buf.into_boxed_slice()).as_ptr();
+    unsafe {
+        *(ret as *mut u64) = ptr as u64;
+    }
+    0
+}
+
 /// Numeric tag used by `__pipe_println` to interpret the raw value.
 fn ir_type_tag(ty: &IrType) -> Option<u32> {
     match ty {
@@ -2264,8 +2815,12 @@ fn ir_type_tag(ty: &IrType) -> Option<u32> {
         IrType::Bool => Some(10),
         IrType::Str => Some(11),
         IrType::Unit => Some(12),
+        IrType::Array(_) => Some(13),
+        IrType::Record(_) => Some(14),
         IrType::Effect(_) => Some(15),
-        _ => None,
+        IrType::Closure(_) => Some(16),
+        IrType::Tag(_) => Some(17),
+        IrType::Func(_) => None,
     }
 }
 
@@ -2357,7 +2912,11 @@ fn value_to_ret_buf(value: crate::value::Value, ret: *mut u8) {
             let ptr = Box::leak(buf.into_boxed_slice()).as_ptr();
             (ptr as i64, 11)
         }
-        _ => (0, 0),
+        RuntimeValue::Array(_) => (0, 13),
+        RuntimeValue::Record(_) => (0, 14),
+        RuntimeValue::Closure(_) => (0, 16),
+        RuntimeValue::Tag { .. } => (0, 17),
+        RuntimeValue::Effect(_) => (0, 15),
     };
     unsafe {
         std::ptr::write_unaligned(ret as *mut i64, raw);

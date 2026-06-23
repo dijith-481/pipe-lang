@@ -72,6 +72,17 @@ pub fn prelude_builtins() -> Vec<Arc<dyn BuiltinFunction>> {
         Arc::new(numeric::ToI32),
         Arc::new(numeric::ToF64),
         Arc::new(numeric::ToStr),
+        // Drop
+        Arc::new(Drop),
+        // Take
+        Arc::new(Take),
+        // Sqrt
+        Arc::new(Sqrt),
+        // Unwrap
+        Arc::new(Unwrap),
+        // Effect combinators
+        Arc::new(EffectMap),
+        Arc::new(EffectFlatMap),
     ]
 }
 
@@ -302,6 +313,212 @@ impl BuiltinFunction for Apply {
         expect_arity(self.name(), args, self.arity())?;
         let function = expect_closure(self.name(), &args[0])?;
         call_closure(&function, std::slice::from_ref(&args[1]))
+    }
+}
+
+// -- Drop --
+
+/// `drop(x)` — ignores its argument and returns unit.
+#[derive(Clone, Copy, Debug, Default)]
+struct Drop;
+
+impl BuiltinFunction for Drop {
+    fn name(&self) -> &str {
+        "drop"
+    }
+
+    fn arity(&self) -> usize {
+        1
+    }
+
+    fn execute(&self, args: &[Value]) -> Result<Value, String> {
+        expect_arity(self.name(), args, self.arity())?;
+        Ok(Value::Unit)
+    }
+}
+
+// -- Take --
+
+/// `take(array, n)` — returns the first `n` elements of `array`.
+#[derive(Clone, Copy, Debug, Default)]
+struct Take;
+
+impl BuiltinFunction for Take {
+    fn name(&self) -> &str {
+        "take"
+    }
+
+    fn arity(&self) -> usize {
+        2
+    }
+
+    fn execute(&self, args: &[Value]) -> Result<Value, String> {
+        expect_arity(self.name(), args, self.arity())?;
+        let arr = match &args[0] {
+            Value::Array(a) => a.clone(),
+            other => return Err(format!("`take` expected Array, got {other:?}")),
+        };
+        let n = match &args[1] {
+            Value::I32(n) => *n,
+            other => return Err(format!("`take` expected I32, got {other:?}")),
+        };
+        let n = n.max(0).min(arr.len() as i32) as usize;
+        Ok(Value::array(arr[..n].to_vec()))
+    }
+}
+
+// -- Sqrt --
+
+/// `sqrt(x)` — returns the square root of `x`.
+#[derive(Clone, Copy, Debug, Default)]
+struct Sqrt;
+
+impl BuiltinFunction for Sqrt {
+    fn name(&self) -> &str {
+        "sqrt"
+    }
+
+    fn arity(&self) -> usize {
+        1
+    }
+
+    fn execute(&self, args: &[Value]) -> Result<Value, String> {
+        expect_arity(self.name(), args, self.arity())?;
+        let x = match &args[0] {
+            Value::F64(x) => *x,
+            other => return Err(format!("`sqrt` expected F64, got {other:?}")),
+        };
+        Ok(Value::F64(x.sqrt()))
+    }
+}
+
+// -- Unwrap --
+
+/// `unwrap(option)` — returns the payload if Some, errors if None.
+#[derive(Clone, Copy, Debug, Default)]
+struct Unwrap;
+
+impl BuiltinFunction for Unwrap {
+    fn name(&self) -> &str {
+        "unwrap"
+    }
+
+    fn arity(&self) -> usize {
+        1
+    }
+
+    fn execute(&self, args: &[Value]) -> Result<Value, String> {
+        expect_arity(self.name(), args, self.arity())?;
+        match &args[0] {
+            Value::Tag { tag: 1, payload } if !payload.is_empty() => Ok(payload[0].clone()),
+            Value::Tag { tag: 0, .. } => Err("`unwrap` called on None".to_string()),
+            Value::Tag { tag: 1, .. } => Err("`unwrap` called on Some with no payload".to_string()),
+            other => Err(format!("`unwrap` expected Option, got {other:?}")),
+        }
+    }
+}
+
+// -- Effect.map --
+
+/// `Effect.map(effect, fn)` — transforms the result of an effect.
+#[derive(Clone, Copy, Debug, Default)]
+struct EffectMap;
+
+impl BuiltinFunction for EffectMap {
+    fn name(&self) -> &str {
+        "Effect.map"
+    }
+
+    fn arity(&self) -> usize {
+        2
+    }
+
+    fn execute(&self, args: &[Value]) -> Result<Value, String> {
+        expect_arity(self.name(), args, self.arity())?;
+        let effect = match &args[0] {
+            Value::Effect(e) => Arc::clone(e),
+            other => return Err(format!("`Effect.map` expected Effect, got {other:?}")),
+        };
+        let func = match &args[1] {
+            Value::Closure(c) => Arc::clone(c),
+            other => return Err(format!("`Effect.map` expected Closure, got {other:?}")),
+        };
+        Ok(Value::Closure(Arc::new(ClosureData {
+            func: FuncPtr::Builtin(Arc::new(EffectMapInner(effect, func))),
+            captures: Arc::from([]),
+            arity: 0,
+        })))
+    }
+}
+
+/// Inner effect that applies the mapped function.
+#[derive(Debug, Clone)]
+struct EffectMapInner(Arc<dyn BuiltinFunction>, Arc<ClosureData>);
+
+impl BuiltinFunction for EffectMapInner {
+    fn name(&self) -> &str {
+        "Effect.map.closure"
+    }
+
+    fn arity(&self) -> usize {
+        0
+    }
+
+    fn execute(&self, _args: &[Value]) -> Result<Value, String> {
+        let result = self.0.execute(&[])?;
+        call_closure(&self.1, &[result])
+    }
+}
+
+// -- Effect.flatMap --
+
+/// `Effect.flatMap(effect, fn)` — chains an effect with a function.
+#[derive(Clone, Copy, Debug, Default)]
+struct EffectFlatMap;
+
+impl BuiltinFunction for EffectFlatMap {
+    fn name(&self) -> &str {
+        "Effect.flatMap"
+    }
+
+    fn arity(&self) -> usize {
+        2
+    }
+
+    fn execute(&self, args: &[Value]) -> Result<Value, String> {
+        expect_arity(self.name(), args, self.arity())?;
+        let effect = match &args[0] {
+            Value::Effect(e) => Arc::clone(e),
+            other => return Err(format!("`Effect.flatMap` expected Effect, got {other:?}")),
+        };
+        let func = match &args[1] {
+            Value::Closure(c) => Arc::clone(c),
+            other => return Err(format!("`Effect.flatMap` expected Closure, got {other:?}")),
+        };
+        Ok(Value::Closure(Arc::new(ClosureData {
+            func: FuncPtr::Builtin(Arc::new(EffectFlatMapInner(effect, func))),
+            captures: Arc::from([]),
+            arity: 0,
+        })))
+    }
+}
+
+/// Inner effect that chains via flatMap.
+#[derive(Debug, Clone)]
+struct EffectFlatMapInner(Arc<dyn BuiltinFunction>, Arc<ClosureData>);
+
+impl BuiltinFunction for EffectFlatMapInner {
+    fn name(&self) -> &str {
+        "Effect.flatMap.closure"
+    }
+
+    fn arity(&self) -> usize {
+        0
+    }
+
+    fn execute(&self, _args: &[Value]) -> Result<Value, String> {
+        let result = self.0.execute(&[])?;
+        call_closure(&self.1, &[result])
     }
 }
 

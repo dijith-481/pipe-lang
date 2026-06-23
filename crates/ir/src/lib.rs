@@ -899,6 +899,18 @@ pub fn infer_instruction_type(
                 .map(|(_, ty)| ty.clone()),
             _ => None,
         }),
+        Instruction::ArrayAlloc { len: _, init } => {
+            lookup_type(types, *init).map(|ty| IrType::Array(Box::new(ty.clone())))
+        }
+        Instruction::ArrayGet { array, index: _ } => {
+            lookup_type(types, *array).and_then(|ty| match ty {
+                IrType::Array(elem_ty) => Some(elem_ty.as_ref().clone()),
+                _ => None,
+            })
+        }
+        Instruction::ArrayLen(_) => Some(IrType::Usize),
+        Instruction::ArrayConcat(a, _) => lookup_type(types, *a).cloned(),
+        Instruction::RecordSet { .. } | Instruction::ArraySet { .. } => Some(IrType::Unit),
         _ => None,
     }
 }

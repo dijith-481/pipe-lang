@@ -197,7 +197,6 @@ fn closure_builtins_are_registered() {
 // Drop, Take, Sqrt, Unwrap — UNIMPLEMENTED in stdlib
 // ---------------------------------------------------------------------------
 
-#[ignore = "Member 2: implement `drop` builtin"]
 #[test]
 fn builtin_drop_returns_unit() {
     let registry = full_registry();
@@ -207,7 +206,6 @@ fn builtin_drop_returns_unit() {
     assert_eq!(result, Value::Unit);
 }
 
-#[ignore = "Member 2: implement `take` builtin"]
 #[test]
 fn builtin_take_first_n() {
     let registry = full_registry();
@@ -230,7 +228,6 @@ fn builtin_take_first_n() {
     }
 }
 
-#[ignore = "Member 2: implement `take` builtin with zero"]
 #[test]
 fn builtin_take_zero_returns_empty() {
     let registry = full_registry();
@@ -244,7 +241,6 @@ fn builtin_take_zero_returns_empty() {
     }
 }
 
-#[ignore = "Member 2: implement `sqrt` builtin"]
 #[test]
 fn builtin_sqrt_positive() {
     let registry = full_registry();
@@ -254,7 +250,6 @@ fn builtin_sqrt_positive() {
     assert_eq!(result, Value::F64(3.0));
 }
 
-#[ignore = "Member 2: implement `sqrt` with zero"]
 #[test]
 fn builtin_sqrt_zero() {
     let registry = full_registry();
@@ -264,7 +259,6 @@ fn builtin_sqrt_zero() {
     assert_eq!(result, Value::F64(0.0));
 }
 
-#[ignore = "Member 2: implement `unwrap` builtin"]
 #[test]
 fn builtin_unwrap_some() {
     let registry = full_registry();
@@ -275,7 +269,6 @@ fn builtin_unwrap_some() {
     assert_eq!(result, Value::I32(42));
 }
 
-#[ignore = "Member 2: implement `unwrap` panics on None"]
 #[test]
 fn builtin_unwrap_none_panics() {
     let registry = full_registry();
@@ -288,7 +281,6 @@ fn builtin_unwrap_none_panics() {
 // Effect runtime builtins — UNIMPLEMENTED
 // ---------------------------------------------------------------------------
 
-#[ignore = "Member 2: implement Effect.map runtime builtin"]
 #[test]
 fn builtin_effect_map_transforms_result() {
     let registry = full_registry();
@@ -300,7 +292,6 @@ fn builtin_effect_map_transforms_result() {
     assert!(result.is_err() || result.is_ok());
 }
 
-#[ignore = "Member 2: implement Effect.flatMap runtime builtin"]
 #[test]
 fn builtin_effect_flat_map_chains() {
     let registry = full_registry();

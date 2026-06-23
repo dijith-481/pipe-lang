@@ -590,10 +590,15 @@ fn lower_expr<'src>(
         }
 
         Expr::Record { fields, .. } => {
-            let field_vals: Vec<ValueId> = fields
+            let mut sorted: Vec<_> = fields
                 .iter()
-                .map(|f| lower_expr(fb, f.value, hoisted))
-                .collect::<Result<_, _>>()?;
+                .map(|f| lower_expr(fb, f.value, hoisted).map(|v| (f, v)))
+                .collect::<Result<Vec<_>, _>>()?;
+            // Sort by field name so field indices match the
+            // alphabetical ordering that field_index_of returns
+            // (derived from BTreeMap keys).
+            sorted.sort_by(|(a, _), (b, _)| a.name.cmp(b.name));
+            let field_vals: Vec<ValueId> = sorted.into_iter().map(|(_, v)| v).collect();
             Ok(fb.emit(Instruction::RecordAlloc(Box::new(RecordAllocData {
                 type_name: "anon".into(),
                 fields: field_vals,
