@@ -1,0 +1,18 @@
+{
+  "name": "tree-sitter-pipe-lang",
+  "version": "0.1.0",
+  "description": "Tree-sitter grammar for pipe-lang",
+  "main": "grammar.js",
+  "scripts": {
+    "test": "tree-sitter test",
+    "build": "tree-sitter generate"
+  },
+  "keywords": [
+    "tree-sitter",
+    "pipe-lang"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "tree-sitter-cli": "^0.26.9"
+  }
+}

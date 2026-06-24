@@ -1,5 +1,7 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use bumpalo::Bump;
 use diagnostics::errors::{CompilerError, SourceDiagnostic};
@@ -27,6 +29,8 @@ pub struct SessionConfig {
     pub mode: CompileMode,
     /// Optimization level (0-3).
     pub opt_level: u8,
+    /// Whether to print timing information.
+    pub timing: bool,
 }
 
 impl SessionConfig {
@@ -37,6 +41,7 @@ impl SessionConfig {
             file_path,
             mode: CompileMode::Run,
             opt_level: 0,
+            timing: false,
         }
     }
 
@@ -53,6 +58,13 @@ impl SessionConfig {
         self.opt_level = opt_level;
         self
     }
+
+    /// Sets whether to print timing information.
+    #[must_use]
+    pub fn with_timing(mut self, timing: bool) -> Self {
+        self.timing = timing;
+        self
+    }
 }
 
 /// The result of a compilation pipeline run.
@@ -62,15 +74,19 @@ pub struct CompileResult {
     pub diagnostics: Vec<SourceDiagnostic>,
     /// Whether compilation succeeded.
     pub success: bool,
-    /// The exit code returned by the compiled program's `main` function (0 if not run).
+    /// The exit code returned by the compiled program's `main` function.
     pub exit_code: i32,
+    /// Timing information for each pipeline stage.
+    pub timings: HashMap<String, Duration>,
+    /// Whether timing information should be printed.
+    pub timing: bool,
 }
 
 impl CompileResult {
-    /// Prints all diagnostics to stderr.
+    /// Prints all diagnostics to stderr using miette graphical rendering.
     pub fn eprint_to_stderr(&self) {
         for diag in &self.diagnostics {
-            eprintln!("{diag:?}");
+            eprintln!("{:?}", miette::Report::new(diag.clone()));
         }
     }
 }
@@ -79,6 +95,7 @@ fn failure_from_errors(
     filename: &str,
     source: &Arc<str>,
     errors: impl IntoIterator<Item = CompilerError>,
+    timings: HashMap<String, Duration>,
 ) -> CompileResult {
     let diagnostics = errors
         .into_iter()
@@ -88,13 +105,12 @@ fn failure_from_errors(
         diagnostics,
         success: false,
         exit_code: 1,
+        timings,
+        timing: false,
     }
 }
 
 /// Orchestrates the compilation pipeline: lex → parse → typecheck → lower → JIT.
-///
-/// The `CompilerSession` is the central entry point for driving compilation.
-/// It reads the source file, runs each pipeline stage, and collects diagnostics.
 pub struct CompilerSession {
     config: SessionConfig,
     source: Option<Arc<str>>,
@@ -166,88 +182,121 @@ impl CompilerSession {
             .clone()
             .expect("source must be loaded before running pipeline");
         let filename = self.config.file_path.to_string_lossy().to_string();
-        let source_ref: &str = &source_arc;
+        let mut timings: HashMap<String, Duration> = HashMap::new();
+        let show_timing = self.config.timing;
 
-        // Stage 1: Parse (parser handles lexing internally)
-        let arena = Bump::new();
-        let program = match parser::parse(source_ref, &arena) {
-            Ok(program) => program,
-            Err(err) => {
-                return Ok(failure_from_errors(
-                    &filename,
-                    &source_arc,
-                    [CompilerError::from(err)],
-                ));
+        // Parse, typecheck, and lower in a scope that keeps the source borrow alive
+        let ir_module = {
+            let source_ref: &str = &source_arc;
+            let arena = Bump::new();
+
+            // Stage 1: Parse
+            let parse_start = Instant::now();
+            let program = match parser::parse(source_ref, &arena) {
+                Ok(p) => p,
+                Err(err) => {
+                    timings.insert("parse".into(), parse_start.elapsed());
+                    return Ok(failure_from_errors(
+                        &filename,
+                        &source_arc,
+                        [CompilerError::from(err)],
+                        timings,
+                    ));
+                }
+            };
+            timings.insert("parse".into(), parse_start.elapsed());
+
+            // Stage 2: Typecheck
+            let tc_start = Instant::now();
+            let typed = match typechecker::typecheck(&program) {
+                Ok(t) => t,
+                Err(errors) => {
+                    timings.insert("typecheck".into(), tc_start.elapsed());
+                    return Ok(failure_from_errors(
+                        &filename,
+                        &source_arc,
+                        errors.into_iter().map(CompilerError::from),
+                        timings,
+                    ));
+                }
+            };
+            timings.insert("typecheck".into(), tc_start.elapsed());
+
+            if self.config.mode == CompileMode::Check {
+                return Ok(CompileResult {
+                    diagnostics: Vec::new(),
+                    success: true,
+                    exit_code: 0,
+                    timings,
+                    timing: show_timing,
+                });
             }
-        };
 
-        // Stage 2: Typecheck
-        let typed = match typechecker::typecheck(&program) {
-            Ok(typed) => typed,
-            Err(errors) => {
-                return Ok(failure_from_errors(
-                    &filename,
-                    &source_arc,
-                    errors.into_iter().map(CompilerError::from),
-                ));
+            // Stage 3: Lower to IR
+            let lower_start = Instant::now();
+            let ir = lower(&typed).map_err(|e| {
+                Box::new(SourceDiagnostic::new(
+                    filename.clone(),
+                    source_arc.clone(),
+                    CompilerError::from(e),
+                ))
+            })?;
+            timings.insert("lower".into(), lower_start.elapsed());
+
+            if self.config.mode == CompileMode::EmitIr {
+                println!("{ir}");
+                return Ok(CompileResult {
+                    diagnostics: Vec::new(),
+                    success: true,
+                    exit_code: 0,
+                    timings,
+                    timing: show_timing,
+                });
             }
+
+            ir
         };
-
-        // For `check` mode, stop here.
-        if self.config.mode == CompileMode::Check {
-            return Ok(CompileResult {
-                diagnostics: Vec::new(),
-                success: true,
-                exit_code: 0,
-            });
-        }
-
-        // Stage 3: Lower to IR
-        let ir_module = lower(&typed).map_err(|e| {
-            Box::new(SourceDiagnostic::new(
-                filename.clone(),
-                source_arc.clone(),
-                CompilerError::ir_error(ast::span::Span::empty(0), e.to_string()),
-            ))
-        })?;
-
-        // For `emit_ir` mode, print IR and stop.
-        if self.config.mode == CompileMode::EmitIr {
-            println!("{ir_module}");
-            return Ok(CompileResult {
-                diagnostics: Vec::new(),
-                success: true,
-                exit_code: 0,
-            });
-        }
 
         // Stage 4a: Initialize builtin registry for JIT name resolution
+        let reg_start = Instant::now();
         let mut registry = BuiltinRegistry::new();
         for builtin in prelude_builtins() {
             registry.register(builtin);
         }
         init_global_registry(registry);
+        timings.insert("init".into(), reg_start.elapsed());
 
         // Stage 4b: JIT compile and run
+        let jit_start = Instant::now();
         let compiled = runtime::compile_ir(&ir_module).map_err(|e| {
             Box::new(SourceDiagnostic::new(
                 filename.clone(),
                 source_arc.clone(),
-                CompilerError::jit_compile_error(e.to_string()),
+                CompilerError::from(e),
             ))
         })?;
+        timings.insert("jit_compile".into(), jit_start.elapsed());
 
+        let execute_start = Instant::now();
         match compiled.call_main() {
-            Ok(exit_code) => Ok(CompileResult {
-                diagnostics: Vec::new(),
-                success: true,
-                exit_code,
-            }),
-            Err(e) => Err(Box::new(SourceDiagnostic::new(
-                filename.clone(),
-                source_arc.clone(),
-                CompilerError::jit_compile_error(e.to_string()),
-            ))),
+            Ok(exit_code) => {
+                timings.insert("execute".into(), execute_start.elapsed());
+                Ok(CompileResult {
+                    diagnostics: Vec::new(),
+                    success: true,
+                    exit_code,
+                    timings,
+                    timing: show_timing,
+                })
+            }
+            Err(e) => {
+                timings.insert("execute".into(), execute_start.elapsed());
+                Err(Box::new(SourceDiagnostic::new(
+                    filename,
+                    source_arc,
+                    CompilerError::from(e),
+                )))
+            }
         }
     }
 }
@@ -266,6 +315,7 @@ mod tests {
         assert_eq!(config.file_path, PathBuf::from("test.pl"));
         assert_eq!(config.mode, CompileMode::Run);
         assert_eq!(config.opt_level, 0);
+        assert!(!config.timing);
     }
 
     #[test]
@@ -339,5 +389,19 @@ mod tests {
         session.set_source("let add = (a: i32, b: i32) => a + b");
         let result = session.run_pipeline().unwrap();
         assert!(result.success);
+    }
+
+    #[test]
+    fn pipeline_timing_flag() {
+        let config = SessionConfig::new(PathBuf::from("test.pl"))
+            .with_mode(CompileMode::Check)
+            .with_timing(true);
+        let mut session = CompilerSession::new(config);
+        session.set_source("let x = 42");
+        let result = session.run_pipeline().unwrap();
+        assert!(result.timing);
+        assert!(!result.timings.is_empty());
+        assert!(result.timings.contains_key("parse"));
+        assert!(result.timings.contains_key("typecheck"));
     }
 }

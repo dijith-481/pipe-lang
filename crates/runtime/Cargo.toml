@@ -9,6 +9,7 @@ workspace = true
 [dependencies]
 ast = { version = "0.1.0", path = "../ast" }
 cranelift-codegen = "0.132.0"
+diagnostics = { version = "0.1.0", path = "../diagnostics" }
 cranelift-frontend = "0.132.0"
 cranelift-jit = "0.132.0"
 cranelift-module = "0.132.0"

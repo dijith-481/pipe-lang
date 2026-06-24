@@ -1,0 +1,208 @@
+====================
+Let declarations
+====================
+
+let x = 42
+
+---
+
+(source_file
+  (declaration
+    (let_declaration
+      name: (identifier)
+      value: (expression
+        (integer_literal)))))
+
+====================
+Let with type annotation
+====================
+
+let x: i32 = 42
+
+---
+
+(source_file
+  (declaration
+    (let_declaration
+      name: (identifier)
+      type: (type_expression
+        (identifier))
+      value: (expression
+        (integer_literal)))))
+
+====================
+Type declaration
+====================
+
+type Option<a> = Some(a) | None
+
+---
+
+(source_file
+  (declaration
+    (type_declaration
+      name: (identifier)
+      (type_parameter)
+      rhs: (type_expression
+        (identifier)))))
+
+====================
+Use declaration
+====================
+
+use math, io
+
+---
+
+(source_file
+  (declaration
+    (use_declaration
+      (identifier)
+      (identifier))))
+
+====================
+If expression
+====================
+
+let name = if x > 0 { y } else { z }
+
+---
+
+(source_file
+  (declaration
+    (let_declaration
+      name: (identifier)
+      value: (expression
+        (if_expression
+          condition: (expression
+            (binary_expression
+              left: (identifier)
+              right: (integer_literal)))
+          consequence: (block_expression
+            (statement
+              (expression_statement
+                (expression
+                  (identifier)))))
+          alternative: (block_expression
+            (statement
+              (expression_statement
+                (expression
+                  (identifier))))))))))
+
+====================
+Lambda expression
+====================
+
+let f = (x: i32, y) => x + y
+
+---
+
+(source_file
+  (declaration
+    (let_declaration
+      name: (identifier)
+      value: (expression
+        (lambda_expression
+          (param
+            name: (identifier)
+            type: (type_expression (identifier)))
+          (param
+            name: (identifier))
+          body: (expression
+            (binary_expression
+              left: (identifier)
+              right: (identifier))))))))
+
+====================
+Match expression
+====================
+
+let result = match x { Some(v) => v * 2, None => 0 }
+
+---
+
+(source_file
+  (declaration
+    (let_declaration
+      name: (identifier)
+      value: (expression
+        (match_expression
+          subject: (expression (identifier))
+          (match_arm
+            pattern: (constructor_pattern
+              name: (identifier)
+              (binding_pattern))
+            value: (expression
+              (binary_expression
+                left: (identifier)
+                right: (integer_literal))))
+          (match_arm
+            pattern: (constructor_pattern
+              name: (identifier))
+            value: (expression (integer_literal))))))))
+
+====================
+Block expression
+====================
+
+let name = {
+  let y = x + 1
+  y * 2
+}
+
+---
+
+(source_file
+  (declaration
+    (let_declaration
+      name: (identifier)
+      value: (expression
+        (block_expression
+          (statement
+            (let_statement
+              pattern: (binding_pattern (identifier))
+              value: (expression
+                (binary_expression
+                  left: (identifier)
+                  right: (integer_literal)))))
+          (statement
+            (expression_statement
+              (expression
+                (binary_expression
+                  left: (identifier)
+                  right: (integer_literal))))))))))
+
+====================
+Application expression
+====================
+
+let result = add(1, 2)
+
+---
+
+(source_file
+  (declaration
+    (let_declaration
+      name: (identifier)
+      value: (expression
+        (application_expression
+          function: (expression (identifier))
+          argument: (expression (integer_literal))
+          argument: (expression (integer_literal)))))))
+
+====================
+Comments
+====================
+
+// This is a comment
+let x = 42 // inline comment
+
+---
+
+(source_file
+  (comment)
+  (declaration
+    (let_declaration
+      name: (identifier)
+      value: (expression (integer_literal))))
+  (comment))

@@ -38,6 +38,12 @@ pub enum RuntimeError {
     UserError { msg: String },
 }
 
+impl From<RuntimeError> for diagnostics::CompilerError {
+    fn from(err: RuntimeError) -> Self {
+        diagnostics::CompilerError::jit_compile_error(err.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

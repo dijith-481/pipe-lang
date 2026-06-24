@@ -1025,3 +1025,9 @@ pub fn lower(typed: &TypedProgram<'_>) -> Result<IrModule, LowerError> {
 
     Ok(module)
 }
+
+impl From<LowerError> for diagnostics::CompilerError {
+    fn from(err: LowerError) -> Self {
+        diagnostics::CompilerError::ir_error(ast::span::Span::empty(0), err.to_string())
+    }
+}

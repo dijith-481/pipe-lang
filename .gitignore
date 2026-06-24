@@ -7,3 +7,7 @@ Cargo.lock
 # opencode local configuration (not source code)
 .agents/
 skills-lock.json
+
+# tree-sitter build artifacts
+node_modules/
+.npx-cache/

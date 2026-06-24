@@ -9,6 +9,7 @@ workspace = true
 [dependencies]
 ast = { version = "0.1.0", path = "../ast" }
 bumpalo = { version = "3.20.3", features = ["collections"] }
+diagnostics = { version = "0.1.0", path = "../diagnostics" }
 parser = { version = "0.1.0", path = "../parser" }
 smol_str = "0.3.6"
 thiserror = "2.0.18"

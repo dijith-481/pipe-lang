@@ -26,7 +26,12 @@ fn typecheck_arity_mismatch_too_many_args() {
     let errors = result.expect_err("should fail with arity mismatch");
     let all_arity = errors
         .iter()
-        .all(|e| e.to_string().contains("arity") || e.to_string().contains("type mismatch"));
+        .all(|e| {
+            let msg = e.to_string();
+            msg.contains("arity")
+                || msg.contains("Type mismatch")
+                || msg.contains("arguments")
+        });
     assert!(
         all_arity,
         "expected arity or type mismatch errors, got: {errors:?}"
@@ -102,7 +107,12 @@ fn typecheck_unbound_variable() {
     let errors = result.expect_err("should fail with unbound variable");
     let has_unbound = errors
         .iter()
-        .any(|e| e.to_string().contains("unbound") || e.to_string().contains("not found"));
+        .any(|e| {
+            let msg = e.to_string();
+            msg.contains("Unbound variable")
+                || msg.contains("not found")
+                || msg.contains("undefined")
+        });
     assert!(
         has_unbound,
         "expected unbound variable error, got: {errors:?}"

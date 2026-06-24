@@ -167,8 +167,8 @@ pub fn assert_stdout_matches(fixture: &Fixture, actual: &str) -> Result<(), Stri
     };
     let expected = std::fs::read_to_string(expected_path)
         .map_err(|e| format!("failed to read {}: {e}", expected_path.display()))?;
-    let expected = expected.trim_end_matches('\n');
-    let actual = actual.trim_end_matches('\n');
+    let expected = expected.trim_end_matches('\n').trim_end_matches('\r');
+    let actual = actual.trim_end_matches('\n').trim_end_matches('\r');
     if expected == actual {
         return Ok(());
     }

@@ -1,0 +1,14 @@
+[package]
+name = "tree-sitter-pipe-lang"
+version = "0.1.0"
+edition = "2021"
+description = "Tree-sitter grammar for pipe-lang"
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+tree-sitter = "0.20"
+
+[build-dependencies]
+cc = "1.0"

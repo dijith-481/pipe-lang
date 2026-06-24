@@ -88,7 +88,7 @@ pub enum CompilerError {
 ///
 /// This is what is actually rendered to the user. It uses `Arc<str>` to
 /// ensure the source code is not duplicated in memory.
-#[derive(Debug, thiserror::Error, Diagnostic)]
+#[derive(Debug, Clone, thiserror::Error, Diagnostic)]
 #[error("{error}")]
 pub struct SourceDiagnostic {
     #[source_code]

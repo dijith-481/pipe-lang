@@ -76,6 +76,12 @@ impl From<cranelift_module::ModuleError> for JitError {
     }
 }
 
+impl From<JitError> for diagnostics::CompilerError {
+    fn from(err: JitError) -> Self {
+        diagnostics::CompilerError::jit_compile_error(err.to_string())
+    }
+}
+
 /// A compiled IR module, ready to execute.
 pub struct CompiledModule {
     /// Kept around so its `JITModule` allocations stay live.
