@@ -467,7 +467,6 @@ pub fn infer<'a>(
     expr: &Expr<'a>,
 ) -> Result<MonoType, TypeError> {
     let result = infer_inner(env, sub, type_map, expr)?;
-    // Apply current substitution so the stored type is maximally resolved.
     let resolved = sub.apply(&result);
     type_map.insert(expr.span(), resolved.clone());
     Ok(resolved)
@@ -566,6 +565,16 @@ fn infer_inner<'a>(
                 },
                 other => other,
             })?;
+            // Re-resolve argument types after unification.
+            // Lambda argument types are stored in the type_map before unification
+            // happens, so their parameter types may still be unresolved type
+            // variables.  Re-resolve and re-insert now that the function
+            // signature has been unified.
+            for arg in args {
+                if let Some(ty) = type_map.get(&arg.span()) {
+                    type_map.insert(arg.span(), sub.apply(ty));
+                }
+            }
             Ok(sub.apply(&ret_ty))
         }
 
@@ -1026,13 +1035,15 @@ pub fn infer_decl_with_map<'a>(
                         tag_info.push((SmolStr::from(variant.name), payload_tys));
                     }
 
+                    let combined: Vec<MonoType> =
+                        tag_info.iter().flat_map(|(_, ptys)| ptys.clone()).collect();
                     env.tag_variants.insert(SmolStr::from(*name), tag_info);
 
                     let poly = PolyType::poly(
                         param_vars,
                         MonoType::Tag {
                             name: SmolStr::from(*name),
-                            payload: Rc::from([]),
+                            payload: Rc::from(combined),
                         },
                     );
                     env.insert(*name, poly.clone());

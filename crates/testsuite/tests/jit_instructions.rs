@@ -15,8 +15,8 @@
 
 use ast::SmolStr;
 use ir::{
-    BasicBlock, Instruction, IrDecl, IrFunction, IrModule, IrType, MakeClosureData,
-    RecordAllocData, TagConstructData, Terminator, ValueId,
+    BasicBlock, CallIndirectData, Instruction, IrDecl, IrFunction, IrModule, IrType,
+    MakeClosureData, RecordAllocData, TagConstructData, Terminator, ValueId,
 };
 use runtime::compile_ir;
 
@@ -935,4 +935,278 @@ fn jit_println_closure_uses_type_tag() {
     module.decls.push(ir::IrDecl::Function(func));
     let compiled = compile_ir(&module).expect("Println closure should compile");
     compiled.call_main().expect("main should run");
+}
+
+// ---------------------------------------------------------------------------
+// CallIndirect — integration tests (Phase 1 TDD)
+// ---------------------------------------------------------------------------
+
+/// Helper: build a one-block function `f` with explicit params and a body
+/// produced by `build_body`, and add it to `module`.
+fn add_function(
+    module: &mut IrModule,
+    name: &str,
+    params: Vec<(SmolStr, IrType)>,
+    return_type: IrType,
+    build_body: impl FnOnce(&mut IrFunction, &mut BasicBlock) -> ValueId,
+) {
+    let mut func = IrFunction::new(SmolStr::new(name), return_type);
+    let entry_id = func.alloc_block();
+    let mut entry = BasicBlock::new(entry_id);
+    let mut value_ids = Vec::new();
+    for (pname, pty) in &params {
+        let v = func.alloc_value();
+        value_ids.push((v, pname.clone(), pty.clone()));
+    }
+    for (vid, pname, pty) in &value_ids {
+        func.params.push((*vid, pname.clone(), pty.clone()));
+    }
+    let _ = build_body(&mut func, &mut entry);
+    func.blocks.push(entry);
+    module.decls.push(IrDecl::Function(func));
+}
+
+#[test]
+fn jit_call_indirect_simple() {
+    // (x: i32) -> i32 { x + 1 }, called with 5 → 6
+    let mut module = IrModule::new();
+    add_function(
+        &mut module,
+        "helper",
+        vec![(SmolStr::new("x"), IrType::I32)],
+        IrType::I32,
+        |func, entry| {
+            let x = ValueId(0); // first param has ValueId 0
+            let one = push_inst(func, entry, Instruction::ConstI32(1));
+            let sum = push_inst(func, entry, Instruction::Add(x, one));
+            entry.terminator = Terminator::Return(sum);
+            sum
+        },
+    );
+    let mut func = IrFunction::new(SmolStr::new("main"), IrType::I32);
+    let entry_id = func.alloc_block();
+    let mut entry = BasicBlock::new(entry_id);
+    let arg = push_inst(&mut func, &mut entry, Instruction::ConstI32(5));
+    let closure = push_inst(
+        &mut func,
+        &mut entry,
+        Instruction::MakeClosure(Box::new(MakeClosureData {
+            func_name: SmolStr::new("helper"),
+            captures: vec![],
+        })),
+    );
+    let result = push_inst(
+        &mut func,
+        &mut entry,
+        Instruction::CallIndirect(Box::new(CallIndirectData {
+            callee: closure,
+            args: vec![arg],
+            return_type: IrType::I32,
+        })),
+    );
+    entry.terminator = Terminator::Return(result);
+    func.blocks.push(entry);
+    module.decls.push(IrDecl::Function(func));
+
+    let compiled = compile_ir(&module).expect("CallIndirect should compile");
+    assert_eq!(compiled.call_main().expect("main should run"), 6);
+}
+
+#[test]
+fn jit_call_indirect_with_capture() {
+    // (x: i32) -> i32 { x + cap }, cap = 100, called with 5 → 105
+    let mut module = IrModule::new();
+    add_function(
+        &mut module,
+        "helper",
+        vec![
+            (SmolStr::new("cap"), IrType::I32),
+            (SmolStr::new("x"), IrType::I32),
+        ],
+        IrType::I32,
+        |func, entry| {
+            let cap = ValueId(0);
+            let x = ValueId(1);
+            let sum = push_inst(func, entry, Instruction::Add(x, cap));
+            entry.terminator = Terminator::Return(sum);
+            sum
+        },
+    );
+    let mut func = IrFunction::new(SmolStr::new("main"), IrType::I32);
+    let entry_id = func.alloc_block();
+    let mut entry = BasicBlock::new(entry_id);
+    let captured = push_inst(&mut func, &mut entry, Instruction::ConstI32(100));
+    let arg = push_inst(&mut func, &mut entry, Instruction::ConstI32(5));
+    let closure = push_inst(
+        &mut func,
+        &mut entry,
+        Instruction::MakeClosure(Box::new(MakeClosureData {
+            func_name: SmolStr::new("helper"),
+            captures: vec![captured],
+        })),
+    );
+    let result = push_inst(
+        &mut func,
+        &mut entry,
+        Instruction::CallIndirect(Box::new(CallIndirectData {
+            callee: closure,
+            args: vec![arg],
+            return_type: IrType::I32,
+        })),
+    );
+    entry.terminator = Terminator::Return(result);
+    func.blocks.push(entry);
+    module.decls.push(IrDecl::Function(func));
+
+    let compiled = compile_ir(&module).expect("CallIndirect with capture should compile");
+    assert_eq!(compiled.call_main().expect("main should run"), 105);
+}
+
+#[test]
+fn jit_call_indirect_two_captures() {
+    // (x: i32) -> i32 { a + b*x }, a=10, b=3, called with 4 → 22
+    let mut module = IrModule::new();
+    add_function(
+        &mut module,
+        "helper",
+        vec![
+            (SmolStr::new("a"), IrType::I32),
+            (SmolStr::new("b"), IrType::I32),
+            (SmolStr::new("x"), IrType::I32),
+        ],
+        IrType::I32,
+        |func, entry| {
+            let a = ValueId(0);
+            let b = ValueId(1);
+            let x = ValueId(2);
+            let bx = push_inst(func, entry, Instruction::Mul(b, x));
+            let sum = push_inst(func, entry, Instruction::Add(a, bx));
+            entry.terminator = Terminator::Return(sum);
+            sum
+        },
+    );
+    let mut func = IrFunction::new(SmolStr::new("main"), IrType::I32);
+    let entry_id = func.alloc_block();
+    let mut entry = BasicBlock::new(entry_id);
+    let a = push_inst(&mut func, &mut entry, Instruction::ConstI32(10));
+    let b = push_inst(&mut func, &mut entry, Instruction::ConstI32(3));
+    let x = push_inst(&mut func, &mut entry, Instruction::ConstI32(4));
+    let closure = push_inst(
+        &mut func,
+        &mut entry,
+        Instruction::MakeClosure(Box::new(MakeClosureData {
+            func_name: SmolStr::new("helper"),
+            captures: vec![a, b],
+        })),
+    );
+    let result = push_inst(
+        &mut func,
+        &mut entry,
+        Instruction::CallIndirect(Box::new(CallIndirectData {
+            callee: closure,
+            args: vec![x],
+            return_type: IrType::I32,
+        })),
+    );
+    entry.terminator = Terminator::Return(result);
+    func.blocks.push(entry);
+    module.decls.push(IrDecl::Function(func));
+
+    let compiled = compile_ir(&module).expect("CallIndirect with 2 captures should compile");
+    assert_eq!(compiled.call_main().expect("main should run"), 22);
+}
+
+// ---------------------------------------------------------------------------
+// End-to-end tests via parse → typecheck → lower → JIT
+// (these exercise the actual lower.rs codepaths for closures and thunks)
+// ---------------------------------------------------------------------------
+
+fn lower_and_compile(src: &str) -> runtime::CompiledModule {
+    let arena = bumpalo::Bump::new();
+    let prog = parser::parse(src, &arena).expect("parse failed");
+    let typed = typechecker::typecheck(&prog).expect("typecheck failed");
+    let ir_module = ir::lower(&typed).expect("lower failed");
+    compile_ir(&ir_module).expect("compile failed")
+}
+
+fn e2e_main_i32(src: &str) -> i32 {
+    let compiled = lower_and_compile(src);
+    compiled.call_main().expect("main should run")
+}
+
+#[test]
+fn e2e_thunk_apply_simple() {
+    // let t = (() => (x) => x*2); t()(21) → 42
+    assert_eq!(
+        e2e_main_i32("let t = (() => (x) => x*2)\nlet main = t()(21)"),
+        42
+    );
+}
+
+#[test]
+fn e2e_thunk_apply_with_arg() {
+    // let mk = (n) => (x) => x + n
+    // let t = mk(5)
+    // t(10) → 15
+    assert_eq!(
+        e2e_main_i32(
+            "let mk = (n) => (x) => x + n\nlet t = mk(5)\nlet main = t(10)"
+        ),
+        15
+    );
+}
+
+#[test]
+fn e2e_compose_lambda() {
+    // compose(f, g)(x) = f(g(x))
+    // compose((n)=>n+1, (n)=>n*2)(5) = 11
+    assert_eq!(
+        e2e_main_i32(
+            "let compose = (f, g) => (x) => f(g(x))\nlet main = compose((n)=>n+1, (n)=>n*2)(5)"
+        ),
+        11
+    );
+}
+
+#[test]
+fn e2e_make_adder_apply() {
+    // makeAdder(5)(10) → 15
+    assert_eq!(
+        e2e_main_i32("let makeAdder = (n) => (x) => x + n\nlet main = makeAdder(5)(10)"),
+        15
+    );
+}
+
+#[test]
+fn e2e_factorial_5() {
+    // The example factorial.pp body: factorialTail(5) = 120
+    let src = "\
+        let factorial = (n) => match n { 0 => 1, n => n * factorial(n - 1) }\n\
+        let main = factorial(5)\n\
+    ";
+    assert_eq!(e2e_main_i32(src), 120);
+}
+
+#[test]
+fn e2e_match_option_some() {
+    // match Some(7) { Some(x) => x, None => 0 } → 7
+    let src = "\
+        let main = match Some(7) {\n\
+            Some(x) => x\n\
+            None => 0\n\
+        }\n\
+    ";
+    assert_eq!(e2e_main_i32(src), 7);
+}
+
+#[test]
+fn e2e_match_result_ok() {
+    // match Ok(42) { Ok(v) => v, Err(_) => 0 } → 42
+    let src = "\
+        let main = match Ok(42) {\n\
+            Ok(v) => v\n\
+            Err(_) => 0\n\
+        }\n\
+    ";
+    assert_eq!(e2e_main_i32(src), 42);
 }

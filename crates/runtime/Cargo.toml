@@ -17,8 +17,8 @@ ir = { version = "0.1.0", path = "../ir" }
 libc = "0.2"
 thiserror = "2.0.18"
 tracing = "0.1"
+typechecker = { version = "0.1.0", path = "../typechecker" }
 
 [dev-dependencies]
 bumpalo = "3"
 parser = { version = "0.1.0", path = "../parser" }
-typechecker = { version = "0.1.0", path = "../typechecker" }

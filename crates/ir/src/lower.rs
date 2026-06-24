@@ -277,7 +277,7 @@ impl<'a> FunctionBuilder<'a> {
     fn emit(&mut self, inst: Instruction) -> ValueId {
         let v = self.alloc_value();
         // Infer type BEFORE moving `inst` into the block.
-        let ty = infer_instruction_type(&inst, &self.value_types, &HashMap::new());
+        let ty = infer_instruction_type(&inst, &self.value_types, &HashMap::new(), self.tag_variants);
         self.func.blocks[self.current_block]
             .instructions
             .push((Some(v), inst));
@@ -322,6 +322,19 @@ fn lower_expr<'src>(
         Expr::Ident(name, span) => {
             if let Some(v) = fb.lookup(name) {
                 Ok(v)
+            } else if let Some((tag_type, disc, _)) =
+                find_tag_constructor(name, fb.tag_variants)
+            {
+                // Bare tag constructor like `None` (0-arg). Emit a
+                // `TagConstruct` with no payload.
+                Ok(fb.emit(Instruction::TagConstruct(Box::new(
+                    TagConstructData {
+                        type_name: tag_type.into(),
+                        variant: (*name).into(),
+                        discriminant: disc,
+                        payload: vec![],
+                    },
+                ))))
             } else if fb.globals.contains(*name) {
                 let is_func = fb
                     .type_map
@@ -749,13 +762,28 @@ fn lower_expr<'src>(
                 .map(mono_to_ir)
                 .unwrap_or(IrType::Unit);
             match func {
-                Expr::Ident(name, _) => Ok(fb.emit(Instruction::CallNamed(Box::new(
-                    crate::CallNamedData {
-                        name: (*name).into(),
-                        args: arg_vals,
-                        return_type,
-                    },
-                )))),
+                Expr::Ident(name, _) => {
+                    if let Some((tag_type, disc, _)) =
+                        find_tag_constructor(name, fb.tag_variants)
+                    {
+                        Ok(fb.emit(Instruction::TagConstruct(Box::new(
+                            TagConstructData {
+                                type_name: tag_type.into(),
+                                variant: (*name).into(),
+                                discriminant: disc,
+                                payload: arg_vals,
+                            },
+                        ))))
+                    } else {
+                        Ok(fb.emit(Instruction::CallNamed(Box::new(
+                            crate::CallNamedData {
+                                name: (*name).into(),
+                                args: arg_vals,
+                                return_type,
+                            },
+                        ))))
+                    }
+                }
                 _ => {
                     let callee = lower_expr(fb, func, hoisted)?;
                     Ok(fb.emit(Instruction::CallIndirect(Box::new(
@@ -794,6 +822,22 @@ fn subj_tag_discriminant(fb: &FunctionBuilder<'_>, subj_v: ValueId, variant_name
         return v.discriminant;
     }
     0
+}
+
+/// Search all tag types for a variant with the given name.
+/// Returns the tag type name, the variant discriminant, and the payload template.
+fn find_tag_constructor<'a>(
+    name: &str,
+    tag_variants: &'a TagVariants,
+) -> Option<(&'a str, u32, &'a Vec<MonoType>)> {
+    for (type_name, variants) in tag_variants {
+        for (idx, (vname, payload)) in variants.iter().enumerate() {
+            if vname == name {
+                return Some((type_name.as_str(), idx as u32, payload));
+            }
+        }
+    }
+    None
 }
 
 /// Returns the field index of `field` in the record type of `object`.

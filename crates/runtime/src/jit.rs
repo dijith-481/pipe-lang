@@ -314,6 +314,7 @@ pub fn compile_ir(ir_module: &IrModule) -> Result<CompiledModule, JitError> {
             &fn_declared_return_types,
             &fn_param_types,
             &empty_actual,
+            &ir_module.tag_variants,
         ) {
             for block in &func.blocks {
                 if let ir::Terminator::Return(value_id) = &block.terminator {
@@ -348,6 +349,7 @@ pub fn compile_ir(ir_module: &IrModule) -> Result<CompiledModule, JitError> {
             array_concat_ptr_data_id,
             call_builtin_ptr_data_id,
             builtin_name_data_ids: &builtin_name_data_ids,
+            tag_variants: &ir_module.tag_variants,
         };
         compile_function_body(&mut params, func, *func_id, ret_type)?;
     }
@@ -432,6 +434,7 @@ struct FunctionBodyParams<'a> {
     array_concat_ptr_data_id: DataId,
     call_builtin_ptr_data_id: DataId,
     builtin_name_data_ids: &'a HashMap<String, DataId>,
+    tag_variants: &'a typechecker::TagVariants,
 }
 
 /// Compiles the body of one IR function into the module's slot
@@ -474,6 +477,7 @@ fn compile_function_body(
         &fn_return_types,
         params.fn_param_types,
         params.fn_actual_return_types,
+        params.tag_variants,
     )?;
     let mut values = HashMap::new();
 
@@ -2447,6 +2451,7 @@ fn infer_value_types(
     fn_return_types: &HashMap<String, IrType>,
     fn_param_types: &HashMap<String, Vec<IrType>>,
     fn_actual_return_types: &HashMap<String, IrType>,
+    tag_variants: &typechecker::TagVariants,
 ) -> Result<HashMap<ValueId, IrType>, JitError> {
     let mut types = HashMap::new();
     for (value_id, _, ty) in &func.params {
@@ -2465,6 +2470,7 @@ fn infer_value_types(
                     fn_return_types,
                     fn_param_types,
                     fn_actual_return_types,
+                    tag_variants,
                 )?;
                 types.insert(*value_id, ty);
             }
@@ -2480,6 +2486,7 @@ fn infer_instruction_type(
     fn_return_types: &HashMap<String, IrType>,
     fn_param_types: &HashMap<String, Vec<IrType>>,
     fn_actual_return_types: &HashMap<String, IrType>,
+    tag_variants: &typechecker::TagVariants,
 ) -> Result<IrType, JitError> {
     // Override MakeClosure inference to include proper param types
     // (capture types + declared param types) in the FuncType.
@@ -2505,7 +2512,7 @@ fn infer_instruction_type(
     // to preserve full capture params in the closure FuncType.
     if let ir::Instruction::CallNamed(data) = inst {
         let base_ty =
-            ir::infer_instruction_type(inst, types, fn_return_types).ok_or_else(|| {
+            ir::infer_instruction_type(inst, types, fn_return_types, tag_variants).ok_or_else(|| {
                 JitError::UnimplementedInstruction {
                     instruction: format!("{inst:?}"),
                     function: func_name.to_string(),
@@ -2518,7 +2525,7 @@ fn infer_instruction_type(
         }
         return Ok(base_ty);
     }
-    ir::infer_instruction_type(inst, types, fn_return_types).ok_or_else(|| {
+    ir::infer_instruction_type(inst, types, fn_return_types, tag_variants).ok_or_else(|| {
         JitError::UnimplementedInstruction {
             instruction: format!("{inst:?}"),
             function: func_name.to_string(),

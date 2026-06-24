@@ -1,0 +1,4 @@
+add5(10) = 15
+add10(10) = 20
+applyTwice(double, 3) = 12
+doubleThenIncrement(5) = 11

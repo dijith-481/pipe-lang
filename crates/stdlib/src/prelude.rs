@@ -639,6 +639,12 @@ mod tests {
         assert!(names.contains(&"to_i32"));
         assert!(names.contains(&"to_f64"));
         assert!(names.contains(&"to_str"));
+        assert!(names.contains(&"drop"));
+        assert!(names.contains(&"take"));
+        assert!(names.contains(&"sqrt"));
+        assert!(names.contains(&"unwrap"));
+        assert!(names.contains(&"Effect.map"));
+        assert!(names.contains(&"Effect.flatMap"));
     }
 
     #[test]

@@ -136,7 +136,7 @@ fn builtin_array_map() {
     let arr = Value::array(vec![Value::I32(1), Value::I32(2), Value::I32(3)]);
     // map with id function should return same array
     let result = registry.execute("map", &[arr, Value::Unit]);
-    assert!(result.is_ok() || result.is_err());
+    assert!(result.is_err(), "map with non-closure should fail");
 }
 
 #[test]
@@ -289,7 +289,7 @@ fn builtin_effect_map_transforms_result() {
     let effect = Value::Effect(Arc::new(EchoBuiltin));
     let id_fn = Value::Unit; // placeholder — needs closure
     let result = registry.execute("Effect.map", &[effect, id_fn]);
-    assert!(result.is_err() || result.is_ok());
+    assert!(result.is_err(), "Effect.map with non-closure should fail");
 }
 
 #[test]
@@ -298,7 +298,10 @@ fn builtin_effect_flat_map_chains() {
     let effect = Value::Effect(Arc::new(EchoBuiltin));
     let chain_fn = Value::Unit; // placeholder
     let result = registry.execute("Effect.flatMap", &[effect, chain_fn]);
-    assert!(result.is_err() || result.is_ok());
+    assert!(
+        result.is_err(),
+        "Effect.flatMap with non-closure should fail"
+    );
 }
 
 // ---------------------------------------------------------------------------
