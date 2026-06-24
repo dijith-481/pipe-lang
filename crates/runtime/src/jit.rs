@@ -2135,11 +2135,15 @@ fn compile_array_get(
     let elem_size = storage_size(elem_ty, ctx.func_name)?;
 
     // offset = 8 + index * element_size
-    let elem_size_val = builder.ins().iconst(I32, elem_size as i64);
-    let byte_offset = builder.ins().imul(index_val, elem_size_val);
-    let byte_offset_64 = builder.ins().uextend(types::I64, byte_offset);
+    let index_i64 = if builder.func.dfg.value_type(index_val) == types::I64 {
+        index_val
+    } else {
+        builder.ins().uextend(types::I64, index_val)
+    };
+    let elem_size_val = builder.ins().iconst(types::I64, elem_size as i64);
+    let byte_offset = builder.ins().imul(index_i64, elem_size_val);
     let array_data_ptr = builder.ins().iadd_imm(array_val, 8);
-    let final_addr = builder.ins().iadd(array_data_ptr, byte_offset_64);
+    let final_addr = builder.ins().iadd(array_data_ptr, byte_offset);
 
     Ok(builder.ins().load(
         storage_type(elem_ty, ctx.func_name)?,
@@ -2190,11 +2194,15 @@ fn compile_array_set(
     let elem_size = storage_size(elem_ty, ctx.func_name)?;
 
     // Compute address: base + 8 + index * element_size
-    let elem_size_val = builder.ins().iconst(I32, elem_size as i64);
-    let byte_offset = builder.ins().imul(index_val, elem_size_val);
-    let byte_offset_64 = builder.ins().uextend(types::I64, byte_offset);
+    let index_i64 = if builder.func.dfg.value_type(index_val) == types::I64 {
+        index_val
+    } else {
+        builder.ins().uextend(types::I64, index_val)
+    };
+    let elem_size_val = builder.ins().iconst(types::I64, elem_size as i64);
+    let byte_offset = builder.ins().imul(index_i64, elem_size_val);
     let array_data_ptr = builder.ins().iadd_imm(array_val, 8);
-    let final_addr = builder.ins().iadd(array_data_ptr, byte_offset_64);
+    let final_addr = builder.ins().iadd(array_data_ptr, byte_offset);
 
     builder
         .ins()
@@ -2936,10 +2944,22 @@ unsafe extern "C" fn pipe_rt_call_builtin(args: *const u8, ret: *mut u8) -> i32 
             10 => RuntimeValue::Bool(raw != 0),
             11 => {
                 let ptr = raw as *const u8;
-                let len = unsafe { std::ptr::read_unaligned(ptr as *const u32) } as usize;
-                let bytes = unsafe { std::slice::from_raw_parts(ptr.add(4), len) };
-                let s = unsafe { std::str::from_utf8_unchecked(bytes) };
-                RuntimeValue::str(s.to_owned())
+                if ptr.is_null() || (raw as u64) < 0x1000 {
+                    RuntimeValue::Unit
+                } else {
+                    let len = unsafe { std::ptr::read_unaligned(ptr as *const u32) } as usize;
+                    let bytes = unsafe { std::slice::from_raw_parts(ptr.add(4), len) };
+                    let s = unsafe { std::str::from_utf8_unchecked(bytes) };
+                    RuntimeValue::str(s.to_owned())
+                }
+            }
+            13 | 14 | 15 | 17 => {
+                if raw == 0 || (raw as u64) < 0x1000 {
+                    RuntimeValue::Unit
+                } else {
+                    let val = unsafe { &*(raw as *const RuntimeValue) };
+                    val.clone()
+                }
             }
             _ => RuntimeValue::Unit,
         };
@@ -2984,8 +3004,14 @@ fn value_to_ret_buf(value: crate::value::Value, ret: *mut u8) {
         }
         RuntimeValue::Array(_) => (0, 13),
         RuntimeValue::Record(_) => (0, 14),
-        RuntimeValue::Closure(_) => (0, 16),
-        RuntimeValue::Tag { .. } => (0, 17),
+        RuntimeValue::Closure(c) => {
+            let ptr = Box::into_raw(Box::new(RuntimeValue::Closure(c))) as i64;
+            (ptr, 16)
+        }
+        RuntimeValue::Tag { tag, payload } => {
+            let ptr = Box::into_raw(Box::new(RuntimeValue::Tag { tag, payload })) as i64;
+            (ptr, 17)
+        }
         RuntimeValue::Effect(_) => (0, 15),
     };
     unsafe {

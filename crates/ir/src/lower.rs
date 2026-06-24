@@ -671,7 +671,7 @@ fn lower_expr<'src>(
                 .filter(|n| fb.locals.contains_key(n.as_str()))
                 .collect();
 
-            let inner_name: SmolStr = format!("__lambda_{}", fb.func.next_value_id).into();
+            let inner_name: SmolStr = format!("{}_lambda_{}", fb.func.name, fb.func.next_value_id).into();
 
             // Determine the body return type from the type map.
             let body_ret_ty = fb.expr_type(body.span());
