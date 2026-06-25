@@ -553,8 +553,29 @@ fn infer_inner<'a>(
                 && !args.is_empty()
             {
                 let first_arg_ty = sub.apply(&arg_tys[0]);
-                if let MonoType::Tag { name: tag_name, .. } = &first_arg_ty {
-                    let qualified = format!("{}.{}", tag_name, name);
+
+                // Extract type name for both Tags AND Primitives
+                let type_namespace = match &first_arg_ty {
+                    MonoType::Tag { name: tag_name, .. } => Some(tag_name.as_str()),
+                    MonoType::I8 => Some("I8"),
+                    MonoType::I16 => Some("I16"),
+                    MonoType::I32 => Some("I32"),
+                    MonoType::I64 => Some("I64"),
+                    MonoType::U8 => Some("U8"),
+                    MonoType::U16 => Some("U16"),
+                    MonoType::U32 => Some("U32"),
+                    MonoType::U64 => Some("U64"),
+                    MonoType::Usize => Some("Usize"),
+                    MonoType::F32 => Some("F32"),
+                    MonoType::F64 => Some("F64"),
+                    MonoType::Str => Some("Str"),
+                    MonoType::Bool => Some("Bool"),
+                    MonoType::Array(_) => Some("Array"),
+                    _ => None,
+                };
+
+                if let Some(ns) = type_namespace {
+                    let qualified = format!("{}.{}", ns, name);
                     if let Some(qualified_poly) = env.lookup(&qualified).cloned() {
                         func_ty = instantiate(env, sub, &qualified_poly);
                     }
