@@ -522,3 +522,203 @@ fn lower_empty_array() {
     let f = m.function("empty").unwrap();
     assert!(matches!(f.return_type, IrType::Array(_)));
 }
+
+// ---------------------------------------------------------------------------
+// BUG C1/C2: Match on u64 must not fall back to ConstI32 for constants
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fix_match_subject_u64_const_type() {
+    // Lower a match on u64. The subject type must be U64, and the
+    // literal arm constant must be ConstU64, not ConstI32 (the old
+    // fallback when type_map held an unresolved Var).
+    let m = lower_src("let f = (n: u64) => match n { 0u64 => 1i64, _ => 0i64 }");
+    let f = m.function("f").unwrap();
+    // At least one block must contain ConstU64(0) for the pattern.
+    let has_u64 = f
+        .blocks
+        .iter()
+        .flat_map(|b| &b.instructions)
+        .any(|(_, inst)| matches!(inst, Instruction::ConstU64(0)));
+    assert!(
+        has_u64,
+        "match on u64 must use ConstU64(0) for the 0u64 pattern, not ConstI32(0)"
+    );
+    // The 0u64 pattern must NOT emit ConstI32(0).
+    let has_i32 = f
+        .blocks
+        .iter()
+        .flat_map(|b| &b.instructions)
+        .any(|(_, inst)| matches!(inst, Instruction::ConstI32(0)));
+    assert!(
+        !has_i32,
+        "match on u64 must NOT emit ConstI32(0) as the subject comparator"
+    );
+}
+
+#[test]
+fn fix_match_subject_usize_const_type() {
+    let m = lower_src("let f = (n: usize) => match n { 0usize => 1i64, _ => 0i64 }");
+    let f = m.function("f").unwrap();
+    let has_usize = f
+        .blocks
+        .iter()
+        .flat_map(|b| &b.instructions)
+        .any(|(_, inst)| matches!(inst, Instruction::ConstUsize(0)));
+    assert!(
+        has_usize,
+        "match on usize must use ConstUsize(0), not ConstI32(0)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// BUG C4: Suffixed literal patterns must produce correct discriminant values
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fix_match_suffixed_discriminant_u64() {
+    let m = lower_src("let f = (n: u64) => match n { 42u64 => 1i64, _ => 0i64 }");
+    let f = m.function("f").unwrap();
+    let has_42 = f
+        .blocks
+        .iter()
+        .flat_map(|b| &b.instructions)
+        .any(|(_, inst)| matches!(inst, Instruction::ConstU64(42)));
+    assert!(has_42, "pattern 42u64 must produce ConstU64(42), not 0");
+}
+
+#[test]
+fn fix_match_suffixed_discriminant_u8() {
+    let m = lower_src("let f = (n: u8) => match n { 255u8 => 1i64, _ => 0i64 }");
+    let f = m.function("f").unwrap();
+    let has_255 = f
+        .blocks
+        .iter()
+        .flat_map(|b| &b.instructions)
+        .any(|(_, inst)| matches!(inst, Instruction::ConstU8(255)));
+    assert!(has_255, "pattern 255u8 must produce ConstU8(255)");
+}
+
+#[test]
+fn fix_match_suffixed_discriminant_i8() {
+    let m = lower_src("let f = (n: i8) => match n { 127i8 => 1i64, _ => 0i64 }");
+    let f = m.function("f").unwrap();
+    let has_127 = f
+        .blocks
+        .iter()
+        .flat_map(|b| &b.instructions)
+        .any(|(_, inst)| matches!(inst, Instruction::ConstI8(127)));
+    assert!(has_127, "pattern 127i8 must produce ConstI8(127)");
+}
+
+// ---------------------------------------------------------------------------
+// BUG C8: F32/F64 match arms must use correct const type, not ConstI64
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fix_match_f64_literal() {
+    let m = lower_src("let f = (x: f64) => if x > 0.0 { 1i64 } else { 0i64 }");
+    let f = m.function("f").unwrap();
+    let has_f64 = f
+        .blocks
+        .iter()
+        .flat_map(|b| &b.instructions)
+        .any(|(_, inst)| matches!(inst, Instruction::ConstF64(v) if (v - 0.0).abs() < 1e-10));
+    assert!(has_f64, "if on f64 must use ConstF64(0.0), not ConstI64(0)");
+}
+
+// ---------------------------------------------------------------------------
+// BUG C9: Hex/octal/binary literals must not silently become 0
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fix_hex_literal_u8() {
+    let m = lower_src("let x = 0xFFu8");
+    let f = m.function("x").unwrap();
+    assert_eq!(f.return_type, IrType::U8);
+    let has_255 = f.blocks[0]
+        .instructions
+        .iter()
+        .any(|(_, inst)| matches!(inst, Instruction::ConstU8(255)));
+    assert!(has_255, "hex literal 0xFFu8 must produce ConstU8(255)");
+}
+
+#[test]
+fn fix_hex_literal_u32() {
+    let m = lower_src("let x = 0xDEADu32");
+    let f = m.function("x").unwrap();
+    assert_eq!(f.return_type, IrType::U32);
+    let has_dead = f.blocks[0]
+        .instructions
+        .iter()
+        .any(|(_, inst)| matches!(inst, Instruction::ConstU32(0xDEAD)));
+    assert!(
+        has_dead,
+        "hex literal 0xDEADu32 must produce ConstU32(0xDEAD)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// BUG C1/C2: Type-map staleness — un-annotated match subject resolved through
+// pattern matching must not fall back to I32.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fix_match_unannotated_subject_resolved_through_pattern() {
+    // 'x' has no annotation. The first arm `true` unifies x with Bool,
+    // but the type_map entry for 'x' was recorded BEFORE unification
+    // with arm patterns. The lowerer must still produce Bool constants,
+    // not I32 fallback.
+    let m = lower_src("let f = (x) => match x { true => 1i64, false => 0i64 }");
+    let f = m.function("f").unwrap();
+    let has_const_bool = f
+        .blocks
+        .iter()
+        .flat_map(|b| &b.instructions)
+        .any(|(_, inst)| matches!(inst, Instruction::ConstBool(true)));
+    assert!(
+        has_const_bool,
+        "match on un-annotated bool subject should emit ConstBool(true), not ConstI32(1)"
+    );
+    let has_const_i32 = f
+        .blocks
+        .iter()
+        .flat_map(|b| &b.instructions)
+        .any(|(_, inst)| matches!(inst, Instruction::ConstI32(1)));
+    assert!(
+        !has_const_i32,
+        "match on un-annotated bool subject must NOT emit ConstI32(1)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// BUG C11: field_index_of must work with compound (non-Ident) expressions
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fix_field_index_compound_expression() {
+    // Calling a function that returns a record, then accessing a field.
+    // The lowerer must find the field index from the type_map or inferred
+    // return type, not just from simple Ident resolution.
+    let m = lower_src(
+        "let make_person = () => { name: \"Alice\", age: 30 }\n\
+         let get_age = () => make_person().age\n",
+    );
+    let f = m.function("get_age").unwrap();
+    let record_gets = f
+        .blocks
+        .iter()
+        .flat_map(|b| &b.instructions)
+        .filter(|(_, inst)| matches!(inst, Instruction::RecordGet { field, .. } if field.as_str() == "age"))
+        .count();
+    assert!(
+        record_gets >= 1,
+        "field access on compound expression (make_person().age) must produce RecordGet with field=age"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// BUG C10: Float/Str literal patterns must not silently get discriminant 0
+// ---------------------------------------------------------------------------
+
+// Str pattern matching is not supported; can't easily test lower failure here.

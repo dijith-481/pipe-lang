@@ -5,6 +5,31 @@ use bumpalo::Bump;
 use bumpalo::collections::Vec as BumpVec;
 use lexer::{Lexer, Token, TokenKind};
 
+/// Process escape sequences in a string slice, returning an owned String.
+fn process_escapes(s: &str) -> String {
+    let mut buf = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            match chars.next() {
+                Some('n') => buf.push('\n'),
+                Some('t') => buf.push('\t'),
+                Some('\\') => buf.push('\\'),
+                Some('"') => buf.push('"'),
+                Some('0') => buf.push('\0'),
+                Some(other) => {
+                    buf.push('\\');
+                    buf.push(other);
+                }
+                None => buf.push('\\'),
+            }
+        } else {
+            buf.push(ch);
+        }
+    }
+    buf
+}
+
 /// Parses the source string into a complete Program AST.
 ///
 /// # Errors
@@ -523,7 +548,9 @@ impl<'a> Parser<'a> {
             }
             TokenKind::Str(text) => {
                 let tok = self.advance();
-                self.arena.alloc(Expr::Str(text, tok.span))
+                let escaped = process_escapes(text);
+                let arena_str = self.arena.alloc_str(&escaped);
+                self.arena.alloc(Expr::Str(arena_str, tok.span))
             }
             TokenKind::True => {
                 let tok = self.advance();
@@ -803,7 +830,9 @@ impl<'a> Parser<'a> {
             match &peeked.kind {
                 TokenKind::TemplateStr(text) => {
                     self.advance();
-                    parts.push(TemplatePart::Str(text));
+                    let escaped = process_escapes(text);
+                    let arena_str = self.arena.alloc_str(&escaped);
+                    parts.push(TemplatePart::Str(arena_str));
                 }
                 TokenKind::TemplateHoleStart => {
                     self.advance();

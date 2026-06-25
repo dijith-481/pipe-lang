@@ -119,6 +119,7 @@ fn builtin_apply_with_closure() {
         func: runtime::FuncPtr::Builtin(Arc::new(echo)),
         captures: Arc::new([]),
         arity,
+        call_arg_types: Arc::new([]),
     };
     let closure = Value::Closure(Arc::new(closure_data));
     let result = registry.execute("apply", &[closure, Value::I32(42)]);
@@ -136,7 +137,7 @@ fn builtin_array_map() {
     let arr = Value::array(vec![Value::I32(1), Value::I32(2), Value::I32(3)]);
     // map with id function should return same array
     let result = registry.execute("map", &[arr, Value::Unit]);
-    assert!(result.is_ok() || result.is_err());
+    assert!(result.is_err(), "map with non-closure should fail");
 }
 
 #[test]
@@ -296,7 +297,6 @@ fn builtin_unwrap_or_none_returns_default() {
 // Effect runtime builtins — UNIMPLEMENTED
 // ---------------------------------------------------------------------------
 
-#[ignore = "Member 2: implement Effect.map runtime builtin"]
 #[test]
 fn builtin_effect_map_transforms_result() {
     let registry = full_registry();
@@ -305,17 +305,19 @@ fn builtin_effect_map_transforms_result() {
     let effect = Value::Effect(Arc::new(EchoBuiltin));
     let id_fn = Value::Unit; // placeholder — needs closure
     let result = registry.execute("Effect.map", &[effect, id_fn]);
-    assert!(result.is_err() || result.is_ok());
+    assert!(result.is_err(), "Effect.map with non-closure should fail");
 }
 
-#[ignore = "Member 2: implement Effect.flatMap runtime builtin"]
 #[test]
 fn builtin_effect_flat_map_chains() {
     let registry = full_registry();
     let effect = Value::Effect(Arc::new(EchoBuiltin));
     let chain_fn = Value::Unit; // placeholder
-    let result = registry.execute("Effect.flat_map", &[effect, chain_fn]);
-    assert!(result.is_err() || result.is_ok());
+    let result = registry.execute("Effect.flatMap", &[effect, chain_fn]);
+    assert!(
+        result.is_err(),
+        "Effect.flatMap with non-closure should fail"
+    );
 }
 
 // ---------------------------------------------------------------------------

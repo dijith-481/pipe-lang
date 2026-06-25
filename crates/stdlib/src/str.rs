@@ -12,15 +12,27 @@ pub struct StrLen;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct StrSplit;
 
+/// Bare-name split builtin: `split(value, delimiter)`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Split;
+
 /// String trim builtin: `Str.trim(value)`.
 /// Removes leading and trailing whitespace.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct StrTrim;
 
+/// Bare-name trim builtin: `trim(value)`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Trim;
+
 /// String parse_i32 builtin: `Str.parse_i32(value)`.
 /// Parses a string as an I32, returning `Ok(i32)` or `Err(error)`.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct StrParseI32;
+
+/// Bare-name parse_i32 builtin: `parse_i32(value)`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ParseI32;
 
 impl BuiltinFunction for StrConcat {
     fn name(&self) -> &str {
@@ -58,9 +70,7 @@ impl BuiltinFunction for StrLen {
     fn execute(&self, args: &[Value]) -> Result<Value, String> {
         expect_arity(self.name(), args, self.arity())?;
         let value = expect_str(self.name(), &args[0])?;
-        let len = i32::try_from(value.len())
-            .map_err(|_| format!("`{}` length does not fit in I32", self.name()))?;
-        Ok(Value::I32(len))
+        Ok(Value::Usize(value.len()))
     }
 }
 
@@ -99,9 +109,63 @@ impl BuiltinFunction for StrTrim {
     }
 }
 
+impl BuiltinFunction for Split {
+    fn name(&self) -> &str {
+        "split"
+    }
+
+    fn arity(&self) -> usize {
+        2
+    }
+
+    fn execute(&self, args: &[Value]) -> Result<Value, String> {
+        expect_arity(self.name(), args, self.arity())?;
+        let value = expect_str(self.name(), &args[0])?;
+        let delimiter = expect_str(self.name(), &args[1])?;
+        Ok(Value::array(
+            value.split(delimiter).map(Value::str).collect::<Vec<_>>(),
+        ))
+    }
+}
+
+impl BuiltinFunction for Trim {
+    fn name(&self) -> &str {
+        "trim"
+    }
+
+    fn arity(&self) -> usize {
+        1
+    }
+
+    fn execute(&self, args: &[Value]) -> Result<Value, String> {
+        expect_arity(self.name(), args, self.arity())?;
+        let value = expect_str(self.name(), &args[0])?;
+        Ok(Value::str(value.trim()))
+    }
+}
+
 impl BuiltinFunction for StrParseI32 {
     fn name(&self) -> &str {
         "Str.parse_i32"
+    }
+
+    fn arity(&self) -> usize {
+        1
+    }
+
+    fn execute(&self, args: &[Value]) -> Result<Value, String> {
+        expect_arity(self.name(), args, self.arity())?;
+        let value = expect_str(self.name(), &args[0])?;
+        match value.trim().parse::<i32>() {
+            Ok(n) => Ok(Value::tag(1, vec![Value::I32(n)])), // Ok(n)
+            Err(e) => Ok(Value::tag(0, vec![Value::str(e.to_string())])), // Err(msg)
+        }
+    }
+}
+
+impl BuiltinFunction for ParseI32 {
+    fn name(&self) -> &str {
+        "parse_i32"
     }
 
     fn arity(&self) -> usize {
@@ -162,7 +226,7 @@ mod tests {
             .execute(&[Value::str("hello")])
             .expect("len should return byte length");
 
-        assert_eq!(result, Value::I32(5));
+        assert_eq!(result, Value::Usize(5));
     }
 
     #[test]
@@ -171,7 +235,7 @@ mod tests {
             .execute(&[Value::str("")])
             .expect("len should handle empty strings");
 
-        assert_eq!(result, Value::I32(0));
+        assert_eq!(result, Value::Usize(0));
     }
 
     #[test]

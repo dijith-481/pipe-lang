@@ -1,19 +1,12 @@
-// Factorial — recursive and tail-recursive
+// Factorial — recursive
 
 // Recursive factorial
-let factorial : (i32) -> i32 = (n) => match n {
-    0 => 1
-    1 => 1
-    n => n * factorial(n - 1)
+let factorial : (u64) -> u64 = (n) => match n {
+    0u64 => 1u64
+    1u64 => 1u64
+    n => n * factorial(n - 1u64)
 }
 
-// Tail-recursive with accumulator
-let factorialAcc : i32 -> i32 -> i32 = (n) => (acc) => match n {
-    0 => acc
-    1 => acc
-    n => factorialAcc(n - 1)(n * acc)
+let main = () => {
+println(`${factorial(5u64)}`)
 }
-
-let factorialTail : (i32) -> i32 = (n) => factorialAcc(n)(1)
-
-let main = () => factorialTail(5)

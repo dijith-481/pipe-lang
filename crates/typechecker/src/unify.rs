@@ -212,14 +212,12 @@ pub fn unify(sub: &mut Substitution, a: &MonoType, b: &MonoType) -> Result<(), T
         }
 
         (MonoType::Record(af), MonoType::Record(bf)) => {
-            let (smaller, larger) = if af.len() <= bf.len() {
-                (af, bf)
-            } else {
-                (bf, af)
-            };
-            for (name, smaller_ty) in smaller.iter() {
-                let larger_ty = larger.get(name).ok_or_else(|| mismatch(&a, &b))?;
-                unify(sub, smaller_ty, larger_ty)?;
+            if af.len() != bf.len() { 
+                return Err(mismatch(&a, &b));
+            }
+            for (name, a_ty) in af.iter() {
+                let b_ty = bf.get(name).ok_or_else(|| mismatch(&a, &b))?;
+                unify(sub, a_ty, b_ty)?;
             }
             Ok(())
         }

@@ -19,22 +19,22 @@ let data = [
     `Mouse,Electronics,40,35,Chicago`
 ]
 
-// Parse a CSV line into a 5-tuple: (product, category, price, quantity, city)
-let parseRow = (line) => {
-    let cols = line.split(`,`)
-    match cols.len() {
-        5 => {
-            let qty = match cols[3].parse_i32() { Ok(n) => n Err(_) => 0 }
-            let prc = match cols[2].parse_i32() { Ok(n) => to_f64(n) Err(_) => 0.0 }
-            Some((cols[0], cols[1], prc, qty, cols[4]))
+// Parse a CSV line into fields using split
+let parse_csv = (line) => {
+    let fields = line.split(`,`)
+    match fields.len() >= 5usize {
+        true => {
+            let qty = fields[3usize].parse_i32().unwrap_or(0)
+            let prc = fields[2usize].parse_i32().unwrap_or(0)
+            Some((fields[0usize], fields[1usize], to_f64(prc), qty, fields[4usize]))
         }
-        _ => None
+        false => None
     }
 }
 
 // Valid rows
-let unwrap = (r) => match r { Some(v) => v _ => (``, ``, 0.0, 0, ``) }
-let rows = data.map(parseRow).filter((r) => match r { Some(_) => true None => false }).map(unwrap)
+let unwrap_or_empty = (r) => match r { Some(v) => v _ => (``, ``, 0.0, 0, ``) }
+let rows = data.map(parse_csv).filter((r) => match r { Some(_) => true _ => false }).map(unwrap_or_empty)
 
 let prod  = (r) => match r { (p, _, _, _, _) => p }
 let cat   = (r) => match r { (_, c, _, _, _) => c }
@@ -43,15 +43,15 @@ let qty   = (r) => match r { (_, _, _, q, _) => q }
 let cty   = (r) => match r { (_, _, _, _, c) => c }
 let rev   = (r) => prc(r) * to_f64(qty(r))
 
-let rowStr = (r) => `${prod(r)} | ${cat(r)} | $${to_str(prc(r))} | ${to_str(qty(r))} | ${cty(r)}`
+let row_str = (r) => `${prod(r)} | ${cat(r)} | $${to_str(prc(r))} | ${to_str(qty(r))} | ${cty(r)}`
 
 // Filter helpers
-let byCat = (rows, c) => rows.filter((r) => cat(r) == c)
-let byCty = (rows, c) => rows.filter((r) => cty(r) == c)
+let by_cat = (rows, c) => rows.filter((r) => cat(r) == c)
+let by_cty = (rows, c) => rows.filter((r) => cty(r) == c)
 
-let sumRev = (rows) => rows.fold(0.0, (s, r) => s + rev(r))
+let sum_rev = (rows) => rows.fold(0.0, (s, r) => s + rev(r))
 
-let avgPrc = (rows) => match to_f64(rows.len()) > 0.0 {
+let avg_prc = (rows) => match to_f64(rows.len()) > 0.0 {
     true  => rows.fold(0.0, (s, r) => s + prc(r)) / to_f64(rows.len())
     false => 0.0
 }
@@ -66,41 +66,41 @@ let unique = (rows, f) =>
         }
     })
 
-// Top N by price (simple: prepend + take, unsorted but shows top items)
-let topN = (rows, n) =>
+// Top N by price
+let top_n = (rows, n) =>
     rows.fold([], (acc, r) => [r].concat(acc)).take(n)
 
 // Format helpers
-let printTitle = (t) => { println(``); println(`=== ${t} ===`) }
+let print_title = (t) => { println(``); println(`=== ${t} ===`) }
 
 // -- Main --
 let main = () => {
     println(`=== CSV Query Tool ===`)
     println(`${to_str(rows.len())} rows loaded`)
 
-    printTitle(`All data`)
-    rows.map(rowStr).map((s) => println(s))
+    print_title(`All data`)
+    rows.map(row_str).map((s) => println(s))
 
     let cats = unique(rows, cat)
 
-    printTitle(`Revenue by category`)
-    cats.map((c) => println(`  ${c}: $${to_str(sumRev(byCat(rows, c)))}`))
+    print_title(`Revenue by category`)
+    cats.map((c) => println(`  ${c}: $${to_str(sum_rev(by_cat(rows, c)))}`))
 
-    printTitle(`Average price by category`)
-    cats.map((c) => println(`  ${c}: $${to_str(avgPrc(byCat(rows, c)))}`))
+    print_title(`Average price by category`)
+    cats.map((c) => println(`  ${c}: $${to_str(avg_prc(by_cat(rows, c)))}`))
 
-    printTitle(`Top 5 products`)
-    topN(rows, 5).map((r) => println(`  ${prod(r)}: $${to_str(prc(r))} (${cty(r)})`))
+    print_title(`Top 5 products`)
+    top_n(rows, 5usize).map((r) => println(`  ${prod(r)}: $${to_str(prc(r))} (${cty(r)})`))
 
-    printTitle(`Electronics in New York`)
-    byCty(byCat(rows, `Electronics`), `New York`)
+    print_title(`Electronics in New York`)
+    by_cty(by_cat(rows, `Electronics`), `New York`)
         .map((r) => println(`  ${prod(r)}: $${to_str(prc(r))} x ${to_str(qty(r))}`))
 
-    printTitle(`City breakdown`)
+    print_title(`City breakdown`)
     let cities = unique(rows, cty)
     cities.map((c) => {
-        let items = byCty(rows, c)
-        println(`  ${c}: ${to_str(items.len())} items, $${to_str(sumRev(items))} revenue`)
+        let items = by_cty(rows, c)
+        println(`  ${c}: ${to_str(items.len())} items, $${to_str(sum_rev(items))} revenue`)
     })
 
     println(``)

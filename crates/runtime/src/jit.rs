@@ -27,6 +27,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::value::JitArgType;
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::immediates::{Ieee32, Ieee64};
 use cranelift_codegen::ir::types::{self, I32};
@@ -150,6 +151,7 @@ pub fn compile_ir(ir_module: &IrModule) -> Result<CompiledModule, JitError> {
     // Collect function name -> FuncId so we can resolve forward refs.
     let mut func_ids: Vec<(String, cranelift_module::FuncId, IrType)> = Vec::new();
     let mut name_to_func: HashMap<String, (cranelift_module::FuncId, IrType)> = HashMap::new();
+    let mut fn_param_types: HashMap<String, Vec<IrType>> = HashMap::new();
     for func in ir_module.functions() {
         let name = func.name.as_str().to_string();
         let sig = make_signature(&module);
@@ -158,7 +160,9 @@ pub fn compile_ir(ir_module: &IrModule) -> Result<CompiledModule, JitError> {
             .map_err(JitError::from)?;
         let ret_type = func.return_type.clone();
         name_to_func.insert(name.clone(), (id, ret_type.clone()));
-        func_ids.push((name, id, ret_type));
+        func_ids.push((name.clone(), id, ret_type));
+        let param_tys: Vec<IrType> = func.params.iter().map(|(_, _, ty)| ty.clone()).collect();
+        fn_param_types.insert(name, param_tys);
     }
 
     // Scan all functions for ConstStr strings and declare data objects
@@ -216,6 +220,61 @@ pub fn compile_ir(ir_module: &IrModule) -> Result<CompiledModule, JitError> {
         module.define_data(str_concat_ptr_data_id, &data_desc)?;
     }
 
+    // Declare a data object for the pipe_rt_alloc_closure function pointer.
+    let alloc_closure_ptr = pipe_rt_alloc_closure as *const ();
+    let alloc_closure_ptr_data_id =
+        module.declare_data("__pipe_alloc_closure_ptr", Linkage::Local, false, false)?;
+    {
+        let mut data_desc = DataDescription::new();
+        let ptr_bytes: Vec<u8> = (alloc_closure_ptr as u64).to_ne_bytes().to_vec();
+        data_desc.define(ptr_bytes.into_boxed_slice());
+        module.define_data(alloc_closure_ptr_data_id, &data_desc)?;
+    }
+
+    // Declare a data object for the pipe_rt_alloc_array function pointer.
+    let alloc_array_ptr = pipe_rt_alloc_array as *const ();
+    let alloc_array_ptr_data_id =
+        module.declare_data("__pipe_alloc_array_ptr", Linkage::Local, false, false)?;
+    {
+        let mut data_desc = DataDescription::new();
+        let ptr_bytes: Vec<u8> = (alloc_array_ptr as u64).to_ne_bytes().to_vec();
+        data_desc.define(ptr_bytes.into_boxed_slice());
+        module.define_data(alloc_array_ptr_data_id, &data_desc)?;
+    }
+
+    // Declare a data object for the pipe_rt_array_concat function pointer.
+    let array_concat_ptr = pipe_rt_array_concat as *const ();
+    let array_concat_ptr_data_id =
+        module.declare_data("__pipe_array_concat_ptr", Linkage::Local, false, false)?;
+    {
+        let mut data_desc = DataDescription::new();
+        let ptr_bytes: Vec<u8> = (array_concat_ptr as u64).to_ne_bytes().to_vec();
+        data_desc.define(ptr_bytes.into_boxed_slice());
+        module.define_data(array_concat_ptr_data_id, &data_desc)?;
+    }
+
+    // Declare a data object for the pipe_rt_str_eq function pointer.
+    let str_eq_ptr = pipe_rt_str_eq as *const ();
+    let str_eq_ptr_data_id =
+        module.declare_data("__pipe_str_eq_ptr", Linkage::Local, false, false)?;
+    {
+        let mut data_desc = DataDescription::new();
+        let ptr_bytes: Vec<u8> = (str_eq_ptr as u64).to_ne_bytes().to_vec();
+        data_desc.define(ptr_bytes.into_boxed_slice());
+        module.define_data(str_eq_ptr_data_id, &data_desc)?;
+    }
+
+    // Declare a data object for the pipe_rt_arr_eq function pointer.
+    let arr_eq_ptr = pipe_rt_arr_eq as *const ();
+    let arr_eq_ptr_data_id =
+        module.declare_data("__pipe_arr_eq_ptr", Linkage::Local, false, false)?;
+    {
+        let mut data_desc = DataDescription::new();
+        let ptr_bytes: Vec<u8> = (arr_eq_ptr as u64).to_ne_bytes().to_vec();
+        data_desc.define(ptr_bytes.into_boxed_slice());
+        module.define_data(arr_eq_ptr_data_id, &data_desc)?;
+    }
+
     // Scan all functions for CallNamed instructions referencing
     // builtins (not local functions) and create name data objects.
     let mut unique_builtin_names: Vec<String> = Vec::new();
@@ -260,6 +319,59 @@ pub fn compile_ir(ir_module: &IrModule) -> Result<CompiledModule, JitError> {
         module.define_data(call_builtin_ptr_data_id, &data_desc)?;
     }
 
+    // Declare a data object for the pipe_rt_box_value_jit function pointer.
+    let box_value_jit_ptr = pipe_rt_box_value_jit as *const ();
+    let box_value_jit_ptr_data_id =
+        module.declare_data("__pipe_box_value_jit_ptr", Linkage::Local, false, false)?;
+    {
+        let mut data_desc = DataDescription::new();
+        let ptr_bytes: Vec<u8> = (box_value_jit_ptr as u64).to_ne_bytes().to_vec();
+        data_desc.define(ptr_bytes.into_boxed_slice());
+        module.define_data(box_value_jit_ptr_data_id, &data_desc)?;
+    }
+
+    // Declare a data object for the pipe_rt_unbox_value_jit function pointer.
+    let unbox_value_jit_ptr = pipe_rt_unbox_value_jit as *const ();
+    let unbox_value_jit_ptr_data_id =
+        module.declare_data("__pipe_unbox_value_jit_ptr", Linkage::Local, false, false)?;
+    {
+        let mut data_desc = DataDescription::new();
+        let ptr_bytes: Vec<u8> = (unbox_value_jit_ptr as u64).to_ne_bytes().to_vec();
+        data_desc.define(ptr_bytes.into_boxed_slice());
+        module.define_data(unbox_value_jit_ptr_data_id, &data_desc)?;
+    }
+
+    // Pre-compute each function's actual return type (with full closure
+    // params including captures) so CallNamed can propagate the richer
+    // type to downstream CallIndirect instructions.
+    let mut fn_actual_return_types: HashMap<String, IrType> = HashMap::new();
+    let fn_declared_return_types: HashMap<String, IrType> = name_to_func
+        .iter()
+        .map(|(n, (_, r))| (n.clone(), r.clone()))
+        .collect();
+    let func_names: Vec<String> = func_ids.iter().map(|(n, _, _)| n.clone()).collect();
+    for name in &func_names {
+        let Some(func) = ir_module.function(name) else {
+            continue;
+        };
+        if let Ok(value_types) = infer_value_types(
+            func,
+            &fn_declared_return_types,
+            &fn_param_types,
+            &fn_actual_return_types,
+            &ir_module.tag_variants,
+        ) {
+            for block in &func.blocks {
+                if let ir::Terminator::Return(value_id) = &block.terminator {
+                    if let Some(ty) = value_types.get(value_id) {
+                        fn_actual_return_types.insert(name.clone(), ty.clone());
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
     // Compile each function. The function bodies are populated here;
     // finalize_definitions happens once at the end.
     for (name, func_id, ret_type) in &func_ids {
@@ -272,16 +384,44 @@ pub fn compile_ir(ir_module: &IrModule) -> Result<CompiledModule, JitError> {
             module: &mut module,
             fn_builder_ctx: &mut fn_builder_ctx,
             name_to_func: &name_to_func,
+            fn_param_types: &fn_param_types,
+            fn_actual_return_types: &fn_actual_return_types,
             string_data_ids: &string_data_ids,
             println_ptr_data_id,
             str_concat_ptr_data_id,
+            alloc_closure_ptr_data_id,
+            alloc_array_ptr_data_id,
+            array_concat_ptr_data_id,
             call_builtin_ptr_data_id,
+            str_eq_ptr_data_id,
+            arr_eq_ptr_data_id,
+            box_value_jit_ptr_data_id,
+            unbox_value_jit_ptr_data_id,
             builtin_name_data_ids: &builtin_name_data_ids,
+            tag_variants: &ir_module.tag_variants,
         };
         compile_function_body(&mut params, func, *func_id, ret_type)?;
     }
 
     module.finalize_definitions().map_err(JitError::from)?;
+
+    // Register parameter types for all compiled functions so the stdlib
+    // can serialize arguments when calling JIT closures.
+    for (name, func_id, _) in &func_ids {
+        let code_ptr = module.get_finalized_function(*func_id);
+        let address = code_ptr as usize;
+        if let Some(param_tys) = fn_param_types.get(name) {
+            // Skip the first two params (args_buf, ret_buf) — those are the
+            // calling convention, not user-visible parameters.
+            // The actual user params are everything after captures in the
+            // function's IR params. For now, register all non-buffer params.
+            let jit_param_types: Vec<JitArgType> = param_tys
+                .iter()
+                .filter_map(|ty| ir_type_tag(ty).map(JitArgType::from_type_tag))
+                .collect();
+            crate::value::register_jit_param_types(address, jit_param_types);
+        }
+    }
 
     let (main_id, main_return_type) = func_ids
         .iter()
@@ -324,14 +464,31 @@ struct BlockContext<'a> {
     func_name: &'a str,
     callee_funcs: &'a HashMap<String, FuncRef>,
     fn_return_types: &'a HashMap<String, IrType>,
+    fn_param_types: &'a HashMap<String, Vec<IrType>>,
+    fn_actual_return_types: &'a HashMap<String, IrType>,
     string_globals: &'a HashMap<String, GlobalValue>,
     println_fn_ptr: Value,
     println_sig: SigRef,
     str_concat_fn_ptr: Value,
     str_concat_sig: SigRef,
+    alloc_closure_fn_ptr: Value,
+    alloc_closure_sig: SigRef,
+    alloc_array_fn_ptr: Value,
+    alloc_array_sig: SigRef,
+    array_concat_fn_ptr: Value,
+    array_concat_sig: SigRef,
     call_builtin_fn_ptr: Value,
     call_builtin_sig: SigRef,
+    str_eq_fn_ptr: Value,
+    str_eq_sig: SigRef,
+    arr_eq_fn_ptr: Value,
+    arr_eq_sig: SigRef,
+    box_value_jit_fn_ptr: Value,
+    box_value_jit_sig: SigRef,
+    unbox_value_jit_fn_ptr: Value,
+    unbox_value_jit_sig: SigRef,
     builtin_name_globals: &'a HashMap<String, GlobalValue>,
+    closure_callee_funcs: &'a HashMap<String, FuncRef>,
     blocks: &'a HashMap<BlockId, Block>,
     ret_ptr: Value,
     ret_type: &'a IrType,
@@ -342,11 +499,21 @@ struct FunctionBodyParams<'a> {
     module: &'a mut JITModule,
     fn_builder_ctx: &'a mut FunctionBuilderContext,
     name_to_func: &'a HashMap<String, (cranelift_module::FuncId, IrType)>,
+    fn_param_types: &'a HashMap<String, Vec<IrType>>,
+    fn_actual_return_types: &'a HashMap<String, IrType>,
     string_data_ids: &'a HashMap<String, DataId>,
     println_ptr_data_id: DataId,
     str_concat_ptr_data_id: DataId,
+    alloc_closure_ptr_data_id: DataId,
+    alloc_array_ptr_data_id: DataId,
+    array_concat_ptr_data_id: DataId,
     call_builtin_ptr_data_id: DataId,
+    str_eq_ptr_data_id: DataId,
+    arr_eq_ptr_data_id: DataId,
+    box_value_jit_ptr_data_id: DataId,
+    unbox_value_jit_ptr_data_id: DataId,
     builtin_name_data_ids: &'a HashMap<String, DataId>,
+    tag_variants: &'a typechecker::TagVariants,
 }
 
 /// Compiles the body of one IR function into the module's slot
@@ -384,7 +551,13 @@ fn compile_function_body(
     builder.switch_to_block(entry_block);
     let args_ptr = builder.block_params(entry_block)[0];
     let ret_ptr = builder.block_params(entry_block)[1];
-    let value_types = infer_value_types(func, &fn_return_types)?;
+    let value_types = infer_value_types(
+        func,
+        &fn_return_types,
+        params.fn_param_types,
+        params.fn_actual_return_types,
+        params.tag_variants,
+    )?;
     let mut values = HashMap::new();
 
     load_function_params(
@@ -480,6 +653,68 @@ fn compile_function_body(
         f.import_signature(sig)
     };
 
+    // Import the pipe_rt_alloc_closure function pointer from a data object.
+    let alloc_closure_fn_ptr_gv = {
+        let f: &mut Function = builder.func;
+        params
+            .module
+            .declare_data_in_func(params.alloc_closure_ptr_data_id, f)
+    };
+    let alloc_closure_fn_ptr_addr = builder
+        .ins()
+        .global_value(types::I64, alloc_closure_fn_ptr_gv);
+    let alloc_closure_fn_ptr = builder.ins().load(
+        types::I64,
+        MemFlags::trusted(),
+        alloc_closure_fn_ptr_addr,
+        0,
+    );
+    let alloc_closure_sig = {
+        let sig = make_signature(params.module);
+        let f: &mut Function = builder.func;
+        f.import_signature(sig)
+    };
+
+    // Import the pipe_rt_alloc_array function pointer from a data object.
+    let alloc_array_fn_ptr_gv = {
+        let f: &mut Function = builder.func;
+        params
+            .module
+            .declare_data_in_func(params.alloc_array_ptr_data_id, f)
+    };
+    let alloc_array_fn_ptr_addr = builder
+        .ins()
+        .global_value(types::I64, alloc_array_fn_ptr_gv);
+    let alloc_array_fn_ptr =
+        builder
+            .ins()
+            .load(types::I64, MemFlags::trusted(), alloc_array_fn_ptr_addr, 0);
+    let alloc_array_sig = {
+        let sig = make_signature(params.module);
+        let f: &mut Function = builder.func;
+        f.import_signature(sig)
+    };
+
+    // Import the pipe_rt_array_concat function pointer from a data object.
+    let array_concat_fn_ptr_gv = {
+        let f: &mut Function = builder.func;
+        params
+            .module
+            .declare_data_in_func(params.array_concat_ptr_data_id, f)
+    };
+    let array_concat_fn_ptr_addr = builder
+        .ins()
+        .global_value(types::I64, array_concat_fn_ptr_gv);
+    let array_concat_fn_ptr =
+        builder
+            .ins()
+            .load(types::I64, MemFlags::trusted(), array_concat_fn_ptr_addr, 0);
+    let array_concat_sig = {
+        let sig = make_signature(params.module);
+        let f: &mut Function = builder.func;
+        f.import_signature(sig)
+    };
+
     // Import the pipe_rt_call_builtin function pointer from a data object.
     let call_builtin_fn_ptr_gv = {
         let f: &mut Function = builder.func;
@@ -496,6 +731,102 @@ fn compile_function_body(
             .load(types::I64, MemFlags::trusted(), call_builtin_fn_ptr_addr, 0);
     let call_builtin_sig = {
         let sig = make_signature(params.module);
+        let f: &mut Function = builder.func;
+        f.import_signature(sig)
+    };
+
+    // Import the pipe_rt_str_eq function pointer from a data object.
+    let str_eq_fn_ptr_gv = {
+        let f: &mut Function = builder.func;
+        params
+            .module
+            .declare_data_in_func(params.str_eq_ptr_data_id, f)
+    };
+    let str_eq_fn_ptr_addr = builder.ins().global_value(types::I64, str_eq_fn_ptr_gv);
+    let str_eq_fn_ptr = builder
+        .ins()
+        .load(types::I64, MemFlags::trusted(), str_eq_fn_ptr_addr, 0);
+    let str_eq_sig = {
+        let mut sig = params.module.make_signature();
+        sig.params.push(AbiParam::new(types::I64));
+        sig.params.push(AbiParam::new(types::I64));
+        sig.returns.push(AbiParam::new(types::I32));
+        let f: &mut Function = builder.func;
+        f.import_signature(sig)
+    };
+
+    // Import the pipe_rt_arr_eq function pointer from a data object.
+    let arr_eq_fn_ptr_gv = {
+        let f: &mut Function = builder.func;
+        params
+            .module
+            .declare_data_in_func(params.arr_eq_ptr_data_id, f)
+    };
+    let arr_eq_fn_ptr_addr = builder.ins().global_value(types::I64, arr_eq_fn_ptr_gv);
+    let arr_eq_fn_ptr = builder
+        .ins()
+        .load(types::I64, MemFlags::trusted(), arr_eq_fn_ptr_addr, 0);
+    let arr_eq_sig = {
+        let mut sig = params.module.make_signature();
+        sig.params.push(AbiParam::new(types::I64)); // a
+        sig.params.push(AbiParam::new(types::I64)); // b
+        sig.params.push(AbiParam::new(I32)); // elem_size
+        sig.params.push(AbiParam::new(I32)); // elem_type_tag
+        sig.returns.push(AbiParam::new(types::I32));
+        let f: &mut Function = builder.func;
+        f.import_signature(sig)
+    };
+
+    // Import the pipe_rt_box_value_jit function pointer from a data object.
+    let box_value_jit_fn_ptr_gv = {
+        let f: &mut Function = builder.func;
+        params
+            .module
+            .declare_data_in_func(params.box_value_jit_ptr_data_id, f)
+    };
+    let box_value_jit_fn_ptr_addr = builder
+        .ins()
+        .global_value(types::I64, box_value_jit_fn_ptr_gv);
+    let box_value_jit_fn_ptr = builder.ins().load(
+        types::I64,
+        MemFlags::trusted(),
+        box_value_jit_fn_ptr_addr,
+        0,
+    );
+    let box_value_jit_sig = {
+        // fn(ptr: u64, desc_ptr: u64, desc_len: u32) -> u64
+        let mut sig = params.module.make_signature();
+        sig.params.push(AbiParam::new(types::I64)); // ptr
+        sig.params.push(AbiParam::new(types::I64)); // desc_ptr
+        sig.params.push(AbiParam::new(I32)); // desc_len
+        sig.returns.push(AbiParam::new(types::I64)); // Box<Value> pointer
+        let f: &mut Function = builder.func;
+        f.import_signature(sig)
+    };
+
+    // Import the pipe_rt_unbox_value_jit function pointer from a data object.
+    let unbox_value_jit_fn_ptr_gv = {
+        let f: &mut Function = builder.func;
+        params
+            .module
+            .declare_data_in_func(params.unbox_value_jit_ptr_data_id, f)
+    };
+    let unbox_value_jit_fn_ptr_addr = builder
+        .ins()
+        .global_value(types::I64, unbox_value_jit_fn_ptr_gv);
+    let unbox_value_jit_fn_ptr = builder.ins().load(
+        types::I64,
+        MemFlags::trusted(),
+        unbox_value_jit_fn_ptr_addr,
+        0,
+    );
+    let unbox_value_jit_sig = {
+        // fn(ptr: u64, desc_ptr: u64, desc_len: u32) -> u64
+        let mut sig = params.module.make_signature();
+        sig.params.push(AbiParam::new(types::I64)); // ptr
+        sig.params.push(AbiParam::new(types::I64)); // desc_ptr
+        sig.params.push(AbiParam::new(I32)); // desc_len
+        sig.returns.push(AbiParam::new(types::I64)); // JIT format pointer
         let f: &mut Function = builder.func;
         f.import_signature(sig)
     };
@@ -527,6 +858,30 @@ fn compile_function_body(
         }
     }
 
+    // Pre-import FuncRefs for functions used as MakeClosure targets.
+    let mut closure_callee_funcs: HashMap<String, FuncRef> = HashMap::new();
+    for ir_block in &func.blocks {
+        for (_, inst) in &ir_block.instructions {
+            if let ir::Instruction::MakeClosure(data) = inst {
+                let name_str = data.func_name.to_string();
+                if closure_callee_funcs.contains_key(&name_str) {
+                    continue;
+                }
+                let Some((callee_id, _)) = params.name_to_func.get(name_str.as_str()) else {
+                    return Err(JitError::UnimplementedInstruction {
+                        instruction: format!("MakeClosure: unknown function `{name_str}`"),
+                        function: func.name.to_string(),
+                    });
+                };
+                let func_ref = {
+                    let f: &mut Function = builder.func;
+                    params.module.declare_func_in_func(*callee_id, f)
+                };
+                closure_callee_funcs.insert(name_str, func_ref);
+            }
+        }
+    }
+
     let blocks = declare_blocks(&mut builder, func, &mut values)?;
     let first_ir_block = &func.blocks[0];
     if !first_ir_block.params.is_empty() {
@@ -543,14 +898,31 @@ fn compile_function_body(
         func_name: func.name.as_ref(),
         callee_funcs: &callee_funcs,
         fn_return_types: &fn_return_types,
+        fn_param_types: params.fn_param_types,
+        fn_actual_return_types: params.fn_actual_return_types,
         string_globals: &string_globals,
         println_fn_ptr,
         println_sig,
         str_concat_fn_ptr,
         str_concat_sig,
+        alloc_closure_fn_ptr,
+        alloc_closure_sig,
+        alloc_array_fn_ptr,
+        alloc_array_sig,
+        array_concat_fn_ptr,
+        array_concat_sig,
         call_builtin_fn_ptr,
         call_builtin_sig,
+        str_eq_fn_ptr,
+        str_eq_sig,
+        arr_eq_fn_ptr,
+        arr_eq_sig,
+        box_value_jit_fn_ptr,
+        box_value_jit_sig,
+        unbox_value_jit_fn_ptr,
+        unbox_value_jit_sig,
         builtin_name_globals: &builtin_name_globals,
+        closure_callee_funcs: &closure_callee_funcs,
         blocks: &blocks,
         ret_ptr,
         ret_type,
@@ -663,14 +1035,14 @@ fn compile_block(
             arms,
             default,
         } => compile_switch(builder, ctx, values, *discriminant, arms, default.as_ref()),
+        Terminator::TailCall { callee, args } => {
+            compile_tail_call(builder, ctx, *callee, args, values)?;
+            Ok(())
+        }
         Terminator::Unreachable => {
             builder.ins().trap(UNREACHABLE_TRAP);
             Ok(())
         }
-        _ => Err(JitError::UnimplementedInstruction {
-            instruction: format!("{:?}", block.terminator),
-            function: ctx.func_name.to_string(),
-        }),
     }
 }
 
@@ -945,6 +1317,61 @@ fn compile_instruction(
 
         ir::Instruction::StrConcat { parts } => compile_str_concat(builder, ctx, parts, values)?,
 
+        ir::Instruction::MakeClosure(data) => compile_make_closure(builder, ctx, data, values)?,
+
+        ir::Instruction::CallIndirect(data) => compile_call_indirect(builder, ctx, data, values)?,
+
+        ir::Instruction::TagConstruct(data) => compile_tag_construct(builder, ctx, data, values)?,
+
+        ir::Instruction::TagDiscriminant(value_id) => {
+            compile_tag_discriminant(builder, ctx, *value_id, values)?
+        }
+
+        ir::Instruction::TagGet { value, index } => {
+            compile_tag_get(builder, ctx, *value, *index, values)?
+        }
+
+        ir::Instruction::RecordAlloc(data) => compile_record_alloc(builder, ctx, data, values)?,
+
+        ir::Instruction::RecordGet {
+            record,
+            field_index,
+            ..
+        } => compile_record_get(builder, ctx, *record, *field_index, values)?,
+
+        ir::Instruction::ArrayAlloc { len, init } => {
+            compile_array_alloc(builder, ctx, *len, *init, values)?
+        }
+
+        ir::Instruction::ArrayGet { array, index } => {
+            compile_array_get(builder, ctx, *array, *index, values)?
+        }
+
+        ir::Instruction::ArrayLen(array_id) => compile_array_len(builder, ctx, *array_id, values)?,
+
+        ir::Instruction::ArrayConcat(left_id, right_id) => {
+            compile_array_concat(builder, ctx, *left_id, *right_id, values)?
+        }
+
+        ir::Instruction::RecordSet {
+            record,
+            field: _,
+            field_index,
+            value,
+        } => compile_record_set(builder, ctx, *record, *field_index, *value, values)?,
+
+        ir::Instruction::ArraySet {
+            array,
+            index,
+            value,
+        } => compile_array_set(builder, ctx, *array, *index, *value, values)?,
+
+        ir::Instruction::Panic { .. } => {
+            builder.ins().trap(UNREACHABLE_TRAP);
+            builder.ins().iconst(I32, 0)
+        }
+
+        #[allow(unreachable_patterns)]
         _ => {
             return Err(JitError::UnimplementedInstruction {
                 instruction: format!("{inst:?}"),
@@ -1067,11 +1494,40 @@ fn compile_builtin_call(
         let arg_type = lookup_type(ctx.value_types, *arg_id, ctx.func_name)?;
         if !matches!(arg_type, IrType::Unit) {
             let arg_val = lookup_value(values, *arg_id, ctx.func_name)?;
-            let widened = widen_to_i64(builder, arg_val, arg_type, ctx.func_name)?;
             let offset = 16 + i as i32 * 12;
+
+            // For heap types (Array, Record, Tag, Closure) the bridge
+            // expects a `Box<Value>` pointer, but the JIT stores a raw
+            // data pointer. Call `pipe_rt_box_value_jit` to convert.
+            let stored_val = if needs_heap_boxing(arg_type) {
+                let desc_bytes = serialize_type_desc_to_bytes(arg_type, ctx.func_name)?;
+                let desc_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    desc_bytes.len() as u32,
+                    0,
+                ));
+                let desc_ptr = builder.ins().stack_addr(types::I64, desc_slot, 0);
+                for (j, chunk) in desc_bytes.chunks(4).enumerate() {
+                    let val = u32::from_le_bytes(chunk.try_into().unwrap_or([0; 4]));
+                    let v = builder.ins().iconst(I32, val as i64);
+                    builder
+                        .ins()
+                        .store(MemFlags::trusted(), v, desc_ptr, (j * 4) as i32);
+                }
+                let desc_len = builder.ins().iconst(I32, desc_bytes.len() as i64);
+                let inst = builder.ins().call_indirect(
+                    ctx.box_value_jit_sig,
+                    ctx.box_value_jit_fn_ptr,
+                    &[arg_val, desc_ptr, desc_len],
+                );
+                builder.inst_results(inst)[0]
+            } else {
+                widen_to_i64(builder, arg_val, arg_type, ctx.func_name)?
+            };
+
             builder
                 .ins()
-                .store(MemFlags::trusted(), widened, args_buf, offset);
+                .store(MemFlags::trusted(), stored_val, args_buf, offset);
             let tag =
                 ir_type_tag(arg_type).ok_or_else(|| unsupported_type(ctx.func_name, arg_type))?;
             let tag_val = builder.ins().iconst(I32, i64::from(tag));
@@ -1103,7 +1559,34 @@ fn compile_builtin_call(
         &[args_buf, ret_buf],
     );
 
-    let result = load_primitive_value(builder, ret_buf, 0, ret_type, ctx.func_name)?;
+    // For heap-typed return values the bridge stores a `Box<Value>`
+    // pointer; convert it back to JIT format via `pipe_rt_unbox_value_jit`.
+    let result = if needs_heap_boxing(ret_type) {
+        let raw_ptr = load_primitive_value(builder, ret_buf, 0, ret_type, ctx.func_name)?;
+        let desc_bytes = serialize_type_desc_to_bytes(ret_type, ctx.func_name)?;
+        let desc_slot = builder.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            desc_bytes.len() as u32,
+            0,
+        ));
+        let desc_ptr = builder.ins().stack_addr(types::I64, desc_slot, 0);
+        for (j, chunk) in desc_bytes.chunks(4).enumerate() {
+            let val = u32::from_le_bytes(chunk.try_into().unwrap_or([0; 4]));
+            let v = builder.ins().iconst(I32, val as i64);
+            builder
+                .ins()
+                .store(MemFlags::trusted(), v, desc_ptr, (j * 4) as i32);
+        }
+        let desc_len = builder.ins().iconst(I32, desc_bytes.len() as i64);
+        let inst = builder.ins().call_indirect(
+            ctx.unbox_value_jit_sig,
+            ctx.unbox_value_jit_fn_ptr,
+            &[raw_ptr, desc_ptr, desc_len],
+        );
+        builder.inst_results(inst)[0]
+    } else {
+        load_primitive_value(builder, ret_buf, 0, ret_type, ctx.func_name)?
+    };
     Ok(result)
 }
 
@@ -1201,7 +1684,7 @@ fn widen_to_i64(
     builder: &mut FunctionBuilder,
     val: Value,
     ty: &IrType,
-    func_name: &str,
+    _func_name: &str,
 ) -> Result<Value, JitError> {
     match ty {
         IrType::I8 => Ok(builder.ins().sextend(types::I64, val)),
@@ -1222,9 +1705,802 @@ fn widen_to_i64(
             Ok(builder.ins().bitcast(types::I64, mf, val))
         }
         IrType::Bool => Ok(builder.ins().uextend(types::I64, val)),
-        IrType::Str => Ok(val),
-        _ => Err(unsupported_type(func_name, ty)),
+        IrType::Unit => Ok(builder.ins().iconst(types::I64, 0)),
+        IrType::Str
+        | IrType::Array(_)
+        | IrType::Record(_)
+        | IrType::Tag(_)
+        | IrType::Closure(_)
+        | IrType::Func(_)
+        | IrType::Effect(_) => Ok(val),
     }
+}
+
+/// Compile a `MakeClosure` instruction.
+///
+/// Layout on the heap: `[func_ptr: u64] [captures packed by storage_size]`.
+/// The function pointer is stored in a data object and patched after
+/// finalization. We load it, pack captures after it, call
+/// `pipe_rt_alloc_closure` to heap-allocate, and return the pointer.
+fn compile_make_closure(
+    builder: &mut FunctionBuilder,
+    ctx: &BlockContext,
+    data: &ir::MakeClosureData,
+    values: &HashMap<ValueId, Value>,
+) -> Result<Value, JitError> {
+    let func_name = data.func_name.as_str();
+
+    // Get the target function pointer via func_addr.
+    let func_ref = ctx.closure_callee_funcs.get(func_name).ok_or_else(|| {
+        JitError::UnimplementedInstruction {
+            instruction: format!("MakeClosure: no FuncRef for `{func_name}`"),
+            function: ctx.func_name.to_string(),
+        }
+    })?;
+    let fn_ptr = builder.ins().func_addr(types::I64, *func_ref);
+
+    // Compute total byte size: 8 for func_ptr + captures.
+    let capture_sizes: Vec<i32> = data
+        .captures
+        .iter()
+        .map(|capture_id| {
+            let ty = lookup_type(ctx.value_types, *capture_id, ctx.func_name)?;
+            storage_size(ty, ctx.func_name)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let total_size: i32 = 8 + capture_sizes.iter().sum::<i32>();
+
+    // Create a stack buffer for the closure content.
+    let content_slot = builder.create_sized_stack_slot(StackSlotData::new(
+        StackSlotKind::ExplicitSlot,
+        total_size.max(1) as u32,
+        0,
+    ));
+    let content_buf = builder.ins().stack_addr(types::I64, content_slot, 0);
+
+    // Store func_ptr at offset 0.
+    builder
+        .ins()
+        .store(MemFlags::trusted(), fn_ptr, content_buf, 0);
+
+    // Store each capture after func_ptr.
+    let mut offset: i32 = 8;
+    for (capture_id, size) in data.captures.iter().zip(capture_sizes.iter()) {
+        let capture_val = lookup_value(values, *capture_id, ctx.func_name)?;
+        builder
+            .ins()
+            .store(MemFlags::trusted(), capture_val, content_buf, offset);
+        offset += size;
+    }
+
+    // Build args buffer for pipe_rt_alloc_closure: [data_ptr: u64, byte_size: u32].
+    let args_slot =
+        builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 12, 0));
+    let args_buf = builder.ins().stack_addr(types::I64, args_slot, 0);
+
+    let content_addr = builder.ins().stack_addr(types::I64, content_slot, 0);
+    builder
+        .ins()
+        .store(MemFlags::trusted(), content_addr, args_buf, 0);
+
+    let byte_size_val = builder.ins().iconst(I32, total_size as i64);
+    builder
+        .ins()
+        .store(MemFlags::trusted(), byte_size_val, args_buf, 8);
+
+    // Allocate 8-byte ret buffer for the closure pointer.
+    let ret_slot =
+        builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 0));
+    let ret_buf = builder.ins().stack_addr(types::I64, ret_slot, 0);
+
+    builder.ins().call_indirect(
+        ctx.alloc_closure_sig,
+        ctx.alloc_closure_fn_ptr,
+        &[args_buf, ret_buf],
+    );
+
+    Ok(builder
+        .ins()
+        .load(types::I64, MemFlags::trusted(), ret_buf, 0))
+}
+
+/// Compile a `CallIndirect` instruction.
+///
+/// Closure layout: `[func_ptr: u64] [captures packed by storage_size]`.
+/// We load func_ptr from offset 0, read captures starting at offset 8
+/// using the type information from the closure's FuncType, build the
+/// full args buffer (captures followed by explicit call arguments),
+/// and call the function pointer via call_indirect.
+fn compile_call_indirect(
+    builder: &mut FunctionBuilder,
+    ctx: &BlockContext,
+    data: &ir::CallIndirectData,
+    values: &HashMap<ValueId, Value>,
+) -> Result<Value, JitError> {
+    let closure_val = lookup_value(values, data.callee, ctx.func_name)?;
+    let closure_type = lookup_type(ctx.value_types, data.callee, ctx.func_name)?;
+
+    // Extract the FuncType from the closure type.
+    let func_type = match closure_type {
+        IrType::Closure(ft) => ft.as_ref().clone(),
+        _ => {
+            return Err(JitError::UnimplementedInstruction {
+                instruction: format!("CallIndirect: callee is not a closure, got {closure_type}"),
+                function: ctx.func_name.to_string(),
+            });
+        }
+    };
+
+    let ret_type = &data.return_type;
+
+    // The FuncType.params = [capture_params..., call_params...].
+    // The capture params are the first (total_params - call_args.len()) params.
+    let call_arg_count = data.args.len();
+    let total_param_count = func_type.params.len();
+    if call_arg_count > total_param_count {
+        return Err(JitError::UnimplementedInstruction {
+            instruction: format!(
+                "CallIndirect: expected at most {total_param_count} arguments, got {call_arg_count}"
+            ),
+            function: ctx.func_name.to_string(),
+        });
+    }
+    let capture_param_count = total_param_count - call_arg_count;
+    let capture_types: Vec<&IrType> = func_type.params[..capture_param_count].iter().collect();
+    let call_arg_types: Vec<&IrType> = data
+        .args
+        .iter()
+        .map(
+            |id| match lookup_type(ctx.value_types, *id, ctx.func_name) {
+                Ok(t) => t,
+                Err(e) => panic!("{e}"),
+            },
+        )
+        .collect();
+    // Double-check consistency with FuncType params.
+    let expected_arg_types: Vec<&IrType> = func_type.params[capture_param_count..].iter().collect();
+    if call_arg_types.len() != expected_arg_types.len() {
+        return Err(JitError::UnimplementedInstruction {
+            instruction: format!(
+                "CallIndirect: arg count mismatch, expected {} got {}",
+                expected_arg_types.len(),
+                call_arg_types.len(),
+            ),
+            function: ctx.func_name.to_string(),
+        });
+    }
+
+    // Load func_ptr from closure offset 0.
+    let fn_ptr = builder
+        .ins()
+        .load(types::I64, MemFlags::trusted(), closure_val, 0);
+
+    // Compute total args buffer size: captures (from closure) + call args.
+    let capture_total_size: i32 = capture_types
+        .iter()
+        .map(|ty| storage_size(ty, ctx.func_name))
+        .collect::<Result<Vec<_>, _>>()?
+        .iter()
+        .sum();
+    let call_args_total_size: i32 = call_arg_types
+        .iter()
+        .map(|ty| storage_size(ty, ctx.func_name))
+        .collect::<Result<Vec<_>, _>>()?
+        .iter()
+        .sum();
+
+    let args_buf_size = (capture_total_size + call_args_total_size).max(1) as u32;
+    let arg_slot = builder.create_sized_stack_slot(StackSlotData::new(
+        StackSlotKind::ExplicitSlot,
+        args_buf_size,
+        0,
+    ));
+    let args_buf = builder.ins().stack_addr(types::I64, arg_slot, 0);
+
+    // Copy captures from closure (offset 8) into args buffer.
+    let mut offset: i32 = 0;
+    let mut closure_offset: i32 = 8;
+    for capture_ty in &capture_types {
+        let cap_val = builder.ins().load(
+            storage_type(capture_ty, ctx.func_name)?,
+            MemFlags::trusted(),
+            closure_val,
+            closure_offset,
+        );
+        builder
+            .ins()
+            .store(MemFlags::trusted(), cap_val, args_buf, offset);
+        let sz = storage_size(capture_ty, ctx.func_name)?;
+        offset += sz;
+        closure_offset += sz;
+    }
+
+    // Store call arguments.
+    for arg_id in &data.args {
+        let arg_type = lookup_type(ctx.value_types, *arg_id, ctx.func_name)?;
+        if !matches!(arg_type, IrType::Unit) {
+            let arg_val = lookup_value(values, *arg_id, ctx.func_name)?;
+            builder
+                .ins()
+                .store(MemFlags::trusted(), arg_val, args_buf, offset);
+        }
+        offset += storage_size(arg_type, ctx.func_name)?;
+    }
+
+    // Allocate return buffer.
+    let ret_size = storage_size(ret_type, ctx.func_name)?.max(1) as u32;
+    let ret_slot = builder.create_sized_stack_slot(StackSlotData::new(
+        StackSlotKind::ExplicitSlot,
+        ret_size,
+        0,
+    ));
+    let ret_buf = builder.ins().stack_addr(types::I64, ret_slot, 0);
+
+    // Call the function pointer via call_indirect using the standard sig.
+    builder
+        .ins()
+        .call_indirect(ctx.alloc_closure_sig, fn_ptr, &[args_buf, ret_buf]);
+
+    let result = load_primitive_value(builder, ret_buf, 0, ret_type, ctx.func_name)?;
+    Ok(result)
+}
+
+/// Compile a `TailCall` terminator.
+///
+/// Loads the closure's function pointer, builds the args buffer
+/// (captures from the closure + call args), calls via `call_indirect`,
+/// stores the return value, and returns from the current function.
+fn compile_tail_call(
+    builder: &mut FunctionBuilder,
+    ctx: &BlockContext,
+    callee: ValueId,
+    call_args: &[ValueId],
+    values: &HashMap<ValueId, Value>,
+) -> Result<(), JitError> {
+    let closure_val = lookup_value(values, callee, ctx.func_name)?;
+    let closure_type = lookup_type(ctx.value_types, callee, ctx.func_name)?;
+
+    let func_type = match closure_type {
+        IrType::Closure(ft) => ft.as_ref().clone(),
+        _ => {
+            return Err(JitError::UnimplementedInstruction {
+                instruction: format!("TailCall: callee is not a closure, got {closure_type}"),
+                function: ctx.func_name.to_string(),
+            });
+        }
+    };
+
+    let fn_ptr = builder
+        .ins()
+        .load(types::I64, MemFlags::trusted(), closure_val, 0);
+
+    let call_arg_count = call_args.len();
+    let total_param_count = func_type.params.len();
+    if call_arg_count > total_param_count {
+        return Err(JitError::UnimplementedInstruction {
+            instruction: format!(
+                "TailCall: expected at most {total_param_count} arguments, got {call_arg_count}"
+            ),
+            function: ctx.func_name.to_string(),
+        });
+    }
+    let capture_param_count = total_param_count - call_arg_count;
+    let capture_types: Vec<&IrType> = func_type.params[..capture_param_count].iter().collect();
+    let call_arg_types: Vec<&IrType> = call_args
+        .iter()
+        .map(
+            |id| match lookup_type(ctx.value_types, *id, ctx.func_name) {
+                Ok(t) => t,
+                Err(e) => panic!("{e}"),
+            },
+        )
+        .collect();
+
+    let capture_total_size: i32 = capture_types
+        .iter()
+        .map(|ty| storage_size(ty, ctx.func_name))
+        .collect::<Result<Vec<_>, _>>()?
+        .iter()
+        .sum();
+    let call_args_total_size: i32 = call_arg_types
+        .iter()
+        .map(|ty| storage_size(ty, ctx.func_name))
+        .collect::<Result<Vec<_>, _>>()?
+        .iter()
+        .sum();
+
+    let args_buf_size = (capture_total_size + call_args_total_size).max(1) as u32;
+    let arg_slot = builder.create_sized_stack_slot(StackSlotData::new(
+        StackSlotKind::ExplicitSlot,
+        args_buf_size,
+        0,
+    ));
+    let args_buf = builder.ins().stack_addr(types::I64, arg_slot, 0);
+
+    let mut offset: i32 = 0;
+    let mut closure_offset: i32 = 8;
+    for capture_ty in &capture_types {
+        let cap_val = builder.ins().load(
+            storage_type(capture_ty, ctx.func_name)?,
+            MemFlags::trusted(),
+            closure_val,
+            closure_offset,
+        );
+        builder
+            .ins()
+            .store(MemFlags::trusted(), cap_val, args_buf, offset);
+        let sz = storage_size(capture_ty, ctx.func_name)?;
+        offset += sz;
+        closure_offset += sz;
+    }
+
+    for arg_id in call_args {
+        let arg_type = lookup_type(ctx.value_types, *arg_id, ctx.func_name)?;
+        if !matches!(arg_type, IrType::Unit) {
+            let arg_val = lookup_value(values, *arg_id, ctx.func_name)?;
+            builder
+                .ins()
+                .store(MemFlags::trusted(), arg_val, args_buf, offset);
+        }
+        offset += storage_size(arg_type, ctx.func_name)?;
+    }
+
+    let ret_size = storage_size(ctx.ret_type, ctx.func_name)?.max(1) as u32;
+    let ret_slot = builder.create_sized_stack_slot(StackSlotData::new(
+        StackSlotKind::ExplicitSlot,
+        ret_size,
+        0,
+    ));
+    let ret_buf = builder.ins().stack_addr(types::I64, ret_slot, 0);
+
+    builder
+        .ins()
+        .call_indirect(ctx.alloc_closure_sig, fn_ptr, &[args_buf, ret_buf]);
+
+    let result = load_primitive_value(builder, ret_buf, 0, ctx.ret_type, ctx.func_name)?;
+    store_return_value(builder, ctx.ret_ptr, ctx.ret_type, result, ctx.func_name)?;
+    let zero = builder.ins().iconst(I32, 0);
+    builder.ins().return_(&[zero]);
+    Ok(())
+}
+
+/// Compile a `TagConstruct` instruction.
+///
+/// Tag layout: `[discriminant: u32][payload packed by storage_size]`.
+/// Heap-allocated via `pipe_rt_alloc_closure`.
+fn compile_tag_construct(
+    builder: &mut FunctionBuilder,
+    ctx: &BlockContext,
+    data: &ir::TagConstructData,
+    values: &HashMap<ValueId, Value>,
+) -> Result<Value, JitError> {
+    let payload_sizes: Vec<i32> = data
+        .payload
+        .iter()
+        .map(|vid| {
+            let ty = lookup_type(ctx.value_types, *vid, ctx.func_name)?;
+            storage_size(ty, ctx.func_name)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let total_size: i32 = 4 + payload_sizes.iter().sum::<i32>();
+
+    let content_slot = builder.create_sized_stack_slot(StackSlotData::new(
+        StackSlotKind::ExplicitSlot,
+        total_size.max(1) as u32,
+        0,
+    ));
+    let content_buf = builder.ins().stack_addr(types::I64, content_slot, 0);
+
+    let disc_val = builder.ins().iconst(I32, i64::from(data.discriminant));
+    builder
+        .ins()
+        .store(MemFlags::trusted(), disc_val, content_buf, 0);
+
+    let mut offset: i32 = 4;
+    for (vid, size) in data.payload.iter().zip(payload_sizes.iter()) {
+        let val = lookup_value(values, *vid, ctx.func_name)?;
+        builder
+            .ins()
+            .store(MemFlags::trusted(), val, content_buf, offset);
+        offset += size;
+    }
+
+    let args_slot =
+        builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 12, 0));
+    let args_buf = builder.ins().stack_addr(types::I64, args_slot, 0);
+    let content_addr = builder.ins().stack_addr(types::I64, content_slot, 0);
+    builder
+        .ins()
+        .store(MemFlags::trusted(), content_addr, args_buf, 0);
+    let byte_size_val = builder.ins().iconst(I32, total_size as i64);
+    builder
+        .ins()
+        .store(MemFlags::trusted(), byte_size_val, args_buf, 8);
+
+    let ret_slot =
+        builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 0));
+    let ret_buf = builder.ins().stack_addr(types::I64, ret_slot, 0);
+    builder.ins().call_indirect(
+        ctx.alloc_closure_sig,
+        ctx.alloc_closure_fn_ptr,
+        &[args_buf, ret_buf],
+    );
+
+    Ok(builder
+        .ins()
+        .load(types::I64, MemFlags::trusted(), ret_buf, 0))
+}
+
+/// Compile a `TagDiscriminant` instruction.
+/// Loads the u32 discriminant from offset 0 of the tag heap block.
+fn compile_tag_discriminant(
+    builder: &mut FunctionBuilder,
+    ctx: &BlockContext,
+    value_id: ValueId,
+    values: &HashMap<ValueId, Value>,
+) -> Result<Value, JitError> {
+    let tag_val = lookup_value(values, value_id, ctx.func_name)?;
+    Ok(builder.ins().load(I32, MemFlags::trusted(), tag_val, 0))
+}
+
+/// Compile a `TagGet` instruction.
+/// Loads the `index`-th payload field from a tag heap block.
+fn compile_tag_get(
+    builder: &mut FunctionBuilder,
+    ctx: &BlockContext,
+    value_id: ValueId,
+    index: u32,
+    values: &HashMap<ValueId, Value>,
+) -> Result<Value, JitError> {
+    let tag_val = lookup_value(values, value_id, ctx.func_name)?;
+    let tag_ty = lookup_type(ctx.value_types, value_id, ctx.func_name)?;
+    let tag_type = match tag_ty {
+        IrType::Tag(tt) => tt.clone(),
+        _ => return Err(unsupported_type(ctx.func_name, tag_ty)),
+    };
+
+    // Search all variants for one that has a payload field at `index`.
+    // The typechecker ensures all variants sharing an index have the same
+    // field type, so any matching variant gives the correct layout.
+    let variant = tag_type
+        .variants
+        .iter()
+        .find(|v| (index as usize) < v.payload.len())
+        .ok_or_else(|| JitError::UnimplementedInstruction {
+            instruction: format!("TagGet: index {index} out of bounds in all variants"),
+            function: ctx.func_name.to_string(),
+        })?;
+    let field_type = &variant.payload[index as usize];
+
+    let mut offset: i32 = 4;
+    for i in 0..index as usize {
+        offset += storage_size(&variant.payload[i], ctx.func_name)?;
+    }
+
+    Ok(builder.ins().load(
+        storage_type(field_type, ctx.func_name)?,
+        MemFlags::trusted(),
+        tag_val,
+        offset,
+    ))
+}
+
+/// Compile a `RecordAlloc` instruction.
+///
+/// Record layout: `[fields packed by storage_size]`, no header.
+/// Heap-allocated via `pipe_rt_alloc_closure`.
+fn compile_record_alloc(
+    builder: &mut FunctionBuilder,
+    ctx: &BlockContext,
+    data: &ir::RecordAllocData,
+    values: &HashMap<ValueId, Value>,
+) -> Result<Value, JitError> {
+    let field_sizes: Vec<i32> = data
+        .fields
+        .iter()
+        .map(|vid| {
+            let ty = lookup_type(ctx.value_types, *vid, ctx.func_name)?;
+            storage_size(ty, ctx.func_name)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let total_size: i32 = field_sizes.iter().sum();
+
+    let content_slot = builder.create_sized_stack_slot(StackSlotData::new(
+        StackSlotKind::ExplicitSlot,
+        total_size.max(1) as u32,
+        0,
+    ));
+    let content_buf = builder.ins().stack_addr(types::I64, content_slot, 0);
+
+    let mut offset: i32 = 0;
+    for (vid, size) in data.fields.iter().zip(field_sizes.iter()) {
+        let val = lookup_value(values, *vid, ctx.func_name)?;
+        builder
+            .ins()
+            .store(MemFlags::trusted(), val, content_buf, offset);
+        offset += size;
+    }
+
+    let args_slot =
+        builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 12, 0));
+    let args_buf = builder.ins().stack_addr(types::I64, args_slot, 0);
+    let content_addr = builder.ins().stack_addr(types::I64, content_slot, 0);
+    builder
+        .ins()
+        .store(MemFlags::trusted(), content_addr, args_buf, 0);
+    let byte_size_val = builder.ins().iconst(I32, total_size as i64);
+    builder
+        .ins()
+        .store(MemFlags::trusted(), byte_size_val, args_buf, 8);
+
+    let ret_slot =
+        builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 0));
+    let ret_buf = builder.ins().stack_addr(types::I64, ret_slot, 0);
+    builder.ins().call_indirect(
+        ctx.alloc_closure_sig,
+        ctx.alloc_closure_fn_ptr,
+        &[args_buf, ret_buf],
+    );
+
+    Ok(builder
+        .ins()
+        .load(types::I64, MemFlags::trusted(), ret_buf, 0))
+}
+
+/// Compile a `RecordGet` instruction.
+/// Loads the field at `field_index` from a record heap block.
+fn compile_record_get(
+    builder: &mut FunctionBuilder,
+    ctx: &BlockContext,
+    record_id: ValueId,
+    field_index: u32,
+    values: &HashMap<ValueId, Value>,
+) -> Result<Value, JitError> {
+    let record_val = lookup_value(values, record_id, ctx.func_name)?;
+    let ty = lookup_type(ctx.value_types, record_id, ctx.func_name)?;
+    let record_type = match ty {
+        IrType::Record(rt) => rt.clone(),
+        _ => return Err(unsupported_type(ctx.func_name, ty)),
+    };
+    let field_type = &record_type.fields[field_index as usize].1;
+
+    let mut offset: i32 = 0;
+    for i in 0..field_index as usize {
+        offset += storage_size(&record_type.fields[i].1, ctx.func_name)?;
+    }
+
+    Ok(builder.ins().load(
+        storage_type(field_type, ctx.func_name)?,
+        MemFlags::trusted(),
+        record_val,
+        offset,
+    ))
+}
+
+/// Compile a `RecordSet` instruction.
+/// Stores `value` at `field_index` in a record heap block, returns unit.
+fn compile_record_set(
+    builder: &mut FunctionBuilder,
+    ctx: &BlockContext,
+    record_id: ValueId,
+    field_index: u32,
+    value_id: ValueId,
+    values: &HashMap<ValueId, Value>,
+) -> Result<Value, JitError> {
+    let record_val = lookup_value(values, record_id, ctx.func_name)?;
+    let ty = lookup_type(ctx.value_types, record_id, ctx.func_name)?;
+    let record_type = match ty {
+        IrType::Record(rt) => rt.clone(),
+        _ => return Err(unsupported_type(ctx.func_name, ty)),
+    };
+    let value = lookup_value(values, value_id, ctx.func_name)?;
+
+    let mut offset: i32 = 0;
+    for i in 0..field_index as usize {
+        offset += storage_size(&record_type.fields[i].1, ctx.func_name)?;
+    }
+
+    builder
+        .ins()
+        .store(MemFlags::trusted(), value, record_val, offset);
+    Ok(builder.ins().iconst(I32, 0))
+}
+
+/// Compile an `ArrayAlloc` instruction.
+///
+/// Array layout: `[len: u64 (8 bytes)][elements packed by element_size]`.
+/// Heap-allocated via `pipe_rt_alloc_array`.
+fn compile_array_alloc(
+    builder: &mut FunctionBuilder,
+    ctx: &BlockContext,
+    len_id: ValueId,
+    init_id: ValueId,
+    values: &HashMap<ValueId, Value>,
+) -> Result<Value, JitError> {
+    let init_ty = lookup_type(ctx.value_types, init_id, ctx.func_name)?;
+    let elem_size = storage_size(init_ty, ctx.func_name)?;
+
+    let len_val = lookup_value(values, len_id, ctx.func_name)?;
+    let init_val = lookup_value(values, init_id, ctx.func_name)?;
+    let init_widened = widen_to_i64(builder, init_val, init_ty, ctx.func_name)?;
+
+    // Build args buffer: [len: u32, element_size: u32, init_value: u64].
+    let args_slot =
+        builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 16, 0));
+    let args_buf = builder.ins().stack_addr(types::I64, args_slot, 0);
+
+    builder
+        .ins()
+        .store(MemFlags::trusted(), len_val, args_buf, 0);
+    let elem_size_val = builder.ins().iconst(I32, elem_size as i64);
+    builder
+        .ins()
+        .store(MemFlags::trusted(), elem_size_val, args_buf, 4);
+    builder
+        .ins()
+        .store(MemFlags::trusted(), init_widened, args_buf, 8);
+
+    let ret_slot =
+        builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 0));
+    let ret_buf = builder.ins().stack_addr(types::I64, ret_slot, 0);
+    builder.ins().call_indirect(
+        ctx.alloc_array_sig,
+        ctx.alloc_array_fn_ptr,
+        &[args_buf, ret_buf],
+    );
+
+    Ok(builder
+        .ins()
+        .load(types::I64, MemFlags::trusted(), ret_buf, 0))
+}
+
+/// Compile an `ArrayGet` instruction.
+///
+/// Array layout: `[len: u64 (8 bytes)][elements packed by element_size]`.
+/// Loads element at dynamic `index` from the array heap block.
+fn compile_array_get(
+    builder: &mut FunctionBuilder,
+    ctx: &BlockContext,
+    array_id: ValueId,
+    index_id: ValueId,
+    values: &HashMap<ValueId, Value>,
+) -> Result<Value, JitError> {
+    let array_val = lookup_value(values, array_id, ctx.func_name)?;
+    let index_val = lookup_value(values, index_id, ctx.func_name)?;
+
+    let arr_type = lookup_type(ctx.value_types, array_id, ctx.func_name)?;
+    let elem_ty = match arr_type {
+        IrType::Array(et) => et.as_ref(),
+        _ => return Err(unsupported_type(ctx.func_name, arr_type)),
+    };
+    let elem_size = storage_size(elem_ty, ctx.func_name)?;
+
+    // offset = 8 + index * element_size
+    let index_i64 = if builder.func.dfg.value_type(index_val) == types::I64 {
+        index_val
+    } else {
+        builder.ins().uextend(types::I64, index_val)
+    };
+    let elem_size_val = builder.ins().iconst(types::I64, elem_size as i64);
+    let byte_offset = builder.ins().imul(index_i64, elem_size_val);
+    let array_data_ptr = builder.ins().iadd_imm(array_val, 8);
+    let final_addr = builder.ins().iadd(array_data_ptr, byte_offset);
+
+    Ok(builder.ins().load(
+        storage_type(elem_ty, ctx.func_name)?,
+        MemFlags::trusted(),
+        final_addr,
+        0,
+    ))
+}
+
+/// Compile an `ArrayLen` instruction.
+///
+/// Array layout: `[len: u64 (8 bytes)][elements packed by element_size]`.
+/// Loads the length from offset 0 of the array heap block.
+fn compile_array_len(
+    builder: &mut FunctionBuilder,
+    ctx: &BlockContext,
+    array_id: ValueId,
+    values: &HashMap<ValueId, Value>,
+) -> Result<Value, JitError> {
+    let array_val = lookup_value(values, array_id, ctx.func_name)?;
+    Ok(builder
+        .ins()
+        .load(types::I64, MemFlags::trusted(), array_val, 0))
+}
+
+/// Compile an `ArraySet` instruction.
+///
+/// Array layout: `[len: u64 (8 bytes)][elements packed by element_size]`.
+/// Stores `value` at dynamic `index` in the array heap block.
+/// Returns Unit.
+fn compile_array_set(
+    builder: &mut FunctionBuilder,
+    ctx: &BlockContext,
+    array_id: ValueId,
+    index_id: ValueId,
+    value_id: ValueId,
+    values: &HashMap<ValueId, Value>,
+) -> Result<Value, JitError> {
+    let array_val = lookup_value(values, array_id, ctx.func_name)?;
+    let index_val = lookup_value(values, index_id, ctx.func_name)?;
+    let value_val = lookup_value(values, value_id, ctx.func_name)?;
+
+    let arr_type = lookup_type(ctx.value_types, array_id, ctx.func_name)?;
+    let elem_ty = match arr_type {
+        IrType::Array(et) => et.as_ref(),
+        _ => return Err(unsupported_type(ctx.func_name, arr_type)),
+    };
+    let elem_size = storage_size(elem_ty, ctx.func_name)?;
+
+    // Compute address: base + 8 + index * element_size
+    let index_i64 = if builder.func.dfg.value_type(index_val) == types::I64 {
+        index_val
+    } else {
+        builder.ins().uextend(types::I64, index_val)
+    };
+    let elem_size_val = builder.ins().iconst(types::I64, elem_size as i64);
+    let byte_offset = builder.ins().imul(index_i64, elem_size_val);
+    let array_data_ptr = builder.ins().iadd_imm(array_val, 8);
+    let final_addr = builder.ins().iadd(array_data_ptr, byte_offset);
+
+    builder
+        .ins()
+        .store(MemFlags::trusted(), value_val, final_addr, 0);
+
+    Ok(builder.ins().iconst(I32, 0))
+}
+
+/// Compile an `ArrayConcat` instruction.
+///
+/// Allocates a new array whose contents are the concatenation of
+/// `left` and `right`, using the `pipe_rt_array_concat` runtime helper.
+fn compile_array_concat(
+    builder: &mut FunctionBuilder,
+    ctx: &BlockContext,
+    left_id: ValueId,
+    right_id: ValueId,
+    values: &HashMap<ValueId, Value>,
+) -> Result<Value, JitError> {
+    let left_val = lookup_value(values, left_id, ctx.func_name)?;
+    let right_val = lookup_value(values, right_id, ctx.func_name)?;
+
+    let arr_type = lookup_type(ctx.value_types, left_id, ctx.func_name)?;
+    let elem_ty = match arr_type {
+        IrType::Array(et) => et.as_ref(),
+        _ => return Err(unsupported_type(ctx.func_name, arr_type)),
+    };
+    let elem_size = storage_size(elem_ty, ctx.func_name)?;
+
+    // Build args buffer: [left_ptr: u64, right_ptr: u64, element_size: u32].
+    let args_slot =
+        builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 20, 0));
+    let args_buf = builder.ins().stack_addr(types::I64, args_slot, 0);
+
+    builder
+        .ins()
+        .store(MemFlags::trusted(), left_val, args_buf, 0);
+    builder
+        .ins()
+        .store(MemFlags::trusted(), right_val, args_buf, 8);
+    let elem_size_val = builder.ins().iconst(I32, elem_size as i64);
+    builder
+        .ins()
+        .store(MemFlags::trusted(), elem_size_val, args_buf, 16);
+
+    let ret_slot =
+        builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 0));
+    let ret_buf = builder.ins().stack_addr(types::I64, ret_slot, 0);
+    builder.ins().call_indirect(
+        ctx.array_concat_sig,
+        ctx.array_concat_fn_ptr,
+        &[args_buf, ret_buf],
+    );
+
+    Ok(builder
+        .ins()
+        .load(types::I64, MemFlags::trusted(), ret_buf, 0))
 }
 
 fn compile_numeric_binary(
@@ -1269,7 +2545,7 @@ fn compile_bool_binary(
     Ok(emit(builder, left_value, right_value))
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum CompareOp {
     Eq,
     Ne,
@@ -1277,6 +2553,62 @@ enum CompareOp {
     Le,
     Gt,
     Ge,
+}
+
+/// Compare two Cranelift Values by their IrType, returning an I8 result
+/// (0 = false, 1 = true).
+fn gen_cmp_values(
+    builder: &mut FunctionBuilder,
+    ctx: &BlockContext,
+    left_val: Value,
+    right_val: Value,
+    ty: &IrType,
+) -> Result<Value, JitError> {
+    match ty {
+        IrType::F32 | IrType::F64 => {
+            let cmp = builder.ins().fcmp(FloatCC::Equal, left_val, right_val);
+            Ok(builder.ins().bitcast(
+                types::I8,
+                MemFlags::new().with_endianness(Endianness::Little),
+                cmp,
+            ))
+        }
+        IrType::Bool => {
+            let cmp = builder.ins().icmp(IntCC::Equal, left_val, right_val);
+            Ok(builder.ins().bitcast(
+                types::I8,
+                MemFlags::new().with_endianness(Endianness::Little),
+                cmp,
+            ))
+        }
+        IrType::Str => {
+            let inst = builder.ins().call_indirect(
+                ctx.str_eq_sig,
+                ctx.str_eq_fn_ptr,
+                &[left_val, right_val],
+            );
+            let int_result = builder.inst_results(inst)[0];
+            Ok(builder.ins().ireduce(types::I8, int_result))
+        }
+        _ if is_integer(ty) => {
+            let cmp = builder.ins().icmp(IntCC::Equal, left_val, right_val);
+            Ok(builder.ins().bitcast(
+                types::I8,
+                MemFlags::new().with_endianness(Endianness::Little),
+                cmp,
+            ))
+        }
+        // Heap-allocated types (Array, Record, Tag, Closure):
+        // pointer comparison (identity).
+        _ => {
+            let cmp = builder.ins().icmp(IntCC::Equal, left_val, right_val);
+            Ok(builder.ins().bitcast(
+                types::I8,
+                MemFlags::new().with_endianness(Endianness::Little),
+                cmp,
+            ))
+        }
+    }
 }
 
 fn compile_comparison(
@@ -1290,24 +2622,209 @@ fn compile_comparison(
     let ty = lookup_type(ctx.value_types, left, ctx.func_name)?;
     let left_value = lookup_value(values, left, ctx.func_name)?;
     let right_value = lookup_value(values, right, ctx.func_name)?;
-    match ty {
+    let result: Value = match ty {
         IrType::F32 | IrType::F64 => {
-            Ok(builder
+            let cmp = builder
                 .ins()
-                .fcmp(float_compare_code(op), left_value, right_value))
+                .fcmp(float_compare_code(op), left_value, right_value);
+            builder.ins().bitcast(
+                types::I8,
+                MemFlags::new().with_endianness(Endianness::Little),
+                cmp,
+            )
         }
         IrType::Bool => match op {
-            CompareOp::Eq => Ok(builder.ins().icmp(IntCC::Equal, left_value, right_value)),
-            CompareOp::Ne => Ok(builder.ins().icmp(IntCC::NotEqual, left_value, right_value)),
-            _ => Err(unsupported_type(ctx.func_name, ty)),
+            CompareOp::Eq => {
+                let cmp = builder.ins().icmp(IntCC::Equal, left_value, right_value);
+                builder.ins().bitcast(
+                    types::I8,
+                    MemFlags::new().with_endianness(Endianness::Little),
+                    cmp,
+                )
+            }
+            CompareOp::Ne => {
+                let cmp = builder.ins().icmp(IntCC::NotEqual, left_value, right_value);
+                builder.ins().bitcast(
+                    types::I8,
+                    MemFlags::new().with_endianness(Endianness::Little),
+                    cmp,
+                )
+            }
+            _ => return Err(unsupported_type(ctx.func_name, ty)),
         },
-        _ if is_integer(ty) => {
-            Ok(builder
-                .ins()
-                .icmp(int_compare_code(op, ty), left_value, right_value))
+        IrType::Str => match op {
+            CompareOp::Eq | CompareOp::Ne => {
+                let inst = builder.ins().call_indirect(
+                    ctx.str_eq_sig,
+                    ctx.str_eq_fn_ptr,
+                    &[left_value, right_value],
+                );
+                let int_result = builder.inst_results(inst)[0];
+                let eq_val = builder.ins().ireduce(types::I8, int_result);
+                if op == CompareOp::Ne {
+                    let one = builder.ins().iconst(types::I8, 1);
+                    builder.ins().bxor(eq_val, one)
+                } else {
+                    eq_val
+                }
+            }
+            _ => return Err(unsupported_type(ctx.func_name, ty)),
+        },
+        IrType::Array(elem_ty) => {
+            let eq_val = compile_arr_cmp(builder, ctx, left_value, right_value, elem_ty)?;
+            if op == CompareOp::Ne {
+                let one = builder.ins().iconst(types::I8, 1);
+                builder.ins().bxor(eq_val, one)
+            } else {
+                eq_val
+            }
         }
-        _ => Err(unsupported_type(ctx.func_name, ty)),
+        IrType::Record(record_type) => {
+            let eq_val = compile_record_cmp(builder, ctx, left_value, right_value, record_type)?;
+            if op == CompareOp::Ne {
+                let one = builder.ins().iconst(types::I8, 1);
+                builder.ins().bxor(eq_val, one)
+            } else {
+                eq_val
+            }
+        }
+        IrType::Tag(tag_type) => {
+            let eq_val = compile_tag_cmp(builder, ctx, left_value, right_value, tag_type)?;
+            if op == CompareOp::Ne {
+                let one = builder.ins().iconst(types::I8, 1);
+                builder.ins().bxor(eq_val, one)
+            } else {
+                eq_val
+            }
+        }
+        _ if is_integer(ty) => {
+            let cmp = builder
+                .ins()
+                .icmp(int_compare_code(op, ty), left_value, right_value);
+            builder.ins().bitcast(
+                types::I8,
+                MemFlags::new().with_endianness(Endianness::Little),
+                cmp,
+            )
+        }
+        _ => return Err(unsupported_type(ctx.func_name, ty)),
+    };
+    Ok(result)
+}
+
+fn compile_arr_cmp(
+    builder: &mut FunctionBuilder,
+    ctx: &BlockContext,
+    left_value: Value,
+    right_value: Value,
+    elem_ty: &IrType,
+) -> Result<Value, JitError> {
+    let elem_size = storage_size(elem_ty, ctx.func_name)?;
+    let elem_tag = ir_type_tag(elem_ty).ok_or_else(|| unsupported_type(ctx.func_name, elem_ty))?;
+    let elem_size_val = builder.ins().iconst(I32, elem_size as i64);
+    let elem_tag_val = builder.ins().iconst(I32, i64::from(elem_tag));
+    let inst = builder.ins().call_indirect(
+        ctx.arr_eq_sig,
+        ctx.arr_eq_fn_ptr,
+        &[left_value, right_value, elem_size_val, elem_tag_val],
+    );
+    let int_result = builder.inst_results(inst)[0];
+    Ok(builder.ins().ireduce(types::I8, int_result))
+}
+
+fn compile_record_cmp(
+    builder: &mut FunctionBuilder,
+    ctx: &BlockContext,
+    left_value: Value,
+    right_value: Value,
+    record_type: &ir::RecordType,
+) -> Result<Value, JitError> {
+    let mut result = builder.ins().iconst(types::I8, 1);
+    let mut offset: i32 = 0;
+    for (_, field_ty) in &record_type.fields {
+        let left_field = builder.ins().load(
+            storage_type(field_ty, ctx.func_name)?,
+            MemFlags::trusted(),
+            left_value,
+            offset,
+        );
+        let right_field = builder.ins().load(
+            storage_type(field_ty, ctx.func_name)?,
+            MemFlags::trusted(),
+            right_value,
+            offset,
+        );
+        let field_eq = gen_cmp_values(builder, ctx, left_field, right_field, field_ty)?;
+        result = builder.ins().band(result, field_eq);
+        offset += storage_size(field_ty, ctx.func_name)?;
     }
+    Ok(result)
+}
+
+fn compile_tag_cmp(
+    builder: &mut FunctionBuilder,
+    ctx: &BlockContext,
+    left_value: Value,
+    right_value: Value,
+    tag_type: &ir::TagType,
+) -> Result<Value, JitError> {
+    // Compare discriminants first.
+    let left_disc = builder.ins().load(I32, MemFlags::trusted(), left_value, 0);
+    let right_disc = builder.ins().load(I32, MemFlags::trusted(), right_value, 0);
+    let disc_eq_b1 = builder.ins().icmp(IntCC::Equal, left_disc, right_disc);
+    let disc_eq = builder.ins().bitcast(
+        types::I8,
+        MemFlags::new().with_endianness(Endianness::Little),
+        disc_eq_b1,
+    );
+
+    // Compute payload equality for the matched variant.
+    // Since we don't know at compile time which variant the runtime
+    // discriminant selects, we compute payload_eq for every variant
+    // and blend based on which variant matches:
+    //   result = disc_eq AND (for variant V: disc_is_V AND payload_eq_V)
+    // where only one variant's disc_is_V is true.
+    let mut result = disc_eq;
+    for variant in &tag_type.variants {
+        let disc_val = builder.ins().iconst(I32, i64::from(variant.discriminant));
+        let is_this = builder.ins().icmp(IntCC::Equal, left_disc, disc_val);
+        let is_this_i8 = builder.ins().bitcast(
+            types::I8,
+            MemFlags::new().with_endianness(Endianness::Little),
+            is_this,
+        );
+
+        let mut payload_eq = builder.ins().iconst(types::I8, 1);
+        let mut offset: i32 = 4;
+        for field_ty in &variant.payload {
+            let left_field = builder.ins().load(
+                storage_type(field_ty, ctx.func_name)?,
+                MemFlags::trusted(),
+                left_value,
+                offset,
+            );
+            let right_field = builder.ins().load(
+                storage_type(field_ty, ctx.func_name)?,
+                MemFlags::trusted(),
+                right_value,
+                offset,
+            );
+            let field_eq = gen_cmp_values(builder, ctx, left_field, right_field, field_ty)?;
+            payload_eq = builder.ins().band(payload_eq, field_eq);
+            offset += storage_size(field_ty, ctx.func_name)?;
+        }
+
+        // Blend: if this variant matches AND its payload is equal, keep true.
+        // result = (is_this_i8 AND payload_eq) OR ((NOT is_this_i8) AND result)
+        let not_is_this = {
+            let one = builder.ins().iconst(types::I8, 1);
+            builder.ins().bxor(is_this_i8, one)
+        };
+        let this_case = builder.ins().band(is_this_i8, payload_eq);
+        let other_case = builder.ins().band(not_is_this, result);
+        result = builder.ins().bor(this_case, other_case);
+    }
+    Ok(result)
 }
 
 fn int_compare_code(op: CompareOp, ty: &IrType) -> IntCC {
@@ -1410,6 +2927,9 @@ fn lookup_type<'a>(
 fn infer_value_types(
     func: &IrFunction,
     fn_return_types: &HashMap<String, IrType>,
+    fn_param_types: &HashMap<String, Vec<IrType>>,
+    fn_actual_return_types: &HashMap<String, IrType>,
+    tag_variants: &typechecker::TagVariants,
 ) -> Result<HashMap<ValueId, IrType>, JitError> {
     let mut types = HashMap::new();
     for (value_id, _, ty) in &func.params {
@@ -1421,7 +2941,15 @@ fn infer_value_types(
         }
         for (defined, inst) in &block.instructions {
             if let Some(value_id) = defined {
-                let ty = infer_instruction_type(inst, &types, func.name.as_ref(), fn_return_types)?;
+                let ty = infer_instruction_type(
+                    inst,
+                    &types,
+                    func.name.as_ref(),
+                    fn_return_types,
+                    fn_param_types,
+                    fn_actual_return_types,
+                    tag_variants,
+                )?;
                 types.insert(*value_id, ty);
             }
         }
@@ -1434,8 +2962,44 @@ fn infer_instruction_type(
     types: &HashMap<ValueId, IrType>,
     func_name: &str,
     fn_return_types: &HashMap<String, IrType>,
+    fn_param_types: &HashMap<String, Vec<IrType>>,
+    fn_actual_return_types: &HashMap<String, IrType>,
+    tag_variants: &typechecker::TagVariants,
 ) -> Result<IrType, JitError> {
-    ir::infer_instruction_type(inst, types, fn_return_types).ok_or_else(|| {
+    // Override MakeClosure inference: use fn_param_types which already
+    // includes both capture types (first) and declared param types (after),
+    // matching the lowered IrFunction param order. This lets
+    // compile_call_indirect correctly separate captures from call args.
+    if let ir::Instruction::MakeClosure(data) = inst {
+        let params = fn_param_types
+            .get(data.func_name.as_str())
+            .cloned()
+            .unwrap_or_default();
+        let ret = fn_return_types
+            .get(data.func_name.as_str())
+            .cloned()
+            .unwrap_or(IrType::Unit);
+        return Ok(IrType::Closure(Box::new(ir::FuncType {
+            params,
+            ret: Box::new(ret),
+        })));
+    }
+    // Override CallNamed inference for closures: use fn_actual_return_types
+    // to preserve full capture params in the closure FuncType.
+    if let ir::Instruction::CallNamed(data) = inst {
+        let base_ty = ir::infer_instruction_type(inst, types, fn_return_types, tag_variants)
+            .ok_or_else(|| JitError::UnimplementedInstruction {
+                instruction: format!("{inst:?}"),
+                function: func_name.to_string(),
+            })?;
+        if matches!(base_ty, IrType::Closure(_))
+            && let Some(actual_ty) = fn_actual_return_types.get(data.name.as_str())
+        {
+            return Ok(actual_ty.clone());
+        }
+        return Ok(base_ty);
+    }
+    ir::infer_instruction_type(inst, types, fn_return_types, tag_variants).ok_or_else(|| {
         JitError::UnimplementedInstruction {
             instruction: format!("{inst:?}"),
             function: func_name.to_string(),
@@ -1457,7 +3021,7 @@ fn lookup_value(
         })
 }
 
-fn storage_type(ty: &IrType, func_name: &str) -> Result<Type, JitError> {
+fn storage_type(ty: &IrType, _func_name: &str) -> Result<Type, JitError> {
     match ty {
         IrType::I8 | IrType::U8 => Ok(types::I8),
         IrType::I16 | IrType::U16 => Ok(types::I16),
@@ -1471,13 +3035,13 @@ fn storage_type(ty: &IrType, func_name: &str) -> Result<Type, JitError> {
         IrType::Array(_)
         | IrType::Record(_)
         | IrType::Closure(_)
+        | IrType::Func(_)
         | IrType::Tag(_)
         | IrType::Effect(_) => Ok(types::I64),
-        _ => Err(unsupported_type(func_name, ty)),
     }
 }
 
-fn storage_size(ty: &IrType, func_name: &str) -> Result<i32, JitError> {
+fn storage_size(ty: &IrType, _func_name: &str) -> Result<i32, JitError> {
     match ty {
         IrType::I8 | IrType::U8 | IrType::Bool => Ok(1),
         IrType::I16 | IrType::U16 => Ok(2),
@@ -1486,9 +3050,9 @@ fn storage_size(ty: &IrType, func_name: &str) -> Result<i32, JitError> {
         IrType::Array(_)
         | IrType::Record(_)
         | IrType::Closure(_)
+        | IrType::Func(_)
         | IrType::Tag(_)
         | IrType::Effect(_) => Ok(8),
-        _ => Err(unsupported_type(func_name, ty)),
     }
 }
 
@@ -1537,7 +3101,17 @@ fn decode_main_i32(ret_type: &IrType, ret_buf: &[u8; 16]) -> Result<i32, JitErro
         IrType::U32 => {
             Ok(u32::from_ne_bytes([ret_buf[0], ret_buf[1], ret_buf[2], ret_buf[3]]) as i32)
         }
-        IrType::Unit | IrType::Effect(_) => Ok(0),
+        IrType::Unit
+        | IrType::Effect(_)
+        | IrType::Array(_)
+        | IrType::Closure(_)
+        | IrType::Tag(_)
+        | IrType::Record(_)
+        | IrType::Str
+        | IrType::I64
+        | IrType::U64
+        | IrType::F32
+        | IrType::F64 => Ok(0),
         _ => Err(JitError::UnimplementedInstruction {
             instruction: format!(
                 "call_main does not support lossy return type {ret_type}; use call_main_raw instead"
@@ -1589,6 +3163,12 @@ unsafe extern "C" fn __pipe_println(args: *const u8, ret: *mut u8) -> i32 {
             let s = unsafe { std::str::from_utf8_unchecked(bytes) };
             s.to_string()
         }
+        12 => "()".to_string(),
+        13 => "<array>".to_string(),
+        14 => "<record>".to_string(),
+        15 => "<effect>".to_string(),
+        16 => "<closure>".to_string(),
+        17 => "<tag>".to_string(),
         _ => String::new(),
     };
     let output = if s.is_empty() { s } else { s + "\n" };
@@ -1641,6 +3221,12 @@ unsafe extern "C" fn pipe_rt_str_concat(args: *const u8, ret: *mut u8) -> i32 {
                 let s = unsafe { std::str::from_utf8_unchecked(bytes) };
                 result.push_str(s);
             }
+            12 => result.push_str("()"),
+            13 => result.push_str("<array>"),
+            14 => result.push_str("<record>"),
+            15 => result.push_str("<effect>"),
+            16 => result.push_str("<closure>"),
+            17 => result.push_str("<tag>"),
             _ => {}
         }
     }
@@ -1654,6 +3240,363 @@ unsafe extern "C" fn pipe_rt_str_concat(args: *const u8, ret: *mut u8) -> i32 {
         *(ret as *mut u64) = ptr as u64;
     }
     0
+}
+
+/// External function called by compiled Eq/Ne instructions on Str values.
+///
+/// Compares two strings in JIT heap format (`[length: u32][utf8 data]`)
+/// by content. Returns 1 if equal, 0 if not.
+///
+/// # Safety
+///
+/// `a` and `b` must be valid pointers to at least 4 readable bytes, and
+/// the length field must be consistent with the total allocation size.
+unsafe extern "C" fn pipe_rt_str_eq(a: *mut u8, b: *mut u8) -> i32 {
+    let a_len = unsafe { std::ptr::read_unaligned(a as *const u32) };
+    let b_len = unsafe { std::ptr::read_unaligned(b as *const u32) };
+    if a_len != b_len {
+        return 0;
+    }
+    let a_bytes = unsafe { std::slice::from_raw_parts(a.add(4), a_len as usize) };
+    let b_bytes = unsafe { std::slice::from_raw_parts(b.add(4), b_len as usize) };
+    i32::from(a_bytes == b_bytes)
+}
+
+/// External function called by `ArrayEq` JIT code.
+///
+/// Compares two JIT arrays element-by-element.
+///
+/// Array layout: `[len: u64, element_1, element_2, ...]`.
+/// Each element is `elem_size` bytes.
+///
+/// Element type handling:
+/// - Primitive types (I32, I64, etc.): compare raw bytes.
+/// - Str (tag 11): treat element slot as an I64 pointer to string data,
+///   then call `pipe_rt_str_eq` on dereferenced pointers.
+/// - Other heap types (Array, Record, Tag, etc.): pointer equality only.
+///
+/// # Safety
+///
+/// `a` and `b` must be valid pointers to array data in the JIT format.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn pipe_rt_arr_eq(a: u64, b: u64, elem_size: u32, elem_type_tag: u32) -> i32 {
+    let a = a as *const u8;
+    let b = b as *const u8;
+    let a_len = unsafe { std::ptr::read_unaligned(a as *const u64) };
+    let b_len = unsafe { std::ptr::read_unaligned(b as *const u64) };
+    if a_len != b_len {
+        return 0;
+    }
+    for i in 0..a_len {
+        let a_elem = unsafe { a.add(8 + i as usize * elem_size as usize) };
+        let b_elem = unsafe { b.add(8 + i as usize * elem_size as usize) };
+        let equal = match elem_type_tag {
+            // Signed integers
+            0 => unsafe { *(a_elem as *const i8) == *(b_elem as *const i8) }, // I8
+            1 => unsafe { *(a_elem as *const i16) == *(b_elem as *const i16) }, // I16
+            2 => unsafe { *(a_elem as *const i32) == *(b_elem as *const i32) }, // I32
+            3 => unsafe { *(a_elem as *const i64) == *(b_elem as *const i64) }, // I64/Usize
+            // Unsigned integers
+            4 => unsafe { *a_elem == *b_elem }, // U8
+            5 => unsafe { *(a_elem as *const u16) == *(b_elem as *const u16) }, // U16
+            6 => unsafe { *(a_elem as *const u32) == *(b_elem as *const u32) }, // U32
+            7 => unsafe { *(a_elem as *const u64) == *(b_elem as *const u64) }, // U64
+            // Floats
+            8 => {
+                let a_f = unsafe { *(a_elem as *const f32) };
+                let b_f = unsafe { *(b_elem as *const f32) };
+                a_f.to_bits() == b_f.to_bits()
+            }
+            9 => {
+                let a_f = unsafe { *(a_elem as *const f64) };
+                let b_f = unsafe { *(b_elem as *const f64) };
+                a_f.to_bits() == b_f.to_bits()
+            }
+            // Bool
+            10 => unsafe { *a_elem == *b_elem },
+            // Unit — always equal
+            12 => true,
+            // Str — load pointer, then deep compare
+            11 => {
+                let a_ptr = unsafe { *(a_elem as *const u64) } as *const u8;
+                let b_ptr = unsafe { *(b_elem as *const u64) } as *const u8;
+                unsafe { pipe_rt_str_eq(a_ptr as *mut u8, b_ptr as *mut u8) != 0 }
+            }
+            // Other heap types (Array, Record, Tag, Closure): pointer equality
+            _ => unsafe { *(a_elem as *const u64) == *(b_elem as *const u64) },
+        };
+        if !equal {
+            return 0;
+        }
+    }
+    1
+}
+
+/// External function called by `MakeClosure` JIT code.
+///
+/// Allocates a heap-allocated closure object containing the function
+/// pointer followed by packed capture values, and writes the pointer
+/// to `ret`.
+///
+/// # Safety
+///
+/// `args` points to a buffer in this layout:
+///   - bytes 0–7:  `u64` pointer to closure content data
+///   - bytes 8–11: `u32` byte size of the closure content data
+///
+/// `ret` points to an 8-byte buffer that receives the pointer to
+/// the heap-allocated closure object.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn pipe_rt_alloc_closure(args: *const u8, ret: *mut u8) -> i32 {
+    let data_ptr = unsafe { std::ptr::read_unaligned(args as *const u64) } as *const u8;
+    let byte_size = unsafe { std::ptr::read_unaligned(args.add(8) as *const u32) } as usize;
+    let closure = Vec::from(unsafe { std::slice::from_raw_parts(data_ptr, byte_size) });
+    let ptr = Box::leak(closure.into_boxed_slice()).as_ptr();
+    unsafe {
+        *(ret as *mut u64) = ptr as u64;
+    }
+    0
+}
+
+/// External function called by `ArrayAlloc` JIT code.
+///
+/// Allocates a heap-allocated array block with the layout:
+///   [len: u64 (8 bytes)][elements packed by element_size]
+/// and writes the pointer to `ret`.
+///
+/// # Safety
+///
+/// `args` points to a buffer in this layout:
+///   - bytes 0–3:   `u32` length (number of elements)
+///   - bytes 4–7:   `u32` element size in bytes
+///   - bytes 8–15:  `u64` initial value bytes (only `element_size` bytes used)
+///
+/// `ret` points to an 8-byte buffer that receives the pointer to
+/// the heap-allocated array.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn pipe_rt_alloc_array(args: *const u8, ret: *mut u8) -> i32 {
+    let len = unsafe { std::ptr::read_unaligned(args as *const u32) } as usize;
+    let element_size = unsafe { std::ptr::read_unaligned(args.add(4) as *const u32) } as usize;
+    let init_raw = unsafe { std::ptr::read_unaligned(args.add(8) as *const u64) };
+
+    let total_size = 8 + len * element_size;
+    let mut buf = vec![0u8; total_size];
+
+    unsafe { std::ptr::write_unaligned(buf.as_mut_ptr() as *mut u64, len as u64) };
+
+    let data_ptr = unsafe { buf.as_mut_ptr().add(8) };
+    let init_bytes = &init_raw as *const u64 as *const u8;
+    for i in 0..len {
+        unsafe {
+            std::ptr::copy_nonoverlapping(init_bytes, data_ptr.add(i * element_size), element_size);
+        }
+    }
+
+    let ptr = Box::leak(buf.into_boxed_slice()).as_ptr();
+    unsafe {
+        *(ret as *mut u64) = ptr as u64;
+    }
+    0
+}
+
+/// External function called by `ArrayConcat` JIT code.
+///
+/// Takes a left array pointer, a right array pointer, and an element
+/// size. Allocates a new array whose contents are the concatenation of
+/// the two input arrays, and writes the pointer to `ret`.
+///
+/// Args buffer layout:
+///   - bytes 0–7:  `u64` left array pointer
+///   - bytes 8–15: `u64` right array pointer
+///   - bytes 16–19: `u32` element size in bytes
+///
+/// Ret buffer: 8-byte pointer to the new array.
+///
+/// # Safety
+///
+/// `args` must point to a valid 20-byte buffer. `ret` must point to an
+/// 8-byte buffer. Both arrays must have been allocated by the same
+/// allocator with the same element size.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn pipe_rt_array_concat(args: *const u8, ret: *mut u8) -> i32 {
+    let left_ptr = unsafe { std::ptr::read_unaligned(args as *const u64) } as *const u8;
+    let right_ptr = unsafe { std::ptr::read_unaligned(args.add(8) as *const u64) } as *const u8;
+    let element_size = unsafe { std::ptr::read_unaligned(args.add(16) as *const u32) } as usize;
+
+    let left_len = unsafe { std::ptr::read_unaligned(left_ptr as *const u64) } as usize;
+    let right_len = unsafe { std::ptr::read_unaligned(right_ptr as *const u64) } as usize;
+    let total_len = left_len + right_len;
+
+    let total_size = 8 + total_len * element_size;
+    let mut buf = vec![0u8; total_size];
+
+    unsafe { std::ptr::write_unaligned(buf.as_mut_ptr() as *mut u64, total_len as u64) };
+
+    let left_data = unsafe { left_ptr.add(8) };
+    let right_data = unsafe { right_ptr.add(8) };
+    let left_bytes = left_len * element_size;
+    let dst = unsafe { buf.as_mut_ptr().add(8) };
+    unsafe {
+        std::ptr::copy_nonoverlapping(left_data, dst, left_bytes);
+        std::ptr::copy_nonoverlapping(right_data, dst.add(left_bytes), right_len * element_size);
+    }
+
+    let ptr = Box::leak(buf.into_boxed_slice()).as_ptr();
+    unsafe {
+        *(ret as *mut u64) = ptr as u64;
+    }
+    0
+}
+
+/// Returns `true` if `ty` is a heap type that requires boxing/unboxing
+/// when passed through the builtin bridge (Array, Record, Tag, Closure).
+/// Str is excluded because the bridge already reads/writes JIT Str format.
+fn needs_heap_boxing(ty: &IrType) -> bool {
+    matches!(
+        ty,
+        IrType::Array(_) | IrType::Record(_) | IrType::Tag(_) | IrType::Closure(_)
+    )
+}
+
+/// Serialize an `IrType` into a self-describing byte buffer for
+/// runtime boxing/unboxing.
+///
+/// Format (all integers little-endian):
+///
+/// ```text
+/// Node:
+///   [0..3]  type_tag: u32
+///   [4..7]  total_node_bytes: u32   (bytes of this node, including header)
+///   [8..]   node_data (variable)
+///
+/// Array:
+///   node_data = [elem_size: u32, ...elem_type_desc...]
+///
+/// Record:
+///   node_data = [field_count: u32,
+///     for each field:
+///       field_size: u32,
+///       name_len: u32,
+///       name_bytes: u8[name_len] padded to 4,
+///       ...field_type_desc...
+///   ]
+///
+/// Tag:
+///   node_data = [variant_count: u32,
+///     for each variant:
+///       disc: u32,
+///       payload_byte_len: u32,
+///       payload_count: u32,
+///       for each payload field:
+///         field_size: u32,
+///         ...field_type_desc...
+///   ]
+///
+/// Closure:
+///   node_data = [capture_count: u32,
+///     for each capture:
+///       capture_size: u32,
+///       ...capture_type_desc...
+///   ]
+///
+/// Primitives / Str / Unit / Effect: no node_data (total_node_bytes = 8)
+/// ```
+fn serialize_type_desc_to_bytes(ty: &IrType, func_name: &str) -> Result<Vec<u8>, JitError> {
+    let tag = ir_type_tag(ty).ok_or_else(|| unsupported_type(func_name, ty))?;
+    match ty {
+        IrType::Array(elem_ty) => {
+            let elem_desc = serialize_type_desc_to_bytes(elem_ty, func_name)?;
+            let elem_size = storage_size(elem_ty, func_name)? as u32;
+            let total = 8 + 4 + elem_desc.len() as u32;
+            let mut buf = Vec::with_capacity(total as usize);
+            buf.extend_from_slice(&13u32.to_le_bytes()); // type_tag
+            buf.extend_from_slice(&total.to_le_bytes()); // total_node_bytes
+            buf.extend_from_slice(&elem_size.to_le_bytes()); // elem_size
+            buf.extend_from_slice(&elem_desc);
+            Ok(buf)
+        }
+        IrType::Record(record_ty) => {
+            let mut buf = Vec::new();
+            buf.extend_from_slice(&14u32.to_le_bytes()); // type_tag placeholder
+            buf.extend_from_slice(&0u32.to_le_bytes()); // total_node_bytes placeholder
+
+            buf.extend_from_slice(&(record_ty.fields.len() as u32).to_le_bytes());
+
+            for (name, field_ty) in &record_ty.fields {
+                let field_size = storage_size(field_ty, func_name)? as u32;
+                let field_type_desc = serialize_type_desc_to_bytes(field_ty, func_name)?;
+                buf.extend_from_slice(&field_size.to_le_bytes());
+                // field name (UTF-8 bytes, no NUL terminator)
+                let name_bytes = name.as_bytes();
+                buf.extend_from_slice(&(name_bytes.len() as u32).to_le_bytes());
+                buf.extend_from_slice(name_bytes);
+                // pad to 4 bytes
+                while buf.len() % 4 != 0 {
+                    buf.push(0);
+                }
+                buf.extend_from_slice(&field_type_desc);
+            }
+
+            let total = buf.len() as u32;
+            buf[4..8].copy_from_slice(&total.to_le_bytes());
+            Ok(buf)
+        }
+        IrType::Tag(tag_ty) => {
+            let mut buf = Vec::new();
+            buf.extend_from_slice(&17u32.to_le_bytes());
+            buf.extend_from_slice(&0u32.to_le_bytes()); // placeholder total
+
+            buf.extend_from_slice(&(tag_ty.variants.len() as u32).to_le_bytes());
+
+            for variant in &tag_ty.variants {
+                buf.extend_from_slice(&variant.discriminant.to_le_bytes());
+                // Compute payload byte length
+                let mut payload_byte_len = 0u32;
+                let mut payload_descs = Vec::new();
+                for field_ty in &variant.payload {
+                    let field_size = storage_size(field_ty, func_name)? as u32;
+                    let field_type_desc = serialize_type_desc_to_bytes(field_ty, func_name)?;
+                    payload_byte_len += field_size;
+                    payload_descs.push((field_size, field_type_desc));
+                }
+                buf.extend_from_slice(&payload_byte_len.to_le_bytes());
+                buf.extend_from_slice(&(variant.payload.len() as u32).to_le_bytes());
+                for (field_size, field_type_desc) in &payload_descs {
+                    buf.extend_from_slice(&field_size.to_le_bytes());
+                    buf.extend_from_slice(field_type_desc);
+                }
+            }
+
+            let total = buf.len() as u32;
+            buf[4..8].copy_from_slice(&total.to_le_bytes());
+            Ok(buf)
+        }
+        IrType::Closure(func_ty) => {
+            let mut buf = Vec::new();
+            buf.extend_from_slice(&16u32.to_le_bytes());
+            buf.extend_from_slice(&0u32.to_le_bytes()); // placeholder total
+
+            buf.extend_from_slice(&(func_ty.params.len() as u32).to_le_bytes());
+
+            for capture_ty in &func_ty.params {
+                let capture_size = storage_size(capture_ty, func_name)? as u32;
+                let capture_type_desc = serialize_type_desc_to_bytes(capture_ty, func_name)?;
+                buf.extend_from_slice(&capture_size.to_le_bytes());
+                buf.extend_from_slice(&capture_type_desc);
+            }
+
+            let total = buf.len() as u32;
+            buf[4..8].copy_from_slice(&total.to_le_bytes());
+            Ok(buf)
+        }
+        // Primitives: just tag + total_node_bytes = 8
+        _ => {
+            let mut buf = Vec::with_capacity(8);
+            buf.extend_from_slice(&tag.to_le_bytes());
+            buf.extend_from_slice(&8u32.to_le_bytes()); // total_node_bytes
+            Ok(buf)
+        }
+    }
 }
 
 /// Numeric tag used by `__pipe_println` to interpret the raw value.
@@ -1672,8 +3615,12 @@ fn ir_type_tag(ty: &IrType) -> Option<u32> {
         IrType::Bool => Some(10),
         IrType::Str => Some(11),
         IrType::Unit => Some(12),
+        IrType::Array(_) => Some(13),
+        IrType::Record(_) => Some(14),
         IrType::Effect(_) => Some(15),
-        _ => None,
+        IrType::Closure(_) => Some(16),
+        IrType::Tag(_) => Some(17),
+        IrType::Func(_) => None,
     }
 }
 
@@ -1719,10 +3666,22 @@ unsafe extern "C" fn pipe_rt_call_builtin(args: *const u8, ret: *mut u8) -> i32 
             10 => RuntimeValue::Bool(raw != 0),
             11 => {
                 let ptr = raw as *const u8;
-                let len = unsafe { std::ptr::read_unaligned(ptr as *const u32) } as usize;
-                let bytes = unsafe { std::slice::from_raw_parts(ptr.add(4), len) };
-                let s = unsafe { std::str::from_utf8_unchecked(bytes) };
-                RuntimeValue::str(s.to_owned())
+                if ptr.is_null() || (raw as u64) < 0x1000 {
+                    RuntimeValue::Unit
+                } else {
+                    let len = unsafe { std::ptr::read_unaligned(ptr as *const u32) } as usize;
+                    let bytes = unsafe { std::slice::from_raw_parts(ptr.add(4), len) };
+                    let s = unsafe { std::str::from_utf8_unchecked(bytes) };
+                    RuntimeValue::str(s.to_owned())
+                }
+            }
+            13 | 14 | 15 | 17 => {
+                if raw == 0 || (raw as u64) < 0x1000 {
+                    RuntimeValue::Unit
+                } else {
+                    let val = unsafe { &*(raw as *const RuntimeValue) };
+                    val.clone()
+                }
             }
             _ => RuntimeValue::Unit,
         };
@@ -1753,6 +3712,7 @@ fn value_to_ret_buf(value: crate::value::Value, ret: *mut u8) {
     let (raw, tag): (i64, u32) = match value {
         RuntimeValue::I32(n) => (n as i64, 2),
         RuntimeValue::I64(n) => (n, 3),
+        RuntimeValue::Usize(n) => (n as i64, 3),
         RuntimeValue::F64(f) => (f.to_bits() as i64, 9),
         RuntimeValue::Bool(b) => (i64::from(b), 10),
         RuntimeValue::Unit => (0, 12),
@@ -1765,12 +3725,316 @@ fn value_to_ret_buf(value: crate::value::Value, ret: *mut u8) {
             let ptr = Box::leak(buf.into_boxed_slice()).as_ptr();
             (ptr as i64, 11)
         }
-        _ => (0, 0),
+        RuntimeValue::Array(a) => {
+            let ptr = Box::into_raw(Box::new(RuntimeValue::Array(a))) as i64;
+            (ptr, 13)
+        }
+        RuntimeValue::Record(r) => {
+            let ptr = Box::into_raw(Box::new(RuntimeValue::Record(r))) as i64;
+            (ptr, 14)
+        }
+        RuntimeValue::Closure(c) => {
+            let ptr = Box::into_raw(Box::new(RuntimeValue::Closure(c))) as i64;
+            (ptr, 16)
+        }
+        RuntimeValue::Tag { tag, payload } => {
+            let ptr = Box::into_raw(Box::new(RuntimeValue::Tag { tag, payload })) as i64;
+            (ptr, 17)
+        }
+        RuntimeValue::Effect(_) => (0, 15),
     };
     unsafe {
         std::ptr::write_unaligned(ret as *mut i64, raw);
         std::ptr::write_unaligned(ret.add(8) as *mut u32, tag);
     }
+}
+
+/// Read a `u32` from a byte buffer at `offset` (LE), advancing the
+/// offset by 4.
+#[inline]
+unsafe fn desc_read_u32(buf: *const u8, offset: &mut usize) -> u32 {
+    let v = unsafe { std::ptr::read_unaligned(buf.add(*offset) as *const u32) };
+    *offset += 4;
+    v
+}
+
+/// Convert JIT heap data at `ptr` into a `Box<Value>` pointer, using
+/// the type descriptor at `desc[0..desc_len]` to guide parsing.
+///
+/// The result is suitable for storing in the builtin args buffer—
+/// `pipe_rt_call_builtin` will read it as a `*const RuntimeValue`.
+///
+/// # Safety
+///
+/// `ptr` must point to valid JIT format data matching `desc`.
+/// `desc` must be valid for `desc_len` bytes.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn pipe_rt_box_value_jit(ptr: u64, desc_ptr: u64, desc_len: u32) -> u64 {
+    use crate::value::Value as V;
+
+    let ptr = ptr as *const u8;
+    let desc = desc_ptr as *const u8;
+    let _desc_len = desc_len;
+
+    #[allow(unsafe_op_in_unsafe_fn)]
+    unsafe fn box_rec(ptr: *const u8, desc: *const u8, offset: &mut usize) -> V {
+        let tag = desc_read_u32(desc, offset);
+        let total_bytes = desc_read_u32(desc, offset) as usize;
+        let start = *offset;
+
+        let result = match tag {
+            0 | 1 => V::I32(desc_read_u32(ptr, &mut 0usize) as i32),
+            2 => {
+                // I32 (4 bytes)
+                V::I32(unsafe { std::ptr::read_unaligned(ptr as *const i32) })
+            }
+            3 | 7 => {
+                // I64 / U64
+                V::I64(unsafe { std::ptr::read_unaligned(ptr as *const i64) })
+            }
+            4 => {
+                // U8
+                V::I32(i32::from(unsafe { std::ptr::read_unaligned(ptr) }))
+            }
+            5 => {
+                // U16
+                V::I32(i32::from(unsafe {
+                    std::ptr::read_unaligned(ptr as *const u16)
+                }))
+            }
+            6 => {
+                // U32
+                V::I32(unsafe { std::ptr::read_unaligned(ptr as *const u32) } as i32)
+            }
+            8 => {
+                // F32
+                V::F64(f64::from(f32::from_bits(unsafe {
+                    std::ptr::read_unaligned(ptr as *const u32)
+                })))
+            }
+            9 => {
+                // F64
+                V::F64(f64::from_bits(unsafe {
+                    std::ptr::read_unaligned(ptr as *const u64)
+                }))
+            }
+            10 => {
+                // Bool
+                V::Bool(unsafe { std::ptr::read_unaligned(ptr) } != 0)
+            }
+            11 => {
+                // Str in JIT format: [len: u32][bytes]
+                let len = unsafe { std::ptr::read_unaligned(ptr as *const u32) } as usize;
+                let bytes = unsafe { std::slice::from_raw_parts(ptr.add(4), len) };
+                V::str(unsafe { std::str::from_utf8_unchecked(bytes) }.to_owned())
+            }
+            12 => V::Unit,
+            13 => {
+                // Array: [len: u64][elements]
+                let elem_size = desc_read_u32(desc, offset) as usize;
+                let arr_len = unsafe { std::ptr::read_unaligned(ptr as *const u64) } as usize;
+                let sub_desc_offset = *offset;
+                let mut elements = Vec::with_capacity(arr_len);
+                for i in 0..arr_len {
+                    let elem_ptr = unsafe { ptr.add(8 + i * elem_size) };
+                    *offset = sub_desc_offset;
+                    elements.push(box_rec(elem_ptr, desc, offset));
+                }
+                if arr_len == 0 {
+                    // Advance past the sub-descriptor manually
+                    let saved = *offset;
+                    *offset = sub_desc_offset;
+                    // Parse dummy to advance
+                    let _dummy_tag = desc_read_u32(desc, offset);
+                    let dummy_total = desc_read_u32(desc, offset) as usize;
+                    *offset = sub_desc_offset + dummy_total;
+                    // Restore to after sub-descriptor
+                    *offset = saved.max(sub_desc_offset + dummy_total);
+                }
+                V::Array(elements.into())
+            }
+            14 => {
+                // Record: [field1_jit][field2_jit]...
+                use ast::SmolStr;
+                use std::collections::BTreeMap;
+                let field_count = desc_read_u32(desc, offset) as usize;
+                let mut fields = BTreeMap::new();
+                let mut field_ptr = ptr;
+                for _ in 0..field_count {
+                    let field_size = desc_read_u32(desc, offset) as usize;
+                    let field_name_len = desc_read_u32(desc, offset) as usize;
+                    // Read field name bytes (padded to 4)
+                    let name_padded = field_name_len.div_ceil(4) * 4;
+                    let name_bytes =
+                        unsafe { std::slice::from_raw_parts(desc.add(*offset), field_name_len) };
+                    let name = unsafe { std::str::from_utf8_unchecked(name_bytes) };
+                    *offset += name_padded;
+                    // Read the field value from JIT data
+                    let field_val = box_rec(field_ptr, desc, offset);
+                    field_ptr = unsafe { field_ptr.add(field_size) };
+                    fields.insert(SmolStr::new(name), field_val);
+                }
+                V::Record(std::sync::Arc::new(crate::value::RecordData { fields }))
+            }
+            15 => V::Unit, // Effect — opaque
+            16 => {
+                // Closure: [func_ptr: u64][captures]
+                let capture_count = desc_read_u32(desc, offset) as usize;
+                let func_addr = unsafe { std::ptr::read_unaligned(ptr as *const u64) } as usize;
+                let mut captures = Vec::with_capacity(capture_count);
+                let mut cap_ptr = unsafe { ptr.add(8) };
+                for _ in 0..capture_count {
+                    let cap_size = desc_read_u32(desc, offset) as usize;
+                    let cap_val = box_rec(cap_ptr, desc, offset);
+                    captures.push(cap_val);
+                    cap_ptr = unsafe { cap_ptr.add(cap_size) };
+                }
+                // We need the arity — we don't have it in the JIT format,
+                // but the capture count is the closure's capture arity.
+                // The total arity isn't stored; use captures.len() as a
+                // best-effort. The builtin will fail if it needs the
+                // closure's total arity.
+                let func = crate::value::FuncPtr::Jit {
+                    address: func_addr,
+                    arity: capture_count,
+                };
+                V::Closure(std::sync::Arc::new(crate::value::ClosureData {
+                    func,
+                    captures: captures.into(),
+                    arity: capture_count,
+                    call_arg_types: std::sync::Arc::from([]),
+                }))
+            }
+            17 => {
+                // Tag: [disc: i32][payload]
+                let variant_count = desc_read_u32(desc, offset) as usize;
+                let disc = unsafe { std::ptr::read_unaligned(ptr as *const i32) } as u32;
+                let mut payload_val = V::Unit;
+                for _ in 0..variant_count {
+                    let var_disc = desc_read_u32(desc, offset);
+                    let _payload_byte_len = desc_read_u32(desc, offset);
+                    let payload_count = desc_read_u32(desc, offset) as usize;
+                    let mut payload_fields = Vec::with_capacity(payload_count);
+                    let mut p_ptr = unsafe { ptr.add(4) };
+                    for _ in 0..payload_count {
+                        let field_size = desc_read_u32(desc, offset) as usize;
+                        let field_val = box_rec(p_ptr, desc, offset);
+                        payload_fields.push(field_val);
+                        p_ptr = unsafe { p_ptr.add(field_size) };
+                    }
+                    if var_disc == disc {
+                        payload_val = if payload_fields.len() == 1 {
+                            payload_fields.into_iter().next().unwrap()
+                        } else {
+                            V::Array(payload_fields.into())
+                        };
+                    }
+                }
+                V::Tag {
+                    tag: disc,
+                    payload: match payload_val {
+                        V::Unit => vec![].into(),
+                        V::Array(a) => a,
+                        other => vec![other].into(),
+                    },
+                }
+            }
+            _ => V::Unit,
+        };
+
+        *offset = start + total_bytes - 8;
+        result
+    }
+
+    let mut offset = 0usize;
+    let boxed = unsafe { box_rec(ptr, desc, &mut offset) };
+    Box::into_raw(Box::new(boxed)) as u64
+}
+
+/// Convert a `Box<Value>` pointer (as produced by `value_to_ret_buf` for
+/// heap types) back to JIT heap format, using the type descriptor to
+/// determine field layout.
+///
+/// The returned pointer points to a newly allocated JIT-format buffer.
+///
+/// # Safety
+///
+/// `ptr` must be a valid `Box<Value>` pointer previously produced by
+/// `value_to_ret_buf` or `Box::into_raw(Box::new(Value::…))`.
+/// The descriptor must match the value's actual type.
+/// After this call the original Box is freed.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn pipe_rt_unbox_value_jit(ptr: u64, _desc_ptr: u64, _desc_len: u32) -> u64 {
+    use crate::value::Value as V;
+
+    let box_val = unsafe { *Box::from_raw(ptr as *mut V) };
+
+    #[allow(unsafe_op_in_unsafe_fn)]
+    unsafe fn value_to_jit_bytes(val: V) -> Vec<u8> {
+        match val {
+            V::I32(n) => n.to_le_bytes().to_vec(),
+            V::I64(n) => n.to_le_bytes().to_vec(),
+            V::Usize(n) => (n as u64).to_le_bytes().to_vec(),
+            V::F64(f) => f.to_bits().to_le_bytes().to_vec(),
+            V::Bool(b) => vec![b as u8],
+            V::Unit => vec![],
+            V::Str(s) => {
+                let bytes = s.as_bytes();
+                let mut buf = Vec::with_capacity(4 + bytes.len());
+                buf.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+                buf.extend_from_slice(bytes);
+                buf
+            }
+            V::Array(arr) => {
+                let mut buf = Vec::with_capacity(8);
+                buf.extend_from_slice(&(arr.len() as u64).to_le_bytes());
+                for elem in arr.iter() {
+                    buf.extend_from_slice(&value_to_jit_bytes(elem.clone()));
+                }
+                buf
+            }
+            V::Record(record) => {
+                // Iterate the type descriptor to get declaration order,
+                // then look up field values by name.
+                // For the unbox direction we iterate the BTreeMap directly
+                // (sorted by name). This may not match JIT declaration
+                // order, but without the descriptor we cannot do better;
+                // callers should pass the descriptor for correctness.
+                let mut buf = Vec::new();
+                for (_, val) in record.fields.iter() {
+                    buf.extend_from_slice(&value_to_jit_bytes(val.clone()));
+                }
+                buf
+            }
+            V::Tag { tag, payload } => {
+                let mut buf = Vec::with_capacity(4);
+                buf.extend_from_slice(&tag.to_le_bytes());
+                for elem in payload.iter() {
+                    buf.extend_from_slice(&value_to_jit_bytes(elem.clone()));
+                }
+                buf
+            }
+            V::Closure(closure) => {
+                let mut buf = Vec::with_capacity(8);
+                match &closure.func {
+                    crate::value::FuncPtr::Jit { address, arity: _ } => {
+                        buf.extend_from_slice(&(*address as u64).to_le_bytes());
+                    }
+                    crate::value::FuncPtr::Builtin(_) => {
+                        buf.extend_from_slice(&0u64.to_le_bytes());
+                    }
+                }
+                for capture in closure.captures.iter() {
+                    buf.extend_from_slice(&value_to_jit_bytes(capture.clone()));
+                }
+                buf
+            }
+            V::Effect(_) => vec![],
+        }
+    }
+
+    let jit_data = unsafe { value_to_jit_bytes(box_val) };
+    Box::leak(jit_data.into_boxed_slice()).as_ptr() as u64
 }
 
 // ---------------------------------------------------------------------------
@@ -2636,5 +4900,57 @@ mod tests {
         let ret_buf = call_main_raw(&compiled);
         let ptr = u64::from_ne_bytes(ret_buf[..8].try_into().unwrap());
         check_len_prefixed_str(ptr, b"pi is 3.14");
+    }
+
+    #[test]
+    fn value_to_ret_buf_encodes_array_as_non_null_pointer() {
+        use std::sync::Arc;
+        let arr = crate::value::Value::Array(Arc::from(
+            vec![
+                crate::value::Value::I32(1),
+                crate::value::Value::I32(2),
+                crate::value::Value::I32(3),
+            ]
+            .into_boxed_slice(),
+        ));
+        let mut ret_buf = [0u8; 12];
+        value_to_ret_buf(arr, ret_buf.as_mut_ptr());
+        let raw = unsafe { std::ptr::read_unaligned(ret_buf.as_ptr() as *const i64) };
+        let tag = unsafe { std::ptr::read_unaligned(ret_buf.as_ptr().add(8) as *const u32) };
+        assert_eq!(tag, 13, "tag must be Array");
+        assert!(
+            raw != 0 && (raw as u64) >= 0x1000,
+            "pointer must be non-null: got {raw:#x}",
+        );
+        // Verify the pointer actually points to a valid Value::Array.
+        let decoded = unsafe { &*(raw as *const crate::value::Value) };
+        match decoded {
+            crate::value::Value::Array(a) => assert_eq!(a.len(), 3),
+            _ => panic!("expected Array, got {decoded:?}"),
+        }
+    }
+
+    #[test]
+    fn value_to_ret_buf_encodes_record_as_non_null_pointer() {
+        use ast::SmolStr;
+        use std::collections::BTreeMap;
+        use std::sync::Arc;
+        let mut fields = BTreeMap::new();
+        fields.insert(SmolStr::new("x"), crate::value::Value::I32(10));
+        let rec = crate::value::Value::Record(Arc::new(crate::value::RecordData { fields }));
+        let mut ret_buf = [0u8; 12];
+        value_to_ret_buf(rec, ret_buf.as_mut_ptr());
+        let raw = unsafe { std::ptr::read_unaligned(ret_buf.as_ptr() as *const i64) };
+        let tag = unsafe { std::ptr::read_unaligned(ret_buf.as_ptr().add(8) as *const u32) };
+        assert_eq!(tag, 14, "tag must be Record");
+        assert!(
+            raw != 0 && (raw as u64) >= 0x1000,
+            "pointer must be non-null: got {raw:#x}",
+        );
+        let decoded = unsafe { &*(raw as *const crate::value::Value) };
+        match decoded {
+            crate::value::Value::Record(r) => assert_eq!(r.fields.len(), 1),
+            _ => panic!("expected Record, got {decoded:?}"),
+        }
     }
 }

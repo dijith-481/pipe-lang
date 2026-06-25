@@ -18,6 +18,7 @@
 //! The IR is **not** validated here; validation is the lowerer's job.
 
 use std::collections::HashMap;
+
 use std::fmt;
 
 use ast::SmolStr;
@@ -234,6 +235,7 @@ pub struct MakeClosureData {
 pub struct CallIndirectData {
     pub callee: ValueId,
     pub args: Vec<ValueId>,
+    pub return_type: IrType,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -678,6 +680,12 @@ pub struct IrModule {
     pub decls: Vec<IrDecl>,
     /// Cache for O(1) function lookup by name
     function_indices: std::cell::RefCell<Option<std::collections::HashMap<SmolStr, usize>>>,
+    /// Full variant tables for every tag type the program referenced
+    /// during typechecking. Carried with the module so downstream
+    /// consumers (the JIT) can reconstruct complete `IrType::Tag`
+    /// values for things like `TagConstruct` without re-running the
+    /// typechecker.
+    pub tag_variants: typechecker::TagVariants,
 }
 
 impl IrModule {
@@ -784,16 +792,97 @@ pub fn lookup_type(types: &HashMap<ValueId, IrType>, value_id: ValueId) -> Optio
     types.get(&value_id)
 }
 
+/// Constructs a [`FuncType`] for a named function, using the return
+/// type from `fn_return_types`. Parameter types are left empty because
+/// they are not available through this API — the result is sufficient
+/// for storage-type dispatch (closure is always pointer-width).
+fn lookup_func_type(func_name: &str, fn_return_types: &HashMap<String, IrType>) -> FuncType {
+    let ret = fn_return_types
+        .get(func_name)
+        .cloned()
+        .unwrap_or(IrType::Unit);
+    FuncType {
+        params: vec![],
+        ret: Box::new(ret),
+    }
+}
+
+/// Converts a [`typechecker::MonoType`] into an [`IrType`], threading the
+/// tag-variants table through so recursive tag payloads stay accurate.
+fn mono_type_to_ir(ty: &typechecker::MonoType, tag_variants: &typechecker::TagVariants) -> IrType {
+    use typechecker::MonoType;
+    match ty {
+        MonoType::I8 => IrType::I8,
+        MonoType::I16 => IrType::I16,
+        MonoType::I32 => IrType::I32,
+        MonoType::I64 => IrType::I64,
+        MonoType::U8 => IrType::U8,
+        MonoType::U16 => IrType::U16,
+        MonoType::U32 => IrType::U32,
+        MonoType::U64 => IrType::U64,
+        MonoType::Usize => IrType::Usize,
+        MonoType::F32 => IrType::F32,
+        MonoType::F64 => IrType::F64,
+        MonoType::Bool => IrType::Bool,
+        MonoType::Str => IrType::Str,
+        MonoType::Unit => IrType::Unit,
+        MonoType::Array(inner) => IrType::Array(Box::new(mono_type_to_ir(inner, tag_variants))),
+        MonoType::Func { params, ret } => IrType::Closure(Box::new(FuncType {
+            params: params
+                .iter()
+                .map(|p| mono_type_to_ir(p, tag_variants))
+                .collect(),
+            ret: Box::new(mono_type_to_ir(ret, tag_variants)),
+        })),
+        MonoType::Record(fields) => IrType::Record(RecordType {
+            name: "anon".into(),
+            fields: fields
+                .iter()
+                .map(|(k, v)| (k.clone(), mono_type_to_ir(v, tag_variants)))
+                .collect(),
+        }),
+        MonoType::Tag { name, payload: _ } => {
+            let variants: Vec<TagVariant> = tag_variants
+                .get(name.as_str())
+                .map(|vs| {
+                    vs.iter()
+                        .enumerate()
+                        .map(|(i, (vname, vtemplate))| TagVariant {
+                            name: vname.clone(),
+                            discriminant: i as u32,
+                            payload: vtemplate
+                                .iter()
+                                .map(|t| mono_type_to_ir(t, tag_variants))
+                                .collect(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            IrType::Tag(TagType {
+                name: name.clone(),
+                variants,
+            })
+        }
+        MonoType::Effect(inner) => IrType::Effect(Box::new(mono_type_to_ir(inner, tag_variants))),
+        MonoType::Var(_) => IrType::I32,
+    }
+}
+
+/// Infers the `IrType` that `inst` will produce. Returns `None` when
 /// Infers the `IrType` that `inst` will produce. Returns `None` when
 /// the type cannot be determined (e.g. the input types are unknown).
 ///
 /// `fn_return_types` maps callee names to their return types and is
-/// used for `CallNamed` instructions.
+/// used for `CallNamed` instructions. `tag_variants` carries the full
+/// variant table for every tag type so that a `TagConstruct` can be
+/// typed as the complete sum type (not just the single constructed
+/// variant), which `TagGet` and the `Switch` terminator depend on.
 #[allow(unused_variables)]
 pub fn infer_instruction_type(
     inst: &Instruction,
     types: &HashMap<ValueId, IrType>,
     fn_return_types: &HashMap<String, IrType>,
+    tag_variants: &typechecker::TagVariants,
 ) -> Option<IrType> {
     match inst {
         Instruction::ConstI8(_) => Some(IrType::I8),
@@ -827,6 +916,120 @@ pub fn infer_instruction_type(
         | Instruction::Not(_) => Some(IrType::Bool),
         Instruction::CallNamed(data) => Some(data.return_type.clone()),
         Instruction::StrConcat { .. } => Some(IrType::Str),
+        Instruction::CallIndirect(data) => Some(data.return_type.clone()),
+        Instruction::MakeClosure(data) => {
+            let func_type = lookup_func_type(data.func_name.as_str(), fn_return_types);
+            // Include capture types before the declared param types so
+            // the JIT's `compile_call_indirect` correctly computes the
+            // capture offset (offset 8 + capture_sizes).
+            let capture_types: Vec<IrType> = data
+                .captures
+                .iter()
+                .filter_map(|vid| lookup_type(types, *vid).cloned())
+                .collect();
+            let mut all_params = capture_types;
+            all_params.extend(func_type.params);
+            Some(IrType::Closure(Box::new(FuncType {
+                params: all_params,
+                ret: func_type.ret,
+            })))
+        }
+        Instruction::TagConstruct(data) => {
+            let payload_types: Vec<IrType> = data
+                .payload
+                .iter()
+                .filter_map(|vid| lookup_type(types, *vid).cloned())
+                .collect();
+            // Use the full variant table for the tag type so downstream
+            // `TagGet` / `Switch` can see every variant, not just the one
+            // being constructed. Fall back to a single-variant type if
+            // the tag is not in the variants map (e.g. user-defined tag
+            // without prelude registration).
+            let variants: Vec<TagVariant> =
+                if let Some(vlist) = tag_variants.get(data.type_name.as_str()) {
+                    vlist
+                        .iter()
+                        .enumerate()
+                        .map(|(i, (vname, vtemplate))| TagVariant {
+                            name: vname.clone(),
+                            discriminant: i as u32,
+                            payload: vtemplate
+                                .iter()
+                                .map(|t| mono_type_to_ir(t, tag_variants))
+                                .collect(),
+                        })
+                        .collect()
+                } else {
+                    vec![TagVariant {
+                        name: data.variant.clone(),
+                        discriminant: data.discriminant,
+                        payload: payload_types,
+                    }]
+                };
+            Some(IrType::Tag(TagType {
+                name: data.type_name.clone(),
+                variants,
+            }))
+        }
+        Instruction::TagDiscriminant(_) => Some(IrType::U32),
+        Instruction::TagGet { value, index } => {
+            lookup_type(types, *value).and_then(|ty| match ty {
+                IrType::Tag(tag_type) => tag_type
+                    .variants
+                    .iter()
+                    .find_map(|v| v.payload.get(*index as usize).cloned())
+                    .or_else(|| {
+                        tag_variants
+                            .get(tag_type.name.as_str())
+                            .and_then(|variants| {
+                                variants.iter().find_map(|(_, payload)| {
+                                    payload
+                                        .get(*index as usize)
+                                        .map(|t| mono_type_to_ir(t, tag_variants))
+                                })
+                            })
+                    }),
+                _ => None,
+            })
+        }
+        Instruction::RecordAlloc(data) => {
+            let field_types: Vec<IrType> = data
+                .fields
+                .iter()
+                .filter_map(|vid| lookup_type(types, *vid).cloned())
+                .collect();
+            Some(IrType::Record(RecordType {
+                name: data.type_name.clone(),
+                fields: field_types
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, ty)| (SmolStr::new(format!("_{i}")), ty))
+                    .collect(),
+            }))
+        }
+        Instruction::RecordGet {
+            record,
+            field_index,
+            ..
+        } => lookup_type(types, *record).and_then(|ty| match ty {
+            IrType::Record(rt) => rt
+                .fields
+                .get(*field_index as usize)
+                .map(|(_, ty)| ty.clone()),
+            _ => None,
+        }),
+        Instruction::ArrayAlloc { len: _, init } => {
+            lookup_type(types, *init).map(|ty| IrType::Array(Box::new(ty.clone())))
+        }
+        Instruction::ArrayGet { array, index: _ } => {
+            lookup_type(types, *array).and_then(|ty| match ty {
+                IrType::Array(elem_ty) => Some(elem_ty.as_ref().clone()),
+                _ => None,
+            })
+        }
+        Instruction::ArrayLen(_) => Some(IrType::Usize),
+        Instruction::ArrayConcat(a, _) => lookup_type(types, *a).cloned(),
+        Instruction::RecordSet { .. } | Instruction::ArraySet { .. } => Some(IrType::Unit),
         _ => None,
     }
 }

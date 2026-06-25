@@ -1,45 +1,47 @@
-// Quicksort — classic functional algorithm
-// Recursive functions need explicit type signatures so HM can resolve
-// the self-reference; non-recursive helpers stay inferred.
+// Sorting Algorithms
+//
+// Demonstrates: quicksort, merge sort, functional decomposition,
+// closures, pattern matching with Option
 
+// Quicksort: partition around pivot, recurse on halves
 let quicksort : (Array<i32>) -> Array<i32> = (arr) => match arr.len() {
-    0usize => []
-    1usize => [arr[0usize]]
+    0 => []
+    1 => arr
     _ => {
-        let pivot = arr[0usize]
-        let rest = arr.drop(1usize)
+        let pivot = match arr.head() { Some(v) => v _ => 0 }
+        let rest = match arr.tail() { Some(t) => t _ => [] }
         let less = rest.filter((x) => x <= pivot)
         let greater = rest.filter((x) => x > pivot)
         quicksort(less).concat([pivot]).concat(quicksort(greater))
     }
 }
 
-// Merge sort — divide and conquer
-let split = (arr) => {
-    let mid = arr.len() / 2usize
-    (arr.take(mid), arr.drop(mid))
-}
-
+// Merge: combine two sorted arrays
 let merge : (Array<i32>, Array<i32>) -> Array<i32> = (a, b) => match (a.len(), b.len()) {
-    (0usize, _) => b
-    (_, 0usize) => a
+    (0, _) => b
+    (_, 0) => a
     _ => {
-        let aHead = a[0usize]
-        let bHead = b[0usize]
-        if aHead <= bHead {
-            [aHead].concat(merge(a.drop(1usize), b))
+        let a_head = match a.head() { Some(v) => v _ => 0 }
+        let b_head = match b.head() { Some(v) => v _ => 0 }
+        if a_head <= b_head {
+            let a_rest = match a.tail() { Some(t) => t _ => [] }
+            [a_head].concat(merge(a_rest, b))
         } else {
-            [bHead].concat(merge(a, b.drop(1usize)))
+            let b_rest = match b.tail() { Some(t) => t _ => [] }
+            [b_head].concat(merge(a, b_rest))
         }
     }
 }
 
-let mergesort : (Array<i32>) -> Array<i32> = (arr) => match arr.len() {
-    0usize => []
-    1usize => [arr[0usize]]
+// Merge sort: divide and conquer
+let merge_sort : (Array<i32>) -> Array<i32> = (arr) => match arr.len() {
+    0 => []
+    1 => arr
     _ => {
-        let (left, right) = split(arr)
-        merge(mergesort(left), mergesort(right))
+        let mid = arr.len() / 2usize
+        let left = arr.take(mid)
+        let right = arr.drop(mid)
+        merge(merge_sort(left), merge_sort(right))
     }
 }
 
@@ -47,5 +49,5 @@ let main = () => {
     let data = [38, 27, 43, 3, 9, 82, 10, 55, 12, 1]
     println(`Original:  ${data}`)
     println(`Quicksort: ${quicksort(data)}`)
-    println(`Mergesort: ${mergesort(data)}`)
+    println(`Mergesort: ${merge_sort(data)}`)
 }

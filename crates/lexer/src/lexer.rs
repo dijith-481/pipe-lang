@@ -167,10 +167,8 @@ impl<'a> Lexer<'a> {
             match ch {
                 '"' => {
                     self.advance();
-                    // Return the string content without quotes
-                    return Ok(TokenKind::Str(
-                        &self.source[start + 1..self.current_pos - 1],
-                    ));
+                    let raw = &self.source[start + 1..self.current_pos - 1];
+                    return Ok(TokenKind::Str(raw));
                 }
                 '\\' => {
                     self.advance();
@@ -209,8 +207,9 @@ impl<'a> Lexer<'a> {
                 }
                 Some('`') => {
                     let chunk_end = self.current_pos;
+                    let raw = &self.source[chunk_start..chunk_end];
                     self.pending.push_back(Token {
-                        kind: TokenKind::TemplateStr(&self.source[chunk_start..chunk_end]),
+                        kind: TokenKind::TemplateStr(raw),
                         span: Span::new(chunk_start, chunk_end),
                     });
                     self.advance(); // consume `
@@ -226,8 +225,9 @@ impl<'a> Lexer<'a> {
                     clone.next();
                     if clone.next().is_some_and(|(_, c)| c == '{') {
                         let chunk_end = self.current_pos;
+                        let raw = &self.source[chunk_start..chunk_end];
                         self.pending.push_back(Token {
-                            kind: TokenKind::TemplateStr(&self.source[chunk_start..chunk_end]),
+                            kind: TokenKind::TemplateStr(raw),
                             span: Span::new(chunk_start, chunk_end),
                         });
                         self.advance(); // consume $

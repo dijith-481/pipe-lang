@@ -13,12 +13,15 @@
 
 #![allow(dead_code)]
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use ast::SmolStr;
 use ir::{
-    BasicBlock, Instruction, IrDecl, IrFunction, IrModule, IrType, MakeClosureData,
-    RecordAllocData, TagConstructData, Terminator, ValueId,
+    BasicBlock, CallIndirectData, Instruction, IrDecl, IrFunction, IrModule, IrType,
+    MakeClosureData, RecordAllocData, TagConstructData, Terminator, ValueId,
 };
-use runtime::{JitError, compile_ir};
+use runtime::compile_ir;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -272,210 +275,537 @@ fn jit_or() {
 // Arrays — ALL UNIMPLEMENTED
 // ---------------------------------------------------------------------------
 
-#[ignore = "Member 1: implement ArrayAlloc instruction in JIT"]
 #[test]
 fn jit_array_alloc_and_get() {
-    let _result = std::panic::catch_unwind(|| {
-        let module = make_main(IrType::I32, |func, entry| {
-            let len = push_inst(func, entry, Instruction::ConstI32(3));
-            let init = push_inst(func, entry, Instruction::ConstI32(42));
-            let arr = push_inst(func, entry, Instruction::ArrayAlloc { len, init });
-            let idx = push_inst(func, entry, Instruction::ConstI32(1));
-            push_inst(
-                func,
-                entry,
-                Instruction::ArrayGet {
-                    array: arr,
-                    index: idx,
-                },
-            )
-        });
-        compile_ir(&module)
+    let module = make_main(IrType::I32, |func, entry| {
+        let len = push_inst(func, entry, Instruction::ConstI32(3));
+        let init = push_inst(func, entry, Instruction::ConstI32(42));
+        let arr = push_inst(func, entry, Instruction::ArrayAlloc { len, init });
+        let idx = push_inst(func, entry, Instruction::ConstI32(1));
+        push_inst(
+            func,
+            entry,
+            Instruction::ArrayGet {
+                array: arr,
+                index: idx,
+            },
+        )
     });
-    if let Ok(Err(JitError::UnimplementedInstruction { instruction, .. })) = &_result
-        && instruction.contains("ArrayAlloc")
-    {}
+    let compiled = compile_ir(&module).expect("ArrayAlloc + ArrayGet should compile");
+    assert_eq!(compiled.call_main().expect("main should run"), 42);
 }
 
-#[ignore = "Member 1: implement ArraySet instruction in JIT"]
+#[test]
+fn jit_array_get_multiple_indices() {
+    let module = make_main(IrType::I32, |func, entry| {
+        let len = push_inst(func, entry, Instruction::ConstI32(5));
+        let init = push_inst(func, entry, Instruction::ConstI32(7));
+        let arr = push_inst(func, entry, Instruction::ArrayAlloc { len, init });
+        // Read index 2
+        let idx = push_inst(func, entry, Instruction::ConstI32(2));
+        push_inst(
+            func,
+            entry,
+            Instruction::ArrayGet {
+                array: arr,
+                index: idx,
+            },
+        )
+    });
+    let compiled = compile_ir(&module).expect("ArrayAlloc + ArrayGet (index 2) should compile");
+    assert_eq!(compiled.call_main().expect("main should run"), 7);
+}
+
 #[test]
 fn jit_array_set() {
-    let _result = std::panic::catch_unwind(|| {
-        let module = make_main(IrType::I32, |func, entry| {
-            let len = push_inst(func, entry, Instruction::ConstI32(3));
-            let init = push_inst(func, entry, Instruction::ConstI32(0));
-            let arr = push_inst(func, entry, Instruction::ArrayAlloc { len, init });
-            let zero = push_inst(func, entry, Instruction::ConstI32(0));
-            let val = push_inst(func, entry, Instruction::ConstI32(99));
-            let _set = push_inst(
-                func,
-                entry,
-                Instruction::ArraySet {
-                    array: arr,
-                    index: zero,
-                    value: val,
-                },
-            );
-            push_inst(
-                func,
-                entry,
-                Instruction::ArrayGet {
-                    array: arr,
-                    index: zero,
-                },
-            )
-        });
-        compile_ir(&module)
+    let module = make_main(IrType::I32, |func, entry| {
+        let len = push_inst(func, entry, Instruction::ConstI32(3));
+        let init = push_inst(func, entry, Instruction::ConstI32(0));
+        let arr = push_inst(func, entry, Instruction::ArrayAlloc { len, init });
+        let zero = push_inst(func, entry, Instruction::ConstI32(0));
+        let val = push_inst(func, entry, Instruction::ConstI32(99));
+        let _set = push_inst(
+            func,
+            entry,
+            Instruction::ArraySet {
+                array: arr,
+                index: zero,
+                value: val,
+            },
+        );
+        push_inst(
+            func,
+            entry,
+            Instruction::ArrayGet {
+                array: arr,
+                index: zero,
+            },
+        )
     });
-    // Just ensure it doesn't crash
+    let compiled = compile_ir(&module).expect("ArraySet + ArrayGet should compile");
+    assert_eq!(compiled.call_main().expect("main should run"), 99);
 }
 
-#[ignore = "Member 1: implement ArrayLen instruction in JIT"]
+#[test]
+fn jit_array_set_multiple_indices() {
+    let module = make_main(IrType::I32, |func, entry| {
+        let len = push_inst(func, entry, Instruction::ConstI32(4));
+        let init = push_inst(func, entry, Instruction::ConstI32(0));
+        let arr = push_inst(func, entry, Instruction::ArrayAlloc { len, init });
+        // Set indices 1 and 3
+        let one = push_inst(func, entry, Instruction::ConstI32(1));
+        let val1 = push_inst(func, entry, Instruction::ConstI32(10));
+        let _set1 = push_inst(
+            func,
+            entry,
+            Instruction::ArraySet {
+                array: arr,
+                index: one,
+                value: val1,
+            },
+        );
+        let three = push_inst(func, entry, Instruction::ConstI32(3));
+        let val2 = push_inst(func, entry, Instruction::ConstI32(20));
+        let _set2 = push_inst(
+            func,
+            entry,
+            Instruction::ArraySet {
+                array: arr,
+                index: three,
+                value: val2,
+            },
+        );
+        // Read index 3 back
+        push_inst(
+            func,
+            entry,
+            Instruction::ArrayGet {
+                array: arr,
+                index: three,
+            },
+        )
+    });
+    let compiled = compile_ir(&module).expect("ArraySet multiple indices should compile");
+    assert_eq!(compiled.call_main().expect("main should run"), 20);
+}
+
+#[test]
+fn jit_array_set_overwrite() {
+    let module = make_main(IrType::I32, |func, entry| {
+        let len = push_inst(func, entry, Instruction::ConstI32(3));
+        let init = push_inst(func, entry, Instruction::ConstI32(0));
+        let arr = push_inst(func, entry, Instruction::ArrayAlloc { len, init });
+        // Write 42 to index 0
+        let zero = push_inst(func, entry, Instruction::ConstI32(0));
+        let val1 = push_inst(func, entry, Instruction::ConstI32(42));
+        let _set1 = push_inst(
+            func,
+            entry,
+            Instruction::ArraySet {
+                array: arr,
+                index: zero,
+                value: val1,
+            },
+        );
+        // Overwrite index 0 with 99
+        let val2 = push_inst(func, entry, Instruction::ConstI32(99));
+        let _set2 = push_inst(
+            func,
+            entry,
+            Instruction::ArraySet {
+                array: arr,
+                index: zero,
+                value: val2,
+            },
+        );
+        push_inst(
+            func,
+            entry,
+            Instruction::ArrayGet {
+                array: arr,
+                index: zero,
+            },
+        )
+    });
+    let compiled = compile_ir(&module).expect("ArraySet overwrite should compile");
+    assert_eq!(compiled.call_main().expect("main should run"), 99);
+}
+
+#[test]
+fn jit_array_set_other_indices_unchanged() {
+    let module = make_main(IrType::I32, |func, entry| {
+        let len = push_inst(func, entry, Instruction::ConstI32(3));
+        let init = push_inst(func, entry, Instruction::ConstI32(7));
+        let arr = push_inst(func, entry, Instruction::ArrayAlloc { len, init });
+        // Set index 1 to 99
+        let one = push_inst(func, entry, Instruction::ConstI32(1));
+        let val = push_inst(func, entry, Instruction::ConstI32(99));
+        let _set = push_inst(
+            func,
+            entry,
+            Instruction::ArraySet {
+                array: arr,
+                index: one,
+                value: val,
+            },
+        );
+        // Read index 0 — should still be 7
+        let zero = push_inst(func, entry, Instruction::ConstI32(0));
+        push_inst(
+            func,
+            entry,
+            Instruction::ArrayGet {
+                array: arr,
+                index: zero,
+            },
+        )
+    });
+    let compiled = compile_ir(&module).expect("ArraySet other indices unchanged should compile");
+    assert_eq!(compiled.call_main().expect("main should run"), 7);
+}
+
 #[test]
 fn jit_array_len() {
-    let _result = std::panic::catch_unwind(|| {
-        let module = make_main(IrType::Usize, |func, entry| {
-            let len = push_inst(func, entry, Instruction::ConstI32(5));
-            let init = push_inst(func, entry, Instruction::ConstI32(0));
-            let arr = push_inst(func, entry, Instruction::ArrayAlloc { len, init });
-            push_inst(func, entry, Instruction::ArrayLen(arr))
-        });
-        compile_ir(&module)
+    let module = make_main(IrType::Usize, |func, entry| {
+        let len = push_inst(func, entry, Instruction::ConstI32(5));
+        let init = push_inst(func, entry, Instruction::ConstI32(0));
+        let arr = push_inst(func, entry, Instruction::ArrayAlloc { len, init });
+        push_inst(func, entry, Instruction::ArrayLen(arr))
     });
+    compile_ir(&module).expect("ArrayLen should compile");
+}
+
+#[test]
+fn jit_array_len_empty() {
+    let module = make_main(IrType::Usize, |func, entry| {
+        let len = push_inst(func, entry, Instruction::ConstI32(0));
+        let init = push_inst(func, entry, Instruction::ConstI32(99));
+        let arr = push_inst(func, entry, Instruction::ArrayAlloc { len, init });
+        push_inst(func, entry, Instruction::ArrayLen(arr))
+    });
+    compile_ir(&module).expect("ArrayLen with empty array should compile");
+}
+
+#[test]
+fn jit_array_len_different_sizes() {
+    let module = make_main(IrType::Usize, |func, entry| {
+        let len = push_inst(func, entry, Instruction::ConstI32(10));
+        let init = push_inst(func, entry, Instruction::ConstI32(42));
+        let arr = push_inst(func, entry, Instruction::ArrayAlloc { len, init });
+        push_inst(func, entry, Instruction::ArrayLen(arr))
+    });
+    compile_ir(&module).expect("ArrayLen with 10 elements should compile");
+}
+
+// ---------------------------------------------------------------------------
+// ArrayConcat
+// ---------------------------------------------------------------------------
+
+#[test]
+fn jit_array_concat_empty_empty() {
+    let module = make_main(IrType::I32, |func, entry| {
+        let len0 = push_inst(func, entry, Instruction::ConstI32(0));
+        let init0 = push_inst(func, entry, Instruction::ConstI32(0));
+        let left = push_inst(
+            func,
+            entry,
+            Instruction::ArrayAlloc {
+                len: len0,
+                init: init0,
+            },
+        );
+        let right = push_inst(
+            func,
+            entry,
+            Instruction::ArrayAlloc {
+                len: len0,
+                init: init0,
+            },
+        );
+        let concat = push_inst(func, entry, Instruction::ArrayConcat(left, right));
+        push_inst(func, entry, Instruction::ArrayLen(concat))
+    });
+    compile_ir(&module).expect("ArrayConcat empty+empty should compile");
+}
+
+#[test]
+fn jit_array_concat_empty_nonempty() {
+    let module = make_main(IrType::I32, |func, entry| {
+        let len0 = push_inst(func, entry, Instruction::ConstI32(0));
+        let len2 = push_inst(func, entry, Instruction::ConstI32(2));
+        let init = push_inst(func, entry, Instruction::ConstI32(42));
+        let left = push_inst(func, entry, Instruction::ArrayAlloc { len: len0, init });
+        let right = push_inst(func, entry, Instruction::ArrayAlloc { len: len2, init });
+        let concat = push_inst(func, entry, Instruction::ArrayConcat(left, right));
+        push_inst(func, entry, Instruction::ArrayLen(concat))
+    });
+    compile_ir(&module).expect("ArrayConcat empty+nonempty should compile");
+}
+
+#[test]
+fn jit_array_concat_nonempty_empty() {
+    let module = make_main(IrType::I32, |func, entry| {
+        let len0 = push_inst(func, entry, Instruction::ConstI32(0));
+        let len3 = push_inst(func, entry, Instruction::ConstI32(3));
+        let init = push_inst(func, entry, Instruction::ConstI32(7));
+        let left = push_inst(func, entry, Instruction::ArrayAlloc { len: len3, init });
+        let right = push_inst(func, entry, Instruction::ArrayAlloc { len: len0, init });
+        let concat = push_inst(func, entry, Instruction::ArrayConcat(left, right));
+        push_inst(func, entry, Instruction::ArrayLen(concat))
+    });
+    compile_ir(&module).expect("ArrayConcat nonempty+empty should compile");
+}
+
+#[test]
+fn jit_array_concat_nonempty_nonempty() {
+    let module = make_main(IrType::I32, |func, entry| {
+        let len3 = push_inst(func, entry, Instruction::ConstI32(3));
+        let len2 = push_inst(func, entry, Instruction::ConstI32(2));
+        let init = push_inst(func, entry, Instruction::ConstI32(0));
+        let left = push_inst(func, entry, Instruction::ArrayAlloc { len: len3, init });
+        let right = push_inst(func, entry, Instruction::ArrayAlloc { len: len2, init });
+        let concat = push_inst(func, entry, Instruction::ArrayConcat(left, right));
+        push_inst(func, entry, Instruction::ArrayLen(concat))
+    });
+    compile_ir(&module).expect("ArrayConcat nonempty+nonempty should compile");
+}
+
+#[test]
+fn jit_array_concat_length_correct() {
+    // Allocate left[3], right[2], concat -> should have length 5
+    let module = make_main(IrType::I32, |func, entry| {
+        let left_init = push_inst(func, entry, Instruction::ConstI32(10));
+        let right_init = push_inst(func, entry, Instruction::ConstI32(20));
+        let len3 = push_inst(func, entry, Instruction::ConstI32(3));
+        let len2 = push_inst(func, entry, Instruction::ConstI32(2));
+        let left = push_inst(
+            func,
+            entry,
+            Instruction::ArrayAlloc {
+                len: len3,
+                init: left_init,
+            },
+        );
+        let right = push_inst(
+            func,
+            entry,
+            Instruction::ArrayAlloc {
+                len: len2,
+                init: right_init,
+            },
+        );
+        let concat = push_inst(func, entry, Instruction::ArrayConcat(left, right));
+        // Read length of concat
+        let _len = push_inst(func, entry, Instruction::ArrayLen(concat));
+        // Return a sentinel value since Usize can't be returned via call_main
+        push_inst(func, entry, Instruction::ConstI32(0))
+    });
+    let compiled = compile_ir(&module).expect("ArrayConcat length should compile");
+    compiled.call_main().expect("main should run");
+}
+
+#[test]
+fn jit_array_concat_element_order() {
+    // Create left = [1, 2, 3], right = [4, 5], concat -> get first element of right part
+    let module = make_main(IrType::I32, |func, entry| {
+        let len3 = push_inst(func, entry, Instruction::ConstI32(3));
+        let len2 = push_inst(func, entry, Instruction::ConstI32(2));
+        let val1 = push_inst(func, entry, Instruction::ConstI32(1));
+        let val4 = push_inst(func, entry, Instruction::ConstI32(4));
+        let left = push_inst(
+            func,
+            entry,
+            Instruction::ArrayAlloc {
+                len: len3,
+                init: val1,
+            },
+        );
+        let right = push_inst(
+            func,
+            entry,
+            Instruction::ArrayAlloc {
+                len: len2,
+                init: val4,
+            },
+        );
+        let concat = push_inst(func, entry, Instruction::ArrayConcat(left, right));
+        // Read element at index 3 (should be 4, the first element of right)
+        let idx = push_inst(func, entry, Instruction::ConstI32(3));
+        push_inst(
+            func,
+            entry,
+            Instruction::ArrayGet {
+                array: concat,
+                index: idx,
+            },
+        )
+    });
+    let compiled = compile_ir(&module).expect("ArrayConcat element order should compile");
+    assert_eq!(compiled.call_main().expect("main should run"), 4);
 }
 
 // ---------------------------------------------------------------------------
 // Records — ALL UNIMPLEMENTED
 // ---------------------------------------------------------------------------
 
-#[ignore = "Member 1: implement RecordAlloc instruction in JIT"]
 #[test]
 fn jit_record_alloc_and_get() {
-    let _result = std::panic::catch_unwind(|| {
-        let module = make_main(IrType::I32, |func, entry| {
-            let name = push_inst(func, entry, Instruction::ConstStr(SmolStr::new("Alice")));
-            let age = push_inst(func, entry, Instruction::ConstI32(30));
-            let rec = push_inst(
-                func,
-                entry,
-                Instruction::RecordAlloc(Box::new(RecordAllocData {
-                    type_name: SmolStr::new("Person"),
-                    fields: vec![name, age],
-                })),
-            );
-            push_inst(
-                func,
-                entry,
-                Instruction::RecordGet {
-                    record: rec,
-                    field: SmolStr::new("age"),
-                    field_index: 1,
-                },
-            )
-        });
-        compile_ir(&module)
+    let module = make_main(IrType::I32, |func, entry| {
+        let name = push_inst(func, entry, Instruction::ConstStr(SmolStr::new("Alice")));
+        let age = push_inst(func, entry, Instruction::ConstI32(30));
+        let rec = push_inst(
+            func,
+            entry,
+            Instruction::RecordAlloc(Box::new(RecordAllocData {
+                type_name: SmolStr::new("Person"),
+                fields: vec![name, age],
+            })),
+        );
+        push_inst(
+            func,
+            entry,
+            Instruction::RecordGet {
+                record: rec,
+                field: SmolStr::new("age"),
+                field_index: 1,
+            },
+        )
     });
+    let compiled = compile_ir(&module).expect("RecordAlloc + RecordGet should compile");
+    assert_eq!(compiled.call_main().expect("main should run"), 30);
+}
+
+#[test]
+fn jit_record_set_and_get() {
+    let module = make_main(IrType::I32, |func, entry| {
+        let name = push_inst(func, entry, Instruction::ConstStr(SmolStr::new("Alice")));
+        let age = push_inst(func, entry, Instruction::ConstI32(30));
+        let rec = push_inst(
+            func,
+            entry,
+            Instruction::RecordAlloc(Box::new(RecordAllocData {
+                type_name: SmolStr::new("Person"),
+                fields: vec![name, age],
+            })),
+        );
+        let new_age = push_inst(func, entry, Instruction::ConstI32(35));
+        let _set = push_inst(
+            func,
+            entry,
+            Instruction::RecordSet {
+                record: rec,
+                field: SmolStr::new("age"),
+                field_index: 1,
+                value: new_age,
+            },
+        );
+        push_inst(
+            func,
+            entry,
+            Instruction::RecordGet {
+                record: rec,
+                field: SmolStr::new("age"),
+                field_index: 1,
+            },
+        )
+    });
+    let compiled = compile_ir(&module).expect("RecordSet + RecordGet should compile");
+    assert_eq!(compiled.call_main().expect("main should run"), 35);
 }
 
 // ---------------------------------------------------------------------------
 // Tags (Sum Types) — ALL UNIMPLEMENTED
 // ---------------------------------------------------------------------------
 
-#[ignore = "Member 1: implement TagConstruct instruction in JIT"]
 #[test]
 fn jit_tag_construct_and_discriminant() {
-    let _result = std::panic::catch_unwind(|| {
-        let module = make_main(IrType::U32, |func, entry| {
-            let payload = push_inst(func, entry, Instruction::ConstI32(42));
-            let tag = push_inst(
-                func,
-                entry,
-                Instruction::TagConstruct(Box::new(TagConstructData {
-                    type_name: SmolStr::new("Option"),
-                    variant: SmolStr::new("Some"),
-                    discriminant: 1,
-                    payload: vec![payload],
-                })),
-            );
-            push_inst(func, entry, Instruction::TagDiscriminant(tag))
-        });
-        compile_ir(&module)
+    let module = make_main(IrType::U32, |func, entry| {
+        let payload = push_inst(func, entry, Instruction::ConstI32(42));
+        let tag = push_inst(
+            func,
+            entry,
+            Instruction::TagConstruct(Box::new(TagConstructData {
+                type_name: SmolStr::new("Option"),
+                variant: SmolStr::new("Some"),
+                discriminant: 1,
+                payload: vec![payload],
+            })),
+        );
+        push_inst(func, entry, Instruction::TagDiscriminant(tag))
     });
+    let compiled = compile_ir(&module).expect("TagConstruct + TagDiscriminant should compile");
+    compiled.call_main().expect("main should run");
 }
 
-#[ignore = "Member 1: implement TagGet instruction in JIT"]
 #[test]
 fn jit_tag_get_payload() {
-    let _result = std::panic::catch_unwind(|| {
-        let module = make_main(IrType::I32, |func, entry| {
-            let payload = push_inst(func, entry, Instruction::ConstI32(99));
-            let tag = push_inst(
-                func,
-                entry,
-                Instruction::TagConstruct(Box::new(TagConstructData {
-                    type_name: SmolStr::new("Option"),
-                    variant: SmolStr::new("Some"),
-                    discriminant: 1,
-                    payload: vec![payload],
-                })),
-            );
-            push_inst(
-                func,
-                entry,
-                Instruction::TagGet {
-                    value: tag,
-                    index: 0,
-                },
-            )
-        });
-        compile_ir(&module)
+    let module = make_main(IrType::I32, |func, entry| {
+        let payload = push_inst(func, entry, Instruction::ConstI32(99));
+        let tag = push_inst(
+            func,
+            entry,
+            Instruction::TagConstruct(Box::new(TagConstructData {
+                type_name: SmolStr::new("Option"),
+                variant: SmolStr::new("Some"),
+                discriminant: 1,
+                payload: vec![payload],
+            })),
+        );
+        push_inst(
+            func,
+            entry,
+            Instruction::TagGet {
+                value: tag,
+                index: 0,
+            },
+        )
     });
+    let compiled = compile_ir(&module).expect("TagGet should compile");
+    assert_eq!(compiled.call_main().expect("main should run"), 99);
 }
 
 // ---------------------------------------------------------------------------
 // Closures — ALL UNIMPLEMENTED
 // ---------------------------------------------------------------------------
 
-#[ignore = "Member 1: implement MakeClosure instruction in JIT"]
 #[test]
 fn jit_make_closure() {
-    let _result = std::panic::catch_unwind(|| {
-        let helper_name = SmolStr::new("helper");
-        let mut helper = IrFunction::new(helper_name.clone(), IrType::I32);
-        let h_entry_id = helper.alloc_block();
-        let mut h_entry = BasicBlock::new(h_entry_id);
-        let cap = push_inst(&mut helper, &mut h_entry, Instruction::ConstI32(42));
-        h_entry.terminator = Terminator::Return(cap);
-        helper.blocks.push(h_entry);
+    let helper_name = SmolStr::new("helper");
+    let mut helper = IrFunction::new(helper_name.clone(), IrType::I32);
+    let h_entry_id = helper.alloc_block();
+    let mut h_entry = BasicBlock::new(h_entry_id);
+    let cap = push_inst(&mut helper, &mut h_entry, Instruction::ConstI32(42));
+    h_entry.terminator = Terminator::Return(cap);
+    helper.blocks.push(h_entry);
 
-        let mut func = IrFunction::new(SmolStr::new("main"), IrType::I32);
-        let entry_id = func.alloc_block();
-        let mut entry = BasicBlock::new(entry_id);
-        let captured = push_inst(&mut func, &mut entry, Instruction::ConstI32(99));
-        let _closure = push_inst(
-            &mut func,
-            &mut entry,
-            Instruction::MakeClosure(Box::new(MakeClosureData {
-                func_name: helper_name,
-                captures: vec![captured],
-            })),
-        );
-        let ret = push_inst(&mut func, &mut entry, Instruction::ConstI32(0));
-        entry.terminator = Terminator::Return(ret);
-        func.blocks.push(entry);
+    let mut func = IrFunction::new(SmolStr::new("main"), IrType::I32);
+    let entry_id = func.alloc_block();
+    let mut entry = BasicBlock::new(entry_id);
+    let captured = push_inst(&mut func, &mut entry, Instruction::ConstI32(99));
+    let _closure = push_inst(
+        &mut func,
+        &mut entry,
+        Instruction::MakeClosure(Box::new(MakeClosureData {
+            func_name: helper_name,
+            captures: vec![captured],
+        })),
+    );
+    let ret = push_inst(&mut func, &mut entry, Instruction::ConstI32(0));
+    entry.terminator = Terminator::Return(ret);
+    func.blocks.push(entry);
 
-        let mut module = IrModule::new();
-        module.decls.push(IrDecl::Function(helper));
-        module.decls.push(IrDecl::Function(func));
-        compile_ir(&module)
-    });
+    let mut module = IrModule::new();
+    module.decls.push(IrDecl::Function(helper));
+    module.decls.push(IrDecl::Function(func));
+    let compiled = compile_ir(&module).expect("MakeClosure should compile");
+    let result = compiled.call_main().expect("main should run");
+    assert_eq!(result, 0);
 }
 
 // ---------------------------------------------------------------------------
 // Panic — UNIMPLEMENTED
 // ---------------------------------------------------------------------------
 
-#[ignore = "Member 1: implement Panic instruction in JIT"]
 #[test]
 fn jit_panic_traps() {
     let _result = std::panic::catch_unwind(|| {
@@ -498,7 +828,6 @@ fn jit_panic_traps() {
 // TailCall terminator — UNIMPLEMENTED
 // ---------------------------------------------------------------------------
 
-#[ignore = "Member 1: implement TailCall terminator in JIT"]
 #[test]
 fn jit_tail_call_terminator() {
     let _result = std::panic::catch_unwind(|| {
@@ -517,3 +846,877 @@ fn jit_tail_call_terminator() {
         compile_ir(&module)
     });
 }
+
+// ---------------------------------------------------------------------------
+// Heap type-tag discrimination (JIT + runtime)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn jit_println_array_uses_type_tag() {
+    let module = make_main(IrType::I32, |func, entry| {
+        let len = push_inst(func, entry, Instruction::ConstI32(3));
+        let init = push_inst(func, entry, Instruction::ConstI32(42));
+        let arr = push_inst(func, entry, Instruction::ArrayAlloc { len, init });
+        entry.instructions.push((None, Instruction::Println(arr)));
+        push_inst(func, entry, Instruction::ConstI32(0))
+    });
+    let compiled = compile_ir(&module).expect("Println array should compile");
+    compiled.call_main().expect("main should run");
+}
+
+#[test]
+fn jit_println_record_uses_type_tag() {
+    let module = make_main(IrType::I32, |func, entry| {
+        let val = push_inst(func, entry, Instruction::ConstI32(99));
+        let rec = push_inst(
+            func,
+            entry,
+            Instruction::RecordAlloc(Box::new(RecordAllocData {
+                type_name: SmolStr::new("Test"),
+                fields: vec![val],
+            })),
+        );
+        entry.instructions.push((None, Instruction::Println(rec)));
+        push_inst(func, entry, Instruction::ConstI32(0))
+    });
+    let compiled = compile_ir(&module).expect("Println record should compile");
+    compiled.call_main().expect("main should run");
+}
+
+#[test]
+fn jit_println_tag_uses_type_tag() {
+    let module = make_main(IrType::I32, |func, entry| {
+        let payload = push_inst(func, entry, Instruction::ConstI32(42));
+        let tag = push_inst(
+            func,
+            entry,
+            Instruction::TagConstruct(Box::new(TagConstructData {
+                type_name: SmolStr::new("Option"),
+                variant: SmolStr::new("Some"),
+                discriminant: 1,
+                payload: vec![payload],
+            })),
+        );
+        entry.instructions.push((None, Instruction::Println(tag)));
+        push_inst(func, entry, Instruction::ConstI32(0))
+    });
+    let compiled = compile_ir(&module).expect("Println tag should compile");
+    compiled.call_main().expect("main should run");
+}
+
+#[test]
+fn jit_println_closure_uses_type_tag() {
+    let helper_name = SmolStr::new("helper");
+    let mut helper = IrFunction::new(helper_name.clone(), IrType::I32);
+    let h_entry_id = helper.alloc_block();
+    let mut h_entry = BasicBlock::new(h_entry_id);
+    let cap = push_inst(&mut helper, &mut h_entry, Instruction::ConstI32(42));
+    h_entry.terminator = Terminator::Return(cap);
+    helper.blocks.push(h_entry);
+
+    let mut func = IrFunction::new(SmolStr::new("main"), IrType::I32);
+    let entry_id = func.alloc_block();
+    let mut entry = BasicBlock::new(entry_id);
+    let captured = push_inst(&mut func, &mut entry, Instruction::ConstI32(99));
+    let closure = push_inst(
+        &mut func,
+        &mut entry,
+        Instruction::MakeClosure(Box::new(MakeClosureData {
+            func_name: helper_name,
+            captures: vec![captured],
+        })),
+    );
+    entry
+        .instructions
+        .push((None, Instruction::Println(closure)));
+    let ret = push_inst(&mut func, &mut entry, Instruction::ConstI32(0));
+    entry.terminator = Terminator::Return(ret);
+    func.blocks.push(entry);
+
+    let mut module = IrModule::new();
+    module.decls.push(ir::IrDecl::Function(helper));
+    module.decls.push(ir::IrDecl::Function(func));
+    let compiled = compile_ir(&module).expect("Println closure should compile");
+    compiled.call_main().expect("main should run");
+}
+
+// ---------------------------------------------------------------------------
+// CallIndirect — integration tests (Phase 1 TDD)
+// ---------------------------------------------------------------------------
+
+/// Helper: build a one-block function `f` with explicit params and a body
+/// produced by `build_body`, and add it to `module`.
+fn add_function(
+    module: &mut IrModule,
+    name: &str,
+    params: Vec<(SmolStr, IrType)>,
+    return_type: IrType,
+    build_body: impl FnOnce(&mut IrFunction, &mut BasicBlock) -> ValueId,
+) {
+    let mut func = IrFunction::new(SmolStr::new(name), return_type);
+    let entry_id = func.alloc_block();
+    let mut entry = BasicBlock::new(entry_id);
+    let mut value_ids = Vec::new();
+    for (pname, pty) in &params {
+        let v = func.alloc_value();
+        value_ids.push((v, pname.clone(), pty.clone()));
+    }
+    for (vid, pname, pty) in &value_ids {
+        func.params.push((*vid, pname.clone(), pty.clone()));
+    }
+    let _ = build_body(&mut func, &mut entry);
+    func.blocks.push(entry);
+    module.decls.push(IrDecl::Function(func));
+}
+
+#[test]
+fn jit_call_indirect_simple() {
+    // (x: i32) -> i32 { x + 1 }, called with 5 → 6
+    let mut module = IrModule::new();
+    add_function(
+        &mut module,
+        "helper",
+        vec![(SmolStr::new("x"), IrType::I32)],
+        IrType::I32,
+        |func, entry| {
+            let x = ValueId(0); // first param has ValueId 0
+            let one = push_inst(func, entry, Instruction::ConstI32(1));
+            let sum = push_inst(func, entry, Instruction::Add(x, one));
+            entry.terminator = Terminator::Return(sum);
+            sum
+        },
+    );
+    let mut func = IrFunction::new(SmolStr::new("main"), IrType::I32);
+    let entry_id = func.alloc_block();
+    let mut entry = BasicBlock::new(entry_id);
+    let arg = push_inst(&mut func, &mut entry, Instruction::ConstI32(5));
+    let closure = push_inst(
+        &mut func,
+        &mut entry,
+        Instruction::MakeClosure(Box::new(MakeClosureData {
+            func_name: SmolStr::new("helper"),
+            captures: vec![],
+        })),
+    );
+    let result = push_inst(
+        &mut func,
+        &mut entry,
+        Instruction::CallIndirect(Box::new(CallIndirectData {
+            callee: closure,
+            args: vec![arg],
+            return_type: IrType::I32,
+        })),
+    );
+    entry.terminator = Terminator::Return(result);
+    func.blocks.push(entry);
+    module.decls.push(IrDecl::Function(func));
+
+    let compiled = compile_ir(&module).expect("CallIndirect should compile");
+    assert_eq!(compiled.call_main().expect("main should run"), 6);
+}
+
+#[test]
+fn jit_call_indirect_with_capture() {
+    // (x: i32) -> i32 { x + cap }, cap = 100, called with 5 → 105
+    let mut module = IrModule::new();
+    add_function(
+        &mut module,
+        "helper",
+        vec![
+            (SmolStr::new("cap"), IrType::I32),
+            (SmolStr::new("x"), IrType::I32),
+        ],
+        IrType::I32,
+        |func, entry| {
+            let cap = ValueId(0);
+            let x = ValueId(1);
+            let sum = push_inst(func, entry, Instruction::Add(x, cap));
+            entry.terminator = Terminator::Return(sum);
+            sum
+        },
+    );
+    let mut func = IrFunction::new(SmolStr::new("main"), IrType::I32);
+    let entry_id = func.alloc_block();
+    let mut entry = BasicBlock::new(entry_id);
+    let captured = push_inst(&mut func, &mut entry, Instruction::ConstI32(100));
+    let arg = push_inst(&mut func, &mut entry, Instruction::ConstI32(5));
+    let closure = push_inst(
+        &mut func,
+        &mut entry,
+        Instruction::MakeClosure(Box::new(MakeClosureData {
+            func_name: SmolStr::new("helper"),
+            captures: vec![captured],
+        })),
+    );
+    let result = push_inst(
+        &mut func,
+        &mut entry,
+        Instruction::CallIndirect(Box::new(CallIndirectData {
+            callee: closure,
+            args: vec![arg],
+            return_type: IrType::I32,
+        })),
+    );
+    entry.terminator = Terminator::Return(result);
+    func.blocks.push(entry);
+    module.decls.push(IrDecl::Function(func));
+
+    let compiled = compile_ir(&module).expect("CallIndirect with capture should compile");
+    assert_eq!(compiled.call_main().expect("main should run"), 105);
+}
+
+#[test]
+fn jit_call_indirect_two_captures() {
+    // (x: i32) -> i32 { a + b*x }, a=10, b=3, called with 4 → 22
+    let mut module = IrModule::new();
+    add_function(
+        &mut module,
+        "helper",
+        vec![
+            (SmolStr::new("a"), IrType::I32),
+            (SmolStr::new("b"), IrType::I32),
+            (SmolStr::new("x"), IrType::I32),
+        ],
+        IrType::I32,
+        |func, entry| {
+            let a = ValueId(0);
+            let b = ValueId(1);
+            let x = ValueId(2);
+            let bx = push_inst(func, entry, Instruction::Mul(b, x));
+            let sum = push_inst(func, entry, Instruction::Add(a, bx));
+            entry.terminator = Terminator::Return(sum);
+            sum
+        },
+    );
+    let mut func = IrFunction::new(SmolStr::new("main"), IrType::I32);
+    let entry_id = func.alloc_block();
+    let mut entry = BasicBlock::new(entry_id);
+    let a = push_inst(&mut func, &mut entry, Instruction::ConstI32(10));
+    let b = push_inst(&mut func, &mut entry, Instruction::ConstI32(3));
+    let x = push_inst(&mut func, &mut entry, Instruction::ConstI32(4));
+    let closure = push_inst(
+        &mut func,
+        &mut entry,
+        Instruction::MakeClosure(Box::new(MakeClosureData {
+            func_name: SmolStr::new("helper"),
+            captures: vec![a, b],
+        })),
+    );
+    let result = push_inst(
+        &mut func,
+        &mut entry,
+        Instruction::CallIndirect(Box::new(CallIndirectData {
+            callee: closure,
+            args: vec![x],
+            return_type: IrType::I32,
+        })),
+    );
+    entry.terminator = Terminator::Return(result);
+    func.blocks.push(entry);
+    module.decls.push(IrDecl::Function(func));
+
+    let compiled = compile_ir(&module).expect("CallIndirect with 2 captures should compile");
+    assert_eq!(compiled.call_main().expect("main should run"), 22);
+}
+
+// ---------------------------------------------------------------------------
+// End-to-end tests via parse → typecheck → lower → JIT
+// (these exercise the actual lower.rs codepaths for closures and thunks)
+// ---------------------------------------------------------------------------
+
+fn lower_and_compile(src: &str) -> runtime::CompiledModule {
+    let arena = bumpalo::Bump::new();
+    let prog = parser::parse(src, &arena).expect("parse failed");
+    let typed = typechecker::typecheck(&prog).expect("typecheck failed");
+    let ir_module = ir::lower(&typed).expect("lower failed");
+    compile_ir(&ir_module).expect("compile failed")
+}
+
+fn e2e_main_i32(src: &str) -> i32 {
+    let compiled = lower_and_compile(src);
+    compiled.call_main().expect("main should run")
+}
+
+#[test]
+fn e2e_thunk_apply_simple() {
+    // let t = (() => (x) => x*2); t()(21) → 42
+    assert_eq!(
+        e2e_main_i32("let t = (() => (x) => x*2)\nlet main = t()(21)"),
+        42
+    );
+}
+
+#[test]
+fn e2e_thunk_apply_with_arg() {
+    // let mk = (n) => (x) => x + n
+    // let t = mk(5)
+    // t(10) → 15
+    assert_eq!(
+        e2e_main_i32("let mk = (n) => (x) => x + n\nlet t = mk(5)\nlet main = t(10)"),
+        15
+    );
+}
+
+#[test]
+fn e2e_compose_lambda() {
+    // compose(f, g)(x) = f(g(x))
+    // compose((n)=>n+1, (n)=>n*2)(5) = 11
+    assert_eq!(
+        e2e_main_i32(
+            "let compose = (f, g) => (x) => f(g(x))\nlet main = compose((n)=>n+1, (n)=>n*2)(5)"
+        ),
+        11
+    );
+}
+
+#[test]
+fn e2e_make_adder_apply() {
+    // makeAdder(5)(10) → 15
+    assert_eq!(
+        e2e_main_i32("let makeAdder = (n) => (x) => x + n\nlet main = makeAdder(5)(10)"),
+        15
+    );
+}
+
+#[test]
+fn e2e_factorial_5() {
+    // The example factorial.pp body: factorialTail(5) = 120
+    let src = "\
+        let factorial = (n) => match n { 0 => 1, n => n * factorial(n - 1) }\n\
+        let main = factorial(5)\n\
+    ";
+    assert_eq!(e2e_main_i32(src), 120);
+}
+
+#[test]
+fn e2e_match_option_some() {
+    // match Some(7) { Some(x) => x, None => 0 } → 7
+    let src = "\
+        let main = match Some(7) {\n\
+            Some(x) => x\n\
+            None => 0\n\
+        }\n\
+    ";
+    assert_eq!(e2e_main_i32(src), 7);
+}
+
+#[test]
+fn e2e_match_result_ok() {
+    // match Ok(42) { Ok(v) => v, Err(_) => 0 } → 42
+    let src = "\
+        let main = match Ok(42) {\n\
+            Ok(v) => v\n\
+            Err(_) => 0\n\
+        }\n\
+    ";
+    assert_eq!(e2e_main_i32(src), 42);
+}
+
+// ---------------------------------------------------------------------------
+// BUG C12: TagGet must handle multi-variant tags correctly
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fix_tag_get_non_first_variant() {
+    // Build a tag type with variants [None(), Some(i32)].
+    // Construct Some(42) (variant 1, disc=1) and extract payload
+    // at index 0. compile_tag_get currently uses .first() which
+    // returns None (empty payload), causing UB/wrong codegen.
+    let mut module = IrModule::new();
+    module.tag_variants = {
+        let mut tv: typechecker::TagVariants = HashMap::new();
+        tv.insert(
+            SmolStr::new("Option"),
+            vec![
+                (SmolStr::new("None"), vec![]),
+                (SmolStr::new("Some"), vec![typechecker::MonoType::I32]),
+            ],
+        );
+        tv
+    };
+
+    // Build main: construct Some(42), extract payload[0]
+    let mut func = IrFunction::new(SmolStr::new("main"), IrType::I32);
+    let entry_id = func.alloc_block();
+    let mut entry = BasicBlock::new(entry_id);
+    let payload = push_inst(&mut func, &mut entry, Instruction::ConstI32(42));
+    let tag = push_inst(
+        &mut func,
+        &mut entry,
+        Instruction::TagConstruct(Box::new(TagConstructData {
+            type_name: SmolStr::new("Option"),
+            variant: SmolStr::new("Some"),
+            discriminant: 1,
+            payload: vec![payload],
+        })),
+    );
+    let extracted = push_inst(
+        &mut func,
+        &mut entry,
+        Instruction::TagGet {
+            value: tag,
+            index: 0,
+        },
+    );
+    entry.terminator = Terminator::Return(extracted);
+    func.blocks.push(entry);
+    module.decls.push(IrDecl::Function(func));
+
+    let compiled = compile_ir(&module).expect("should compile");
+    assert_eq!(compiled.call_main().expect("main should run"), 42);
+}
+
+// ---------------------------------------------------------------------------
+// BUG C13: builtin bridge must box JIT heap pointers
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fix_builtin_array_arg_through_bridge() {
+    use runtime::{BuiltinFunction, BuiltinRegistry, Value, init_global_registry};
+
+    #[derive(Debug)]
+    struct ArrayLenBuiltin;
+    impl BuiltinFunction for ArrayLenBuiltin {
+        fn name(&self) -> &str {
+            "test_array_len"
+        }
+        fn arity(&self) -> usize {
+            1
+        }
+        fn execute(&self, args: &[Value]) -> Result<Value, String> {
+            runtime::expect_arity("test_array_len", args, 1)?;
+            match &args[0] {
+                Value::Array(arr) => Ok(Value::I32(arr.len() as i32)),
+                other => Err(format!("expected Array, got {other:?}")),
+            }
+        }
+    }
+
+    let mut registry = BuiltinRegistry::new();
+    registry.register(Arc::new(ArrayLenBuiltin));
+    init_global_registry(registry);
+
+    let module = make_main(IrType::I32, |func, entry| {
+        let len = push_inst(func, entry, Instruction::ConstI32(3));
+        let init = push_inst(func, entry, Instruction::ConstI32(0));
+        let arr = push_inst(func, entry, Instruction::ArrayAlloc { len, init });
+        push_inst(
+            func,
+            entry,
+            Instruction::CallNamed(Box::new(ir::CallNamedData {
+                name: SmolStr::new("test_array_len"),
+                args: vec![arr],
+                return_type: IrType::I32,
+            })),
+        )
+    });
+    let compiled = compile_ir(&module).expect("compile should succeed");
+    let result = compiled.call_main().expect("main should run");
+    assert_eq!(
+        result, 3,
+        "test_array_len(arr(3)) must return 3, got {result}"
+    );
+}
+// BUG C17: Eq/Ne must support heap types (Str, Array, Record, Tag)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fix_eq_str_literals() {
+    // Eq on two Str constants should compile and return Bool(true).
+    let module = make_main(IrType::Bool, |func, entry| {
+        let a = push_inst(func, entry, Instruction::ConstStr(SmolStr::new("hello")));
+        let b = push_inst(func, entry, Instruction::ConstStr(SmolStr::new("hello")));
+        push_inst(func, entry, Instruction::Eq(a, b))
+    });
+    let compiled = compile_ir(&module).expect("Eq on Str should compile");
+    // Current behaviour: compile_comparison returns Err for heap types.
+    // After fix: should return 1 (true).
+    let result = compiled.call_main().expect("main should run");
+    assert_eq!(result, 1, "Eq on equal strings must return true");
+}
+
+// ---------------------------------------------------------------------------
+// Full pipeline: C1/C2 - un-annotated bool subject in match
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fix_e2e_match_unannotated_bool() {
+    // The lowerer must correctly determine the subject type
+    // even when it's an un-annotated param resolved through patterns.
+    let src = "\
+        let f = (x) => match x { true => 10, false => 20 }\n\
+        let main = f(true)\n\
+    ";
+    assert_eq!(e2e_main_i32(src), 10);
+}
+
+// ---------------------------------------------------------------------------
+// Full pipeline: C4 - suffixed literal patterns must use correct discriminant
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fix_e2e_match_u64_literal_pattern() {
+    // 42u64 in pattern must use discriminant 42, not 0.
+    let src = "\
+        let f = (n: u64) => match n { 42u64 => 1i32, _ => 0i32 }\n\
+        let main = f(42u64)\n\
+    ";
+    assert_eq!(e2e_main_i32(src), 1);
+}
+
+#[test]
+fn fix_e2e_match_u8_literal_pattern() {
+    let src = "\
+        let f = (n: u8) => match n { 255u8 => 1i32, _ => 0i32 }\n\
+        let main = f(255u8)\n\
+    ";
+    assert_eq!(e2e_main_i32(src), 1);
+}
+
+// ---------------------------------------------------------------------------
+// Full pipeline: C9 - hex literals
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fix_e2e_hex_literal() {
+    let src = "\
+        let main = 0xFFu8\n\
+    ";
+    let compiled = lower_and_compile(src);
+    let result = compiled.call_main().expect("main should run");
+    // U8 return type is supported by call_main (losslessly fits in i32)
+    assert_eq!(result, 255);
+}
+
+// ---------------------------------------------------------------------------
+// Full pipeline: Record field access on compound expressions
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fix_e2e_record_field_compound() {
+    let src = "\
+        let make_person = () => { name: \"Alice\", age: 30 }\n\
+        let main = make_person().age\n\
+    ";
+    assert_eq!(e2e_main_i32(src), 30);
+}
+
+// ---------------------------------------------------------------------------
+// BUG C17: Eq/Ne for Array(I32)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fix_eq_arr_i32() {
+    let module = make_main(IrType::Bool, |func, entry| {
+        let len = push_inst(func, entry, Instruction::ConstI32(3));
+        let init = push_inst(func, entry, Instruction::ConstI32(0));
+        let arr_a = push_inst(func, entry, Instruction::ArrayAlloc { len, init });
+        let arr_b = push_inst(func, entry, Instruction::ArrayAlloc { len, init });
+
+        let idx0 = push_inst(func, entry, Instruction::ConstI32(0));
+        let val1 = push_inst(func, entry, Instruction::ConstI32(1));
+        let _ = push_inst(
+            func,
+            entry,
+            Instruction::ArraySet {
+                array: arr_a,
+                index: idx0,
+                value: val1,
+            },
+        );
+        let _ = push_inst(
+            func,
+            entry,
+            Instruction::ArraySet {
+                array: arr_b,
+                index: idx0,
+                value: val1,
+            },
+        );
+
+        let idx1 = push_inst(func, entry, Instruction::ConstI32(1));
+        let val2 = push_inst(func, entry, Instruction::ConstI32(2));
+        let _ = push_inst(
+            func,
+            entry,
+            Instruction::ArraySet {
+                array: arr_a,
+                index: idx1,
+                value: val2,
+            },
+        );
+        let _ = push_inst(
+            func,
+            entry,
+            Instruction::ArraySet {
+                array: arr_b,
+                index: idx1,
+                value: val2,
+            },
+        );
+
+        let idx2 = push_inst(func, entry, Instruction::ConstI32(2));
+        let val3 = push_inst(func, entry, Instruction::ConstI32(3));
+        let _ = push_inst(
+            func,
+            entry,
+            Instruction::ArraySet {
+                array: arr_a,
+                index: idx2,
+                value: val3,
+            },
+        );
+        let _ = push_inst(
+            func,
+            entry,
+            Instruction::ArraySet {
+                array: arr_b,
+                index: idx2,
+                value: val3,
+            },
+        );
+
+        push_inst(func, entry, Instruction::Eq(arr_a, arr_b))
+    });
+    let compiled = compile_ir(&module).expect("Array Eq should compile");
+    assert_eq!(compiled.call_main().expect("main should run"), 1);
+}
+
+#[test]
+fn fix_ne_arr_i32_different_len() {
+    let module = make_main(IrType::Bool, |func, entry| {
+        let len_a = push_inst(func, entry, Instruction::ConstI32(2));
+        let len_b = push_inst(func, entry, Instruction::ConstI32(3));
+        let init = push_inst(func, entry, Instruction::ConstI32(0));
+        let arr_a = push_inst(func, entry, Instruction::ArrayAlloc { len: len_a, init });
+        let arr_b = push_inst(func, entry, Instruction::ArrayAlloc { len: len_b, init });
+        push_inst(func, entry, Instruction::Ne(arr_a, arr_b))
+    });
+    let compiled = compile_ir(&module).expect("Array Ne should compile");
+    assert_eq!(compiled.call_main().expect("main should run"), 1);
+}
+
+// ---------------------------------------------------------------------------
+// BUG C17: Eq/Ne for Record
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fix_eq_record() {
+    let module = make_main(IrType::Bool, |func, entry| {
+        let age = push_inst(func, entry, Instruction::ConstI32(30));
+        let rec_a = push_inst(
+            func,
+            entry,
+            Instruction::RecordAlloc(Box::new(RecordAllocData {
+                type_name: SmolStr::new("Person"),
+                fields: vec![age],
+            })),
+        );
+        let rec_b = push_inst(
+            func,
+            entry,
+            Instruction::RecordAlloc(Box::new(RecordAllocData {
+                type_name: SmolStr::new("Person"),
+                fields: vec![age],
+            })),
+        );
+        push_inst(func, entry, Instruction::Eq(rec_a, rec_b))
+    });
+    let compiled = compile_ir(&module).expect("Record Eq should compile");
+    assert_eq!(compiled.call_main().expect("main should run"), 1);
+}
+
+#[test]
+fn fix_ne_record_different() {
+    let module = make_main(IrType::Bool, |func, entry| {
+        let age_a = push_inst(func, entry, Instruction::ConstI32(30));
+        let age_b = push_inst(func, entry, Instruction::ConstI32(40));
+        let rec_a = push_inst(
+            func,
+            entry,
+            Instruction::RecordAlloc(Box::new(RecordAllocData {
+                type_name: SmolStr::new("Person"),
+                fields: vec![age_a],
+            })),
+        );
+        let rec_b = push_inst(
+            func,
+            entry,
+            Instruction::RecordAlloc(Box::new(RecordAllocData {
+                type_name: SmolStr::new("Person"),
+                fields: vec![age_b],
+            })),
+        );
+        push_inst(func, entry, Instruction::Ne(rec_a, rec_b))
+    });
+    let compiled = compile_ir(&module).expect("Record Ne should compile");
+    assert_eq!(compiled.call_main().expect("main should run"), 1);
+}
+
+// ---------------------------------------------------------------------------
+// BUG C17: Eq/Ne for Tag
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fix_eq_tag_some() {
+    let module = make_main(IrType::Bool, |func, entry| {
+        let payload = push_inst(func, entry, Instruction::ConstI32(42));
+        let tag_a = push_inst(
+            func,
+            entry,
+            Instruction::TagConstruct(Box::new(TagConstructData {
+                type_name: SmolStr::new("Option"),
+                variant: SmolStr::new("Some"),
+                discriminant: 1,
+                payload: vec![payload],
+            })),
+        );
+        let tag_b = push_inst(
+            func,
+            entry,
+            Instruction::TagConstruct(Box::new(TagConstructData {
+                type_name: SmolStr::new("Option"),
+                variant: SmolStr::new("Some"),
+                discriminant: 1,
+                payload: vec![payload],
+            })),
+        );
+        push_inst(func, entry, Instruction::Eq(tag_a, tag_b))
+    });
+    let compiled = compile_ir(&module).expect("Tag Eq should compile");
+    assert_eq!(compiled.call_main().expect("main should run"), 1);
+}
+
+#[test]
+fn fix_ne_tag_some() {
+    let module = make_main(IrType::Bool, |func, entry| {
+        let payload_a = push_inst(func, entry, Instruction::ConstI32(42));
+        let payload_b = push_inst(func, entry, Instruction::ConstI32(99));
+        let tag_a = push_inst(
+            func,
+            entry,
+            Instruction::TagConstruct(Box::new(TagConstructData {
+                type_name: SmolStr::new("Option"),
+                variant: SmolStr::new("Some"),
+                discriminant: 1,
+                payload: vec![payload_a],
+            })),
+        );
+        let tag_b = push_inst(
+            func,
+            entry,
+            Instruction::TagConstruct(Box::new(TagConstructData {
+                type_name: SmolStr::new("Option"),
+                variant: SmolStr::new("Some"),
+                discriminant: 1,
+                payload: vec![payload_b],
+            })),
+        );
+        push_inst(func, entry, Instruction::Ne(tag_a, tag_b))
+    });
+    let compiled = compile_ir(&module).expect("Tag Ne should compile");
+    assert_eq!(compiled.call_main().expect("main should run"), 1);
+}
+
+// ---------------------------------------------------------------------------
+// BUG C6: e2e_compose_lambda crash (pre-existing) — see `e2e_compose_lambda` above
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// BUG C18: Tuple destructuring `let (a, b) = expr` leaves names unbound
+// ---------------------------------------------------------------------------
+//
+// `let` with a tuple pattern on the left side (`let (a, b) = (1, 2)`) does
+// not bind `a` and `b` in the IR lowerer's local scope, causing
+// "unbound name in IR lowering" when they are referenced afterward.
+//
+// Affected programs: closures.pp, sorting.pp
+
+#[test]
+fn bug_tuple_destructuring_unbound() {
+    e2e_main_i32("let main = {\n    let (a, b) = (1, 2)\n    a\n}");
+}
+
+// ---------------------------------------------------------------------------
+// BUG C19: Tag type with multi-field payloads panics in IR lowerer
+// ---------------------------------------------------------------------------
+//
+// When a tag type alias has variants with multiple payload fields (e.g.
+// `| A(f64) | B(f64, f64)`), the lowerer's `mono_to_ir_inner` slices into
+// `payload` using the wrong offset, causing:
+//   "range end index X out of range for slice of length Y"
+// at crates/ir/src/lower.rs:74.
+//
+// Affected programs: patterns.pp, state-machine.pp
+
+#[test]
+fn bug_tag_type_payload_slice() {
+    let src = "\
+type T =
+  | A(f64)
+  | B(f64, f64)
+
+let main = match A(1.0) {
+  A(x) => 1
+  B(x, y) => 2
+}
+";
+    let _ = lower_and_compile(src);
+}
+
+// ---------------------------------------------------------------------------
+// BUG C20: Option match inside fold closure produces duplicate switch cases
+// ---------------------------------------------------------------------------
+//
+// `match x { None => ..., Some(m) => ... }` inside a closure passed to
+// `fold` produces duplicate switch case 0 in the JIT:
+//   "unimplemented IR instruction: duplicate switch case 0 (in main_lambda_5)"
+//
+// Affected programs: higher-order.pp (max function)
+
+#[test]
+fn bug_match_option_duplicate_switch() {
+    let src = "\
+let main = [1,2,3].fold(None, (acc, x) =>
+  match acc {
+    None    => Some(x)
+    Some(m) => if x > m { Some(x) } else { Some(m) }
+  })
+";
+    let _ = lower_and_compile(src);
+}
+
+// ---------------------------------------------------------------------------
+// BUG C21: Polymorphic closure with type annotation gets str type
+// ---------------------------------------------------------------------------
+//
+// A higher-order function with a type annotation like:
+//   let flip : ((a, b) -> c) -> (b, a) -> c = (f) => (b, a) => f(a, b)
+// when never called (no monomorphization site), causes `f` inside the inner
+// lambda to have type `str` instead of `Closure(...)`, producing:
+//   "unimplemented IR instruction: CallIndirect: callee is not a closure, got str"
+//
+// Affected programs: generics.pp (flip, compose, pipe, apply)
+
+#[test]
+fn bug_polymorphic_flip_closure_type() {
+    let src = "\
+let flip : ((a, b) -> c) -> (b, a) -> c = (f) => (b, a) => f(a, b)
+let main = 42
+";
+    let _ = lower_and_compile(src);
+}
+
+// ---------------------------------------------------------------------------
+// BUG C22: Game of Life crashes with null pointer in runtime
+// ---------------------------------------------------------------------------
+//
+// Running `game-of-life.pp` panics with:
+//   "NonNull::new_unchecked requires that the pointer is non-null"
+//
+// This cannot be tested via `#[should_panic]` because it causes a
+// non-unwinding abort. Tracked here for documentation.
+//
+// Source: example-programs/game-of-life.pp
+// Run: pipe-lang run example-programs/game-of-life.pp
+// ---------------------------------------------------------------------------

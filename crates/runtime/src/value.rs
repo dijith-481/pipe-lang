@@ -1,10 +1,28 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use ast::SmolStr;
 
 use crate::bridge::BuiltinFunction;
+
+/// Global registry mapping JIT function addresses to their parameter types.
+/// Populated by the JIT compiler, read by the stdlib when calling JIT closures.
+static JIT_FUNC_PARAM_TYPES: OnceLock<Mutex<HashMap<usize, Vec<JitArgType>>>> = OnceLock::new();
+
+/// Register parameter types for a JIT-compiled function.
+pub fn register_jit_param_types(address: usize, param_types: Vec<JitArgType>) {
+    let map = JIT_FUNC_PARAM_TYPES.get_or_init(|| Mutex::new(HashMap::new()));
+    map.lock().unwrap().insert(address, param_types);
+}
+
+/// Look up parameter types for a JIT-compiled function.
+pub fn lookup_jit_param_types(address: usize) -> Vec<JitArgType> {
+    JIT_FUNC_PARAM_TYPES
+        .get()
+        .and_then(|m| m.lock().unwrap().get(&address).cloned())
+        .unwrap_or_default()
+}
 
 /// A runtime value in pipe-lang.
 ///
@@ -18,6 +36,8 @@ pub enum Value {
     I32(i32),
     /// A 64-bit signed integer.
     I64(i64),
+    /// A platform-native unsigned integer (usize).
+    Usize(usize),
     /// A 64-bit floating point number.
     F64(f64),
     /// A boolean.
@@ -93,6 +113,7 @@ impl Value {
             Self::Bool(b) => *b,
             Self::I32(n) => *n != 0,
             Self::I64(n) => *n != 0,
+            Self::Usize(n) => *n != 0,
             Self::F64(f) => *f != 0.0,
             Self::Str(s) => !s.is_empty(),
             Self::Array(a) => !a.is_empty(),
@@ -104,7 +125,10 @@ impl Value {
     /// Returns `true` if this value is a numeric type.
     #[must_use]
     pub fn is_numeric(&self) -> bool {
-        matches!(self, Self::I32(_) | Self::I64(_) | Self::F64(_))
+        matches!(
+            self,
+            Self::I32(_) | Self::I64(_) | Self::Usize(_) | Self::F64(_)
+        )
     }
 
     /// Returns the contained `i32`, if this is [`Value::I32`].
@@ -180,6 +204,7 @@ impl PartialEq for Value {
         match (self, other) {
             (Self::I32(a), Self::I32(b)) => a == b,
             (Self::I64(a), Self::I64(b)) => a == b,
+            (Self::Usize(a), Self::Usize(b)) => a == b,
             (Self::F64(a), Self::F64(b)) => a == b,
             (Self::Bool(a), Self::Bool(b)) => a == b,
             (Self::Unit, Self::Unit) => true,
@@ -214,6 +239,7 @@ impl fmt::Debug for Value {
         match self {
             Self::I32(n) => write!(f, "{n}"),
             Self::I64(n) => write!(f, "{n}i64"),
+            Self::Usize(n) => write!(f, "{n}usize"),
             Self::F64(n) => write!(f, "{n}"),
             Self::Bool(b) => write!(f, "{b}"),
             Self::Unit => write!(f, "()"),
@@ -285,6 +311,82 @@ pub enum FuncPtr {
     Jit { address: usize, arity: usize },
 }
 
+/// Lightweight type tag for JIT calling convention.
+/// Mirrors the IrType variants used by the JIT.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum JitArgType {
+    I8 = 0,
+    I16 = 1,
+    I32 = 2,
+    I64 = 3,
+    U8 = 4,
+    U16 = 5,
+    U32 = 6,
+    U64 = 7,
+    F32 = 8,
+    F64 = 9,
+    Bool = 10,
+    Str = 11,
+    Unit = 12,
+    Array = 13,
+    Record = 14,
+    Effect = 15,
+    Closure = 16,
+    Tag = 17,
+}
+
+impl JitArgType {
+    /// Size in bytes of the raw value in the JIT args buffer.
+    pub fn raw_size(self) -> usize {
+        match self {
+            Self::I8 | Self::U8 | Self::Bool => 1,
+            Self::I16 | Self::U16 => 2,
+            Self::I32 | Self::U32 | Self::F32 => 4,
+            Self::I64
+            | Self::U64
+            | Self::F64
+            | Self::Str
+            | Self::Array
+            | Self::Record
+            | Self::Effect
+            | Self::Closure
+            | Self::Tag
+            | Self::Unit => 8,
+        }
+    }
+
+    /// Total slot size in the JIT args buffer (value + padding to 8-byte alignment).
+    pub fn slot_size(self) -> usize {
+        self.raw_size().max(8)
+    }
+
+    /// Convert from a Cranelift/IR type tag (as used in the JIT bridge).
+    pub fn from_type_tag(tag: u32) -> Self {
+        match tag {
+            0 => Self::I8,
+            1 => Self::I16,
+            2 => Self::I32,
+            3 => Self::I64,
+            4 => Self::U8,
+            5 => Self::U16,
+            6 => Self::U32,
+            7 => Self::U64,
+            8 => Self::F32,
+            9 => Self::F64,
+            10 => Self::Bool,
+            11 => Self::Str,
+            12 => Self::Unit,
+            13 => Self::Array,
+            14 => Self::Record,
+            15 => Self::Effect,
+            16 => Self::Closure,
+            17 => Self::Tag,
+            _ => Self::Unit,
+        }
+    }
+}
+
 /// Data stored by a closure value.
 #[repr(C)]
 #[derive(Debug, Clone)]
@@ -295,6 +397,9 @@ pub struct ClosureData {
     pub captures: Arc<[Value]>,
     /// Number of arguments expected by the closure.
     pub arity: usize,
+    /// Parameter types for JIT closures (empty for builtins).
+    /// Used by the stdlib to serialize arguments when calling JIT closures.
+    pub call_arg_types: Arc<[JitArgType]>,
 }
 
 // ---------------------------------------------------------------------------
@@ -304,6 +409,20 @@ pub struct ClosureData {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug)]
+    struct Dummy;
+    impl BuiltinFunction for Dummy {
+        fn name(&self) -> &str {
+            "dummy"
+        }
+        fn arity(&self) -> usize {
+            0
+        }
+        fn execute(&self, _args: &[Value]) -> Result<Value, String> {
+            Ok(Value::Unit)
+        }
+    }
 
     // -- Constructor tests --
 
@@ -559,16 +678,14 @@ mod tests {
     #[test]
     fn debug_closure_shows_arity() {
         let data = ClosureData {
-            func: FuncPtr::Jit {
-                address: 0,
-                arity: 3,
-            },
+            func: FuncPtr::Builtin(Arc::new(Dummy)),
             captures: Arc::from([]),
-            arity: 3,
+            arity: 1,
+            call_arg_types: Arc::from([]),
         };
         assert_eq!(
             format!("{:?}", Value::Closure(Arc::new(data))),
-            "<closure/3>"
+            "<closure/1>"
         );
     }
 

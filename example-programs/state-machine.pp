@@ -20,10 +20,10 @@ let transition : (AppState, Event) -> AppState = (state, event) => match (state,
     (Failed(_),    Reset)               => Idle
     (Ready(_),     StartLoad)           => Loading
     (Failed(_),    StartLoad)           => Loading
-    _                                  => state  // no-op for invalid transitions
+    _                                  => state
 }
 
-let stateToString = (state) => match state {
+let state_to_str = (state) => match state {
     Idle          => `Idle`
     Loading       => `Loading...`
     Ready(data)   => `Ready: ${data}`
@@ -35,17 +35,17 @@ let main = () => {
     let events = [StartLoad, DataReceived(`user data`), Reset, StartLoad, ErrorOccured(`timeout`), Reset]
 
     // Fold events through the state machine
-    let finalState = events.fold(Idle, (state, event) => transition(state, event))
+    let final_state = events.fold(Idle, (state, event) => transition(state, event))
 
-    println(`Final state: ${stateToString(finalState)}`)
+    println(`Final state: ${state_to_str(final_state)}`)
 
     // Show each transition
     println(``)
     println(`Transitions:`)
     let states = events.fold([Idle], (acc, event) => {
-        let last = acc[acc.len() - 1usize]
+        let last = match acc.tail() { Some(t) => match t.fold(None, (_, elem) => Some(elem)) { Some(v) => v _ => Idle } _ => Idle }
         let next = transition(last, event)
         acc.concat([next])
     })
-    states.map((s) => println(`  -> ${stateToString(s)}`))
+    states.map((s) => println(`  -> ${state_to_str(s)}`))
 }

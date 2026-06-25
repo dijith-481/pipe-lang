@@ -119,13 +119,11 @@ pub fn expect_arity(name: &str, args: &[Value], expected: usize) -> Result<(), S
 ///
 /// * `registry` - The complete builtin registry for JIT name resolution.
 ///
-/// # Panics
-///
-/// Panics if the global registry was already initialized.
+/// If the global registry was already initialized, this is a no-op
+/// (useful for multi-test environments where the same registry is
+/// reused).
 pub fn init_global_registry(registry: BuiltinRegistry) {
-    GLOBAL_REGISTRY
-        .set(registry)
-        .expect("global registry already initialized");
+    let _ = GLOBAL_REGISTRY.set(registry);
 }
 
 /// Returns the process-wide builtin registry.

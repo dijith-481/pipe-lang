@@ -1,7 +1,7 @@
 // Higher-order functions — map, filter, fold
 
 // Double all elements
-let doubleAll = (xs) => xs.map((x) => x * 2)
+let double_all = (xs) => xs.map((x) => x * 2)
 
 // Keep only even numbers
 let evens = (xs) => xs.filter((x) => x % 2 == 0)
@@ -19,7 +19,7 @@ let max = (xs) => xs.fold(None, (acc, x) => match acc {
 })
 
 // Chain operations: sum of squares of even numbers
-let sumOfSquaresOfEvens = (xs) =>
+let sum_of_squares_of_evens = (xs) =>
     xs
         .filter((x) => x % 2 == 0)
         .map((x) => x * x)
@@ -28,9 +28,9 @@ let sumOfSquaresOfEvens = (xs) =>
 let main = () => {
     let data = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     println(`Original: ${data}`)
-    println(`Doubled:  ${doubleAll(data)}`)
+    println(`Doubled:  ${double_all(data)}`)
     println(`Evens:    ${evens(data)}`)
     println(`Sum:      ${sum(data)}`)
     println(`Max:      ${max(data)}`)
-    println(`Sum of squares of evens: ${sumOfSquaresOfEvens(data)}`)
+    println(`Sum of squares of evens: ${sum_of_squares_of_evens(data)}`)
 }

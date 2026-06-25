@@ -48,13 +48,13 @@ fn mono_to_ir_inner(ty: &MonoType, tag_variants: Option<&TagVariants>) -> IrType
         MonoType::Str => IrType::Str,
         MonoType::Unit => IrType::Unit,
         MonoType::Array(inner) => IrType::Array(Box::new(mono_to_ir_inner(inner, tag_variants))),
-        MonoType::Func { params, ret } => IrType::Func(FuncType {
+        MonoType::Func { params, ret } => IrType::Closure(Box::new(FuncType {
             params: params
                 .iter()
                 .map(|p| mono_to_ir_inner(p, tag_variants))
                 .collect(),
             ret: Box::new(mono_to_ir_inner(ret, tag_variants)),
-        }),
+        })),
         MonoType::Record(fields) => IrType::Record(crate::RecordType {
             name: "anon".into(),
             fields: fields
@@ -65,13 +65,20 @@ fn mono_to_ir_inner(ty: &MonoType, tag_variants: Option<&TagVariants>) -> IrType
         MonoType::Effect(inner) => IrType::Effect(Box::new(mono_to_ir_inner(inner, tag_variants))),
         MonoType::Tag { name, payload } => {
             if let Some(variants) = tag_variants.and_then(|tv| tv.get(name.as_str())) {
+                // Use the combined payload from tag_variants (which has all
+                // variant payloads flattened) instead of the MonoType payload
+                // (which only has the constructor's own payload).
+                let combined: Vec<MonoType> = variants
+                    .iter()
+                    .flat_map(|(_, ptys)| ptys.iter().cloned())
+                    .collect();
                 let mut offset = 0;
                 let ir_variants: Vec<TagVariant> = variants
                     .iter()
                     .enumerate()
                     .map(|(i, (vname, vtemplate))| {
                         let count = vtemplate.len();
-                        let vpayload: Vec<IrType> = payload[offset..offset + count]
+                        let vpayload: Vec<IrType> = combined[offset..offset + count]
                             .iter()
                             .map(|t| mono_to_ir_inner(t, tag_variants))
                             .collect();
@@ -229,6 +236,7 @@ struct FunctionBuilder<'a> {
     locals: HashMap<SmolStr, ValueId>,
     value_types: HashMap<ValueId, IrType>,
     globals: &'a HashSet<SmolStr>,
+    value_globals: &'a HashSet<SmolStr>,
     type_map: &'a HashMap<ast::span::Span, MonoType>,
     tag_variants: &'a TagVariants,
 }
@@ -238,6 +246,7 @@ impl<'a> FunctionBuilder<'a> {
         name: SmolStr,
         ret: IrType,
         globals: &'a HashSet<SmolStr>,
+        value_globals: &'a HashSet<SmolStr>,
         type_map: &'a HashMap<ast::span::Span, MonoType>,
         tag_variants: &'a TagVariants,
     ) -> Self {
@@ -250,6 +259,7 @@ impl<'a> FunctionBuilder<'a> {
             locals: HashMap::new(),
             value_types: HashMap::new(),
             globals,
+            value_globals,
             type_map,
             tag_variants,
         }
@@ -277,7 +287,8 @@ impl<'a> FunctionBuilder<'a> {
     fn emit(&mut self, inst: Instruction) -> ValueId {
         let v = self.alloc_value();
         // Infer type BEFORE moving `inst` into the block.
-        let ty = infer_instruction_type(&inst, &self.value_types, &HashMap::new());
+        let ty =
+            infer_instruction_type(&inst, &self.value_types, &HashMap::new(), self.tag_variants);
         self.func.blocks[self.current_block]
             .instructions
             .push((Some(v), inst));
@@ -302,6 +313,11 @@ impl<'a> FunctionBuilder<'a> {
     fn expr_type(&self, span: ast::span::Span) -> IrType {
         expr_ir_type(span, self.type_map, Some(self.tag_variants))
     }
+
+    /// Converts a `MonoType` to `IrType` using this builder's tag_variants.
+    fn mono_to_ir(&self, ty: &MonoType) -> IrType {
+        mono_to_ir_inner(ty, Some(self.tag_variants))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -319,14 +335,45 @@ fn lower_expr<'src>(
         Expr::Bool(b, _) => Ok(fb.emit(Instruction::ConstBool(*b))),
         Expr::Str(s, _) => Ok(fb.emit(Instruction::ConstStr((*s).into()))),
 
-        Expr::Ident(name, _) => {
+        Expr::Ident(name, span) => {
             if let Some(v) = fb.lookup(name) {
                 Ok(v)
+            } else if let Some((tag_type, disc, _)) = find_tag_constructor(name, fb.tag_variants) {
+                // Bare tag constructor like `None` (0-arg). Emit a
+                // `TagConstruct` with no payload.
+                Ok(
+                    fb.emit(Instruction::TagConstruct(Box::new(TagConstructData {
+                        type_name: tag_type.into(),
+                        variant: (*name).into(),
+                        discriminant: disc,
+                        payload: vec![],
+                    }))),
+                )
             } else if fb.globals.contains(*name) {
-                Ok(fb.emit(Instruction::MakeClosure(Box::new(MakeClosureData {
-                    func_name: (*name).into(),
-                    captures: vec![],
-                }))))
+                let is_func = fb
+                    .type_map
+                    .get(span)
+                    .map(|t| matches!(t, MonoType::Func { .. }))
+                    .unwrap_or(false);
+                if is_func && !fb.value_globals.contains::<str>(name) {
+                    Ok(fb.emit(Instruction::MakeClosure(Box::new(MakeClosureData {
+                        func_name: (*name).into(),
+                        captures: vec![],
+                    }))))
+                } else {
+                    let return_type = fb
+                        .type_map
+                        .get(span)
+                        .map(mono_to_ir)
+                        .unwrap_or(IrType::Unit);
+                    Ok(
+                        fb.emit(Instruction::CallNamed(Box::new(crate::CallNamedData {
+                            name: (*name).into(),
+                            args: vec![],
+                            return_type,
+                        }))),
+                    )
+                }
             } else {
                 Err(LowerError::Unbound((*name).into()))
             }
@@ -480,15 +527,18 @@ fn lower_expr<'src>(
             }
 
             if is_tag {
-                // Tag types: TagDiscriminant + Switch (original path).
-                let disc_v = fb.emit(Instruction::TagDiscriminant(subj_v));
+                // Tag types: TagDiscriminant + Switch.
+                // Find the block containing subj_v (the entry block) BEFORE
+                // switching current_block, so TagDiscriminant and Switch are
+                // emitted into the correct block (not the last arm's block).
                 let subject_block_idx = fb
                     .func
                     .blocks
                     .iter()
-                    .position(|b| b.instructions.iter().any(|(vid, _)| *vid == Some(disc_v)))
+                    .position(|b| b.instructions.iter().any(|(vid, _)| *vid == Some(subj_v)))
                     .unwrap_or(0);
                 fb.current_block = subject_block_idx;
+                let disc_v = fb.emit(Instruction::TagDiscriminant(subj_v));
                 fb.set_terminator(Terminator::Switch {
                     discriminant: disc_v,
                     arms: switch_arms,
@@ -590,10 +640,15 @@ fn lower_expr<'src>(
         }
 
         Expr::Record { fields, .. } => {
-            let field_vals: Vec<ValueId> = fields
+            let mut sorted: Vec<_> = fields
                 .iter()
-                .map(|f| lower_expr(fb, f.value, hoisted))
-                .collect::<Result<_, _>>()?;
+                .map(|f| lower_expr(fb, f.value, hoisted).map(|v| (f, v)))
+                .collect::<Result<Vec<_>, _>>()?;
+            // Sort by field name so field indices match the
+            // alphabetical ordering that field_index_of returns
+            // (derived from BTreeMap keys).
+            sorted.sort_by(|(a, _), (b, _)| a.name.cmp(b.name));
+            let field_vals: Vec<ValueId> = sorted.into_iter().map(|(_, v)| v).collect();
             Ok(fb.emit(Instruction::RecordAlloc(Box::new(RecordAllocData {
                 type_name: "anon".into(),
                 fields: field_vals,
@@ -635,16 +690,19 @@ fn lower_expr<'src>(
             Ok(fb.emit(Instruction::StrConcat { parts: part_vals }))
         }
 
-        Expr::Lambda { params, body, .. } => {
+        Expr::Lambda {
+            params, body, span, ..
+        } => {
             let param_names: HashSet<&str> = params.iter().map(|p| p.name).collect();
             let mut frees = HashSet::new();
             free_vars(body, &param_names, &mut frees);
             let captures: Vec<SmolStr> = frees
                 .into_iter()
-                .filter(|n| fb.locals.contains_key(n.as_str()) || fb.globals.contains(n))
+                .filter(|n| fb.locals.contains_key(n.as_str()))
                 .collect();
 
-            let inner_name: SmolStr = format!("__lambda_{}", fb.func.next_value_id).into();
+            let inner_name: SmolStr =
+                format!("{}_lambda_{}", fb.func.name, fb.func.next_value_id).into();
 
             // Determine the body return type from the type map.
             let body_ret_ty = fb.expr_type(body.span());
@@ -653,29 +711,54 @@ fn lower_expr<'src>(
                 inner_name.clone(),
                 body_ret_ty,
                 fb.globals,
+                fb.value_globals,
                 fb.type_map,
                 fb.tag_variants,
             );
 
-            // Capture params — type from outer scope value_types.
+            // Capture params — type from outer scope value_types or func params.
             for cap in &captures {
                 let v = inner_fb.alloc_value();
                 let cap_ty = fb
                     .lookup(cap.as_str())
-                    .and_then(|cv| fb.value_types.get(&cv).cloned())
+                    .and_then(|cv| {
+                        fb.value_types.get(&cv).cloned().or_else(|| {
+                            fb.func
+                                .params
+                                .iter()
+                                .find(|(vid, _, _)| *vid == cv)
+                                .map(|(_, _, ty)| ty.clone())
+                        })
+                    })
                     .unwrap_or(IrType::I32);
-                inner_fb.func.params.push((v, cap.clone(), cap_ty));
+                inner_fb.func.params.push((v, cap.clone(), cap_ty.clone()));
+                inner_fb.value_types.insert(v, cap_ty);
                 inner_fb.bind(cap.clone(), v);
             }
-            // Declared params — resolve type from annotation or type_map.
-            for p in params.iter() {
+            // Declared params — resolve type from annotation, type_map, or default I32.
+            // Look up the lambda's MonoType::Func to extract param types when
+            // the inner lambda lacks explicit type annotations.
+            let lambda_mono = fb.type_map.get(span);
+            for (pidx, p) in params.iter().enumerate() {
                 let v = inner_fb.alloc_value();
                 let param_ty =
                     p.ty.and_then(|ann| typechecker::infer::type_expr_to_mono(ann).ok())
                         .as_ref()
-                        .map(mono_to_ir)
+                        .map(|t| fb.mono_to_ir(t))
+                        .or_else(|| {
+                            lambda_mono.and_then(|mono| match mono {
+                                MonoType::Func { params: ptys, .. } => {
+                                    ptys.get(pidx).map(|t| fb.mono_to_ir(t))
+                                }
+                                _ => None,
+                            })
+                        })
                         .unwrap_or(IrType::I32);
-                inner_fb.func.params.push((v, p.name.into(), param_ty));
+                inner_fb
+                    .func
+                    .params
+                    .push((v, p.name.into(), param_ty.clone()));
+                inner_fb.value_types.insert(v, param_ty);
                 inner_fb.bind(p.name.into(), v);
             }
 
@@ -704,19 +787,55 @@ fn lower_expr<'src>(
                 .map(mono_to_ir)
                 .unwrap_or(IrType::Unit);
             match func {
-                Expr::Ident(name, _) => Ok(fb.emit(Instruction::CallNamed(Box::new(
-                    crate::CallNamedData {
-                        name: (*name).into(),
-                        args: arg_vals,
-                        return_type,
-                    },
-                )))),
+                Expr::Ident(name, _) => {
+                    if let Some((tag_type, disc, _)) = find_tag_constructor(name, fb.tag_variants) {
+                        Ok(
+                            fb.emit(Instruction::TagConstruct(Box::new(TagConstructData {
+                                type_name: tag_type.into(),
+                                variant: (*name).into(),
+                                discriminant: disc,
+                                payload: arg_vals,
+                            }))),
+                        )
+                    } else if fb.value_globals.contains::<str>(name) {
+                        // Value-defined global (e.g. `let t = mk(5)`): evaluate it
+                        // to get the closure value, then call it with args.
+                        let callee = lower_expr(fb, func, hoisted)?;
+                        Ok(fb.emit(Instruction::CallIndirect(Box::new(
+                            crate::CallIndirectData {
+                                callee,
+                                args: arg_vals,
+                                return_type,
+                            },
+                        ))))
+                    } else if fb.lookup(name).is_some() {
+                        // Local variable or parameter used in call position.
+                        // Evaluate it to get the closure value, then call via CallIndirect.
+                        let callee = lower_expr(fb, func, hoisted)?;
+                        Ok(fb.emit(Instruction::CallIndirect(Box::new(
+                            crate::CallIndirectData {
+                                callee,
+                                args: arg_vals,
+                                return_type,
+                            },
+                        ))))
+                    } else {
+                        Ok(
+                            fb.emit(Instruction::CallNamed(Box::new(crate::CallNamedData {
+                                name: (*name).into(),
+                                args: arg_vals,
+                                return_type,
+                            }))),
+                        )
+                    }
+                }
                 _ => {
                     let callee = lower_expr(fb, func, hoisted)?;
                     Ok(fb.emit(Instruction::CallIndirect(Box::new(
                         crate::CallIndirectData {
                             callee,
                             args: arg_vals,
+                            return_type,
                         },
                     ))))
                 }
@@ -730,11 +849,66 @@ fn lower_expr<'src>(
 // ---------------------------------------------------------------------------
 
 /// Returns the discriminant value for a literal pattern arm.
+/// Strip a known integer type suffix (like "u64", "i32", "usize") from a literal
+/// string, returning the numeric portion (with any hex/octal/binary prefix intact).
+fn strip_int_suffix(text: &str) -> &str {
+    if let Some(s) = text.strip_suffix("i64") {
+        s
+    } else if let Some(s) = text.strip_suffix("i32") {
+        s
+    } else if let Some(s) = text.strip_suffix("i16") {
+        s
+    } else if let Some(s) = text.strip_suffix("i8") {
+        s
+    } else if let Some(s) = text.strip_suffix("u64") {
+        s
+    } else if let Some(s) = text.strip_suffix("u32") {
+        s
+    } else if let Some(s) = text.strip_suffix("u16") {
+        s
+    } else if let Some(s) = text.strip_suffix("u8") {
+        s
+    } else if let Some(s) = text.strip_suffix("usize") {
+        s
+    } else {
+        text
+    }
+}
+
+/// Parse a numeric string (after suffix removal) into an i64, handling hex/octal/binary.
+fn parse_numeric_i64(text: &str) -> i64 {
+    if let Some(rest) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
+        i64::from_str_radix(rest, 16).unwrap_or(0)
+    } else if let Some(rest) = text.strip_prefix("0o").or_else(|| text.strip_prefix("0O")) {
+        i64::from_str_radix(rest, 8).unwrap_or(0)
+    } else if let Some(rest) = text.strip_prefix("0b").or_else(|| text.strip_prefix("0B")) {
+        i64::from_str_radix(rest, 2).unwrap_or(0)
+    } else {
+        text.parse::<i64>().unwrap_or(0)
+    }
+}
+
+/// Parse a numeric string into the given unsigned type, handling hex/octal/binary.
+macro_rules! parse_numeric_as {
+    ($text:expr, $ty:ty) => {{
+        let t = $text;
+        if let Some(rest) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
+            <$ty>::from_str_radix(rest, 16).unwrap_or(0)
+        } else if let Some(rest) = t.strip_prefix("0o").or_else(|| t.strip_prefix("0O")) {
+            <$ty>::from_str_radix(rest, 8).unwrap_or(0)
+        } else if let Some(rest) = t.strip_prefix("0b").or_else(|| t.strip_prefix("0B")) {
+            <$ty>::from_str_radix(rest, 2).unwrap_or(0)
+        } else {
+            t.parse::<$ty>().unwrap_or(0)
+        }
+    }};
+}
+
 fn literal_discriminant(lit: &ast::ast::LiteralPattern<'_>) -> i64 {
     match lit {
         ast::ast::LiteralPattern::Bool(true) => 1,
         ast::ast::LiteralPattern::Bool(false) => 0,
-        ast::ast::LiteralPattern::Int(s) => s.parse::<i64>().unwrap_or(0),
+        ast::ast::LiteralPattern::Int(s) => parse_numeric_i64(strip_int_suffix(s)),
         _ => 0,
     }
 }
@@ -750,14 +924,60 @@ fn subj_tag_discriminant(fb: &FunctionBuilder<'_>, subj_v: ValueId, variant_name
     0
 }
 
+/// Search all tag types for a variant with the given name.
+/// Returns the tag type name, the variant discriminant, and the payload template.
+fn find_tag_constructor<'a>(
+    name: &str,
+    tag_variants: &'a TagVariants,
+) -> Option<(&'a str, u32, &'a Vec<MonoType>)> {
+    for (type_name, variants) in tag_variants {
+        for (idx, (vname, payload)) in variants.iter().enumerate() {
+            if vname == name {
+                return Some((type_name.as_str(), idx as u32, payload));
+            }
+        }
+    }
+    None
+}
+
 /// Returns the field index of `field` in the record type of `object`.
 fn field_index_of(fb: &FunctionBuilder<'_>, object: &Expr<'_>, field: &str) -> u32 {
     let span = object.span();
+    if let Some(obj_v) = resolve_ident_value_id(fb, object)
+        && let Some(IrType::Record(rt)) = fb.value_types.get(&obj_v)
+    {
+        return rt
+            .fields
+            .iter()
+            .position(|(k, _)| k.as_str() == field)
+            .unwrap_or(0) as u32;
+    }
     if let Some(MonoType::Record(fields)) = fb.type_map.get(&span) {
-        // BTreeMap keys are sorted — index is the sorted position.
         return fields.keys().position(|k| k.as_str() == field).unwrap_or(0) as u32;
     }
+    if let Expr::Ident(name, _) = object
+        && let Some(p) = fb
+            .func
+            .params
+            .iter()
+            .find(|(_, pname, _)| pname.as_str() == *name)
+        && let IrType::Record(rt) = &p.2
+    {
+        return rt
+            .fields
+            .iter()
+            .position(|(k, _)| k.as_str() == field)
+            .unwrap_or(0) as u32;
+    }
     0
+}
+
+fn resolve_ident_value_id(fb: &FunctionBuilder<'_>, expr: &Expr<'_>) -> Option<ValueId> {
+    if let Expr::Ident(name, _) = expr {
+        fb.lookup(name)
+    } else {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -828,8 +1048,39 @@ fn lower_pattern<'src>(
 fn bind_pattern_local<'src>(fb: &mut FunctionBuilder<'_>, pat: &Pattern<'src>, v: ValueId) {
     match pat {
         Pattern::Binding(name, _) => fb.bind((*name).into(), v),
-        Pattern::Wildcard(_) => {}
-        _ => {}
+        Pattern::Wildcard(_) | Pattern::Literal(_, _) => {}
+        Pattern::Tuple { patterns, .. } => {
+            for (i, p) in patterns.iter().enumerate() {
+                let fv = fb.emit(Instruction::TagGet {
+                    value: v,
+                    index: i as u32,
+                });
+                bind_pattern_local(fb, p, fv);
+            }
+        }
+        Pattern::Constructor { fields, .. } => {
+            for (i, p) in fields.iter().enumerate() {
+                let fv = fb.emit(Instruction::TagGet {
+                    value: v,
+                    index: i as u32,
+                });
+                bind_pattern_local(fb, p, fv);
+            }
+        }
+        Pattern::Record { fields, .. } => {
+            for (i, f) in fields.iter().enumerate() {
+                let fv = fb.emit(Instruction::RecordGet {
+                    record: v,
+                    field: f.name.into(),
+                    field_index: i as u32,
+                });
+                if let Some(p) = f.pattern {
+                    bind_pattern_local(fb, p, fv);
+                } else {
+                    fb.bind(f.name.into(), fv);
+                }
+            }
+        }
     }
 }
 
@@ -839,33 +1090,34 @@ fn bind_pattern_local<'src>(fb: &mut FunctionBuilder<'_>, pat: &Pattern<'src>, v
 
 fn parse_int_literal(text: &str) -> Instruction {
     if let Some(s) = text.strip_suffix("i64") {
-        return Instruction::ConstI64(s.parse().unwrap_or(0));
+        return Instruction::ConstI64(parse_numeric_i64(s));
     }
     if let Some(s) = text.strip_suffix("i32") {
-        return Instruction::ConstI32(s.parse().unwrap_or(0));
+        return Instruction::ConstI32(parse_numeric_i64(s) as i32);
     }
     if let Some(s) = text.strip_suffix("i16") {
-        return Instruction::ConstI16(s.parse().unwrap_or(0));
+        return Instruction::ConstI16(parse_numeric_i64(s) as i16);
     }
     if let Some(s) = text.strip_suffix("i8") {
-        return Instruction::ConstI8(s.parse().unwrap_or(0));
+        return Instruction::ConstI8(parse_numeric_i64(s) as i8);
     }
     if let Some(s) = text.strip_suffix("u64") {
-        return Instruction::ConstU64(s.parse().unwrap_or(0));
+        return Instruction::ConstU64(parse_numeric_as!(s, u64));
     }
     if let Some(s) = text.strip_suffix("u32") {
-        return Instruction::ConstU32(s.parse().unwrap_or(0));
+        return Instruction::ConstU32(parse_numeric_as!(s, u32));
     }
     if let Some(s) = text.strip_suffix("u16") {
-        return Instruction::ConstU16(s.parse().unwrap_or(0));
+        return Instruction::ConstU16(parse_numeric_as!(s, u16));
     }
     if let Some(s) = text.strip_suffix("u8") {
-        return Instruction::ConstU8(s.parse().unwrap_or(0));
+        return Instruction::ConstU8(parse_numeric_as!(s, u8));
     }
     if let Some(s) = text.strip_suffix("usize") {
-        return Instruction::ConstUsize(s.parse().unwrap_or(0));
+        return Instruction::ConstUsize(parse_numeric_as!(s, usize));
     }
-    Instruction::ConstI32(text.parse().unwrap_or(0))
+    // No suffix: default to I32, but handle hex/octal/binary
+    Instruction::ConstI32(parse_numeric_i64(text) as i32)
 }
 
 fn parse_float_literal(text: &str) -> Instruction {
@@ -897,18 +1149,25 @@ fn decl_return_type(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn lower_decl<'src>(
     decl: &Decl<'src>,
     globals: &HashSet<SmolStr>,
+    value_globals: &HashSet<SmolStr>,
     type_map: &HashMap<ast::span::Span, MonoType>,
     tag_variants: &TagVariants,
     module: &mut IrModule,
+    resolved_param_types: &HashMap<String, Vec<IrType>>,
+    resolved_return_types: &HashMap<String, IrType>,
 ) -> Result<(), LowerError> {
     match decl {
         Decl::Bind {
             name, value, span, ..
         } => {
-            let ret_ty = decl_return_type(*span, value, type_map);
+            let ret_ty = resolved_return_types
+                .get(*name)
+                .cloned()
+                .unwrap_or_else(|| decl_return_type(*span, value, type_map));
             let mut hoisted = Vec::new();
 
             match value {
@@ -917,29 +1176,38 @@ fn lower_decl<'src>(
                         (*name).into(),
                         ret_ty,
                         globals,
+                        value_globals,
                         type_map,
                         tag_variants,
                     );
-                    for p in params.iter() {
+                    // Check if we have monomorphized param types for this function.
+                    let mono_param_tys = resolved_param_types.get(*name);
+                    for (param_idx, p) in params.iter().enumerate() {
                         let v = fb.alloc_value();
-                        // Resolve param type from annotation, or from the Func type in type_map.
+                        // Resolve param type from annotation, monomorphized types,
+                        // or from the Func type in type_map.
                         let param_ty = p
                             .ty
                             .and_then(|ann| typechecker::infer::type_expr_to_mono(ann).ok())
                             .as_ref()
-                            .map(mono_to_ir)
+                            .map(|t| fb.mono_to_ir(t))
                             .or_else(|| {
+                                // Use monomorphized param type if available.
+                                if let Some(tys) = mono_param_tys {
+                                    return tys.get(param_idx).cloned();
+                                }
                                 // Extract from the function's MonoType in the map.
                                 type_map.get(span).and_then(|mono| match mono {
                                     MonoType::Func { params: ptys, .. } => {
                                         let idx = params.iter().position(|q| q.name == p.name)?;
-                                        Some(mono_to_ir(&ptys[idx]))
+                                        Some(fb.mono_to_ir(&ptys[idx]))
                                     }
                                     _ => None,
                                 })
                             })
                             .unwrap_or(IrType::I32);
-                        fb.func.params.push((v, p.name.into(), param_ty));
+                        fb.func.params.push((v, p.name.into(), param_ty.clone()));
+                        fb.value_types.insert(v, param_ty);
                         fb.bind(p.name.into(), v);
                     }
                     let body_v = lower_expr(&mut fb, body, &mut hoisted)?;
@@ -951,6 +1219,7 @@ fn lower_decl<'src>(
                         (*name).into(),
                         ret_ty,
                         globals,
+                        value_globals,
                         type_map,
                         tag_variants,
                     );
@@ -987,6 +1256,512 @@ fn lower_decl<'src>(
 }
 
 // ---------------------------------------------------------------------------
+// Monomorphization pre-pass
+// ---------------------------------------------------------------------------
+
+/// Resolves polymorphic parameter and return types by examining call sites.
+///
+/// When a function parameter or return type has an unresolved type variable
+/// (`MonoType::Var`), the default IR type (`I32`) is incorrect. This pass
+/// walks the AST to find all call sites of each function, extracts concrete
+/// argument types and return types from the type map, and uses them to
+/// resolve polymorphic parameter and return types.
+///
+/// Uses iterative resolution: outer functions are resolved first, then their
+/// resolved types are used to resolve inner functions that they call.
+fn monomorphize_param_types(
+    typed: &TypedProgram<'_>,
+    tag_variants: &TagVariants,
+) -> (HashMap<String, Vec<IrType>>, HashMap<String, IrType>) {
+    let mut resolved: HashMap<String, Vec<IrType>> = HashMap::new();
+    let mut resolved_returns: HashMap<String, IrType> = HashMap::new();
+
+    // Build a map from function name to its param names for scope tracking.
+    let mut func_param_names: HashMap<String, Vec<String>> = HashMap::new();
+    for decl in &typed.ast.decls {
+        if let Decl::Bind {
+            name,
+            value: Expr::Lambda { params, .. },
+            ..
+        } = decl
+        {
+            func_param_names.insert(
+                (*name).into(),
+                params.iter().map(|p| (*p.name).into()).collect(),
+            );
+        }
+    }
+
+    // Iterate until convergence (max 10 passes for safety).
+    for _ in 0..10 {
+        let mut changed = false;
+
+        // Collect call sites using currently-resolved types.
+        let mut call_sites: HashMap<String, Vec<Vec<IrType>>> = HashMap::new();
+        let mut call_return_sites: HashMap<String, Vec<IrType>> = HashMap::new();
+        for decl in &typed.ast.decls {
+            if let Decl::Bind { name, value, .. } = decl {
+                collect_call_sites(
+                    value,
+                    &typed.type_map,
+                    &resolved,
+                    &func_param_names,
+                    name,
+                    &mut call_sites,
+                    &mut call_return_sites,
+                );
+            }
+        }
+
+        // Resolve each function's params and return type from call sites.
+        for decl in &typed.ast.decls {
+            if let Decl::Bind {
+                name, span, value, ..
+            } = decl
+            {
+                let Expr::Lambda { .. } = value else {
+                    continue;
+                };
+                let Some(MonoType::Func {
+                    params: ptys, ret, ..
+                }) = typed.type_map.get(span)
+                else {
+                    continue;
+                };
+
+                // Resolve parameter types from call sites.
+                let site_arg_lists = call_sites.get(*name).map(|v| v.as_slice()).unwrap_or(&[]);
+                let mut resolved_params = Vec::with_capacity(ptys.len());
+                for (i, pty) in ptys.iter().enumerate() {
+                    if mono_type_has_vars(pty) {
+                        if site_arg_lists.is_empty() {
+                            resolved_params.push(mono_to_ir_inner(pty, Some(tag_variants)));
+                        } else {
+                            let concrete = resolve_var_from_call_sites(i, site_arg_lists);
+                            resolved_params.push(concrete);
+                        }
+                    } else {
+                        resolved_params.push(mono_to_ir_inner(pty, Some(tag_variants)));
+                    }
+                }
+                let prev = resolved.insert((*name).into(), resolved_params);
+                if let Some(ref prev_val) = prev
+                    && let Some(new) = resolved.get(*name)
+                    && prev_val != new
+                {
+                    changed = true;
+                } else if prev.is_none() {
+                    changed = true;
+                }
+
+                // Resolve return type from call site return types.
+                if mono_type_has_vars(ret)
+                    && let Some(ret_tys) = call_return_sites.get(*name)
+                    && let Some(concrete_ret) = ret_tys.first()
+                {
+                    let prev_ret = resolved_returns.insert((*name).into(), concrete_ret.clone());
+                    if prev_ret.as_ref() != Some(concrete_ret) {
+                        changed = true;
+                    }
+                } else if !resolved_returns.contains_key(*name) {
+                    resolved_returns
+                        .insert((*name).into(), mono_to_ir_inner(ret, Some(tag_variants)));
+                    changed = true;
+                }
+            }
+        }
+
+        if !changed {
+            break;
+        }
+    }
+
+    (resolved, resolved_returns)
+}
+
+/// Walks an expression tree collecting call-site argument types.
+///
+/// When an argument is an identifier that matches a known function parameter,
+/// the `resolved` map is consulted for the actual concrete type (from previous
+/// monomorphization iterations), falling back to the type map.
+fn collect_call_sites(
+    expr: &Expr<'_>,
+    type_map: &HashMap<ast::span::Span, MonoType>,
+    resolved: &HashMap<String, Vec<IrType>>,
+    func_param_names: &HashMap<String, Vec<String>>,
+    enclosing_fn: &str,
+    call_sites: &mut HashMap<String, Vec<Vec<IrType>>>,
+    call_return_sites: &mut HashMap<String, Vec<IrType>>,
+) {
+    match expr {
+        Expr::Application { func, args, span } => {
+            // If the callee is a simple identifier, record its call-site types.
+            if let Expr::Ident(name, _) = func {
+                let arg_types: Vec<IrType> = args
+                    .iter()
+                    .map(|a| {
+                        resolve_arg_type(a, type_map, resolved, func_param_names, enclosing_fn)
+                    })
+                    .collect();
+                call_sites
+                    .entry((*name).into())
+                    .or_default()
+                    .push(arg_types);
+
+                // Also record the return type of this call from the type_map.
+                if let Some(ret_mono) = type_map.get(span) {
+                    let ret_ir = mono_to_ir(ret_mono);
+                    if !matches!(ret_ir, IrType::Unit) {
+                        call_return_sites
+                            .entry((*name).into())
+                            .or_default()
+                            .push(ret_ir);
+                    }
+                }
+            }
+            // Recurse into callee and arguments.
+            collect_call_sites(
+                func,
+                type_map,
+                resolved,
+                func_param_names,
+                enclosing_fn,
+                call_sites,
+                call_return_sites,
+            );
+            for arg in args {
+                collect_call_sites(
+                    arg,
+                    type_map,
+                    resolved,
+                    func_param_names,
+                    enclosing_fn,
+                    call_sites,
+                    call_return_sites,
+                );
+            }
+        }
+        Expr::Lambda { body, .. } => {
+            collect_call_sites(
+                body,
+                type_map,
+                resolved,
+                func_param_names,
+                enclosing_fn,
+                call_sites,
+                call_return_sites,
+            );
+        }
+        Expr::Block { stmts, result, .. } => {
+            for stmt in stmts {
+                collect_call_sites_stmt(
+                    stmt,
+                    type_map,
+                    resolved,
+                    func_param_names,
+                    enclosing_fn,
+                    call_sites,
+                    call_return_sites,
+                );
+            }
+            collect_call_sites(
+                result,
+                type_map,
+                resolved,
+                func_param_names,
+                enclosing_fn,
+                call_sites,
+                call_return_sites,
+            );
+        }
+        Expr::Binary { left, right, .. } => {
+            collect_call_sites(
+                left,
+                type_map,
+                resolved,
+                func_param_names,
+                enclosing_fn,
+                call_sites,
+                call_return_sites,
+            );
+            collect_call_sites(
+                right,
+                type_map,
+                resolved,
+                func_param_names,
+                enclosing_fn,
+                call_sites,
+                call_return_sites,
+            );
+        }
+        Expr::Unary { operand, .. } => {
+            collect_call_sites(
+                operand,
+                type_map,
+                resolved,
+                func_param_names,
+                enclosing_fn,
+                call_sites,
+                call_return_sites,
+            );
+        }
+        Expr::Match { subject, arms, .. } => {
+            collect_call_sites(
+                subject,
+                type_map,
+                resolved,
+                func_param_names,
+                enclosing_fn,
+                call_sites,
+                call_return_sites,
+            );
+            for arm in arms {
+                collect_call_sites(
+                    arm.body,
+                    type_map,
+                    resolved,
+                    func_param_names,
+                    enclosing_fn,
+                    call_sites,
+                    call_return_sites,
+                );
+            }
+        }
+        Expr::If {
+            condition,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            collect_call_sites(
+                condition,
+                type_map,
+                resolved,
+                func_param_names,
+                enclosing_fn,
+                call_sites,
+                call_return_sites,
+            );
+            collect_call_sites(
+                then_branch,
+                type_map,
+                resolved,
+                func_param_names,
+                enclosing_fn,
+                call_sites,
+                call_return_sites,
+            );
+            collect_call_sites(
+                else_branch,
+                type_map,
+                resolved,
+                func_param_names,
+                enclosing_fn,
+                call_sites,
+                call_return_sites,
+            );
+        }
+        Expr::Template { parts, .. } => {
+            for part in parts {
+                if let TemplatePart::Expr(e) = part {
+                    collect_call_sites(
+                        e,
+                        type_map,
+                        resolved,
+                        func_param_names,
+                        enclosing_fn,
+                        call_sites,
+                        call_return_sites,
+                    );
+                }
+            }
+        }
+        Expr::Index { array, index, .. } => {
+            collect_call_sites(
+                array,
+                type_map,
+                resolved,
+                func_param_names,
+                enclosing_fn,
+                call_sites,
+                call_return_sites,
+            );
+            collect_call_sites(
+                index,
+                type_map,
+                resolved,
+                func_param_names,
+                enclosing_fn,
+                call_sites,
+                call_return_sites,
+            );
+        }
+        Expr::Array { elems, .. } => {
+            for e in elems {
+                collect_call_sites(
+                    e,
+                    type_map,
+                    resolved,
+                    func_param_names,
+                    enclosing_fn,
+                    call_sites,
+                    call_return_sites,
+                );
+            }
+        }
+        Expr::Record { fields, .. } => {
+            for f in fields {
+                collect_call_sites(
+                    f.value,
+                    type_map,
+                    resolved,
+                    func_param_names,
+                    enclosing_fn,
+                    call_sites,
+                    call_return_sites,
+                );
+            }
+        }
+        Expr::FieldAccess { object, .. } => {
+            collect_call_sites(
+                object,
+                type_map,
+                resolved,
+                func_param_names,
+                enclosing_fn,
+                call_sites,
+                call_return_sites,
+            );
+        }
+        Expr::Tuple { elems, .. } => {
+            for e in elems {
+                collect_call_sites(
+                    e,
+                    type_map,
+                    resolved,
+                    func_param_names,
+                    enclosing_fn,
+                    call_sites,
+                    call_return_sites,
+                );
+            }
+        }
+        Expr::IntLiteral(_, _)
+        | Expr::FloatLiteral(_, _)
+        | Expr::Str(_, _)
+        | Expr::Bool(_, _)
+        | Expr::Ident(_, _) => {}
+    }
+}
+
+/// Resolve the type of an argument expression at a call site.
+///
+/// For identifiers that are function parameters of the enclosing function,
+/// we use the resolved type from a previous monomorphization iteration.
+/// Otherwise we fall back to the type map.
+fn resolve_arg_type(
+    expr: &Expr<'_>,
+    type_map: &HashMap<ast::span::Span, MonoType>,
+    resolved: &HashMap<String, Vec<IrType>>,
+    func_param_names: &HashMap<String, Vec<String>>,
+    enclosing_fn: &str,
+) -> IrType {
+    // If the type_map has a concrete (non-Var) type, use it directly.
+    if let Some(mono) = type_map.get(&expr.span())
+        && !matches!(mono, MonoType::Var(_))
+    {
+        return mono_to_ir(mono);
+    }
+
+    // For identifiers, check if this is a parameter of the enclosing function
+    // and use the resolved param type if available.
+    if let Expr::Ident(name, _) = expr
+        && let Some(param_names) = func_param_names.get(enclosing_fn)
+        && let Some(param_idx) = param_names.iter().position(|p| p == *name)
+        && let Some(param_tys) = resolved.get(enclosing_fn)
+        && let Some(ty) = param_tys.get(param_idx)
+    {
+        return ty.clone();
+    }
+
+    // Fall back to the type map.
+    type_map
+        .get(&expr.span())
+        .map(mono_to_ir)
+        .unwrap_or(IrType::Str)
+}
+
+fn collect_call_sites_stmt(
+    stmt: &ast::ast::Stmt<'_>,
+    type_map: &HashMap<ast::span::Span, MonoType>,
+    resolved: &HashMap<String, Vec<IrType>>,
+    func_param_names: &HashMap<String, Vec<String>>,
+    enclosing_fn: &str,
+    call_sites: &mut HashMap<String, Vec<Vec<IrType>>>,
+    call_return_sites: &mut HashMap<String, Vec<IrType>>,
+) {
+    match stmt {
+        Stmt::Expr(e) => {
+            collect_call_sites(
+                e,
+                type_map,
+                resolved,
+                func_param_names,
+                enclosing_fn,
+                call_sites,
+                call_return_sites,
+            );
+        }
+        Stmt::Let { value: e, .. } => {
+            collect_call_sites(
+                e,
+                type_map,
+                resolved,
+                func_param_names,
+                enclosing_fn,
+                call_sites,
+                call_return_sites,
+            );
+        }
+    }
+}
+
+/// For a given parameter index, find the concrete type across all call sites.
+/// Returns `Str` as a safe fallback if call sites disagree or are absent.
+fn mono_type_has_vars(ty: &MonoType) -> bool {
+    match ty {
+        MonoType::Var(_) => true,
+        MonoType::Array(inner) => mono_type_has_vars(inner),
+        MonoType::Func { params, ret } => {
+            params.iter().any(mono_type_has_vars) || mono_type_has_vars(ret)
+        }
+        MonoType::Record(fields) => fields.values().any(mono_type_has_vars),
+        MonoType::Tag { payload, .. } => payload.iter().any(mono_type_has_vars),
+        MonoType::Effect(inner) => mono_type_has_vars(inner),
+        _ => false,
+    }
+}
+
+fn resolve_var_from_call_sites(param_idx: usize, call_site_arg_lists: &[Vec<IrType>]) -> IrType {
+    let mut candidate: Option<IrType> = None;
+    for arg_list in call_site_arg_lists {
+        if let Some(ty) = arg_list.get(param_idx) {
+            match &candidate {
+                None => candidate = Some(ty.clone()),
+                Some(prev) => {
+                    if prev != ty {
+                        // Call sites disagree — fall back to Str as the
+                        // most common unannotated param type (template strings).
+                        return IrType::Str;
+                    }
+                }
+            }
+        }
+    }
+    candidate.unwrap_or(IrType::Str)
+}
+
+// ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
 
@@ -1003,7 +1778,7 @@ fn lower_decl<'src>(
 pub fn lower(typed: &TypedProgram<'_>) -> Result<IrModule, LowerError> {
     let mut module = IrModule::new();
 
-    let globals: HashSet<SmolStr> = typed
+    let mut globals: HashSet<SmolStr> = typed
         .ast
         .decls
         .iter()
@@ -1013,15 +1788,83 @@ pub fn lower(typed: &TypedProgram<'_>) -> Result<IrModule, LowerError> {
         })
         .collect();
 
+    // Add known builtin names so the lowerer emits CallNamed for them
+    // instead of returning Unbound. These are resolved at runtime by
+    // the BuiltinRegistry.
+    let builtin_names = [
+        "id",
+        "const",
+        "flip",
+        "compose",
+        "pipe",
+        "apply",
+        "map",
+        "filter",
+        "fold",
+        "flatMap",
+        "concat",
+        "prepend",
+        "len",
+        "head",
+        "tail",
+        "split",
+        "trim",
+        "parse_i32",
+        "println",
+        "print",
+        "read_line",
+        "readFile",
+        "to_i64",
+        "to_i32",
+        "to_f64",
+        "to_str",
+        "drop",
+        "take",
+        "sqrt",
+        "unwrap",
+        "unwrap_or",
+    ];
+    for name in builtin_names {
+        globals.insert((*name).into());
+    }
+
+    // Track globals defined with a non-lambda expression (e.g. `let t = mk(5)`).
+    // These are closure VALUES, not function definitions. When used as the
+    // func position of an application, they must be evaluated first (via
+    // CallNamed with no args) and then the result called via CallIndirect,
+    // rather than emitting CallNamed(name, args) directly.
+    let value_globals: HashSet<SmolStr> = typed
+        .ast
+        .decls
+        .iter()
+        .filter_map(|d| match d {
+            Decl::Bind { name, value, .. } if !matches!(value, Expr::Lambda { .. }) => {
+                Some((*name).into())
+            }
+            _ => None,
+        })
+        .collect();
+
+    // Monomorphization pre-pass: resolve polymorphic parameter types from
+    // call sites. When a function parameter has an unresolved type variable,
+    // we look at how the function is actually called to determine the
+    // concrete type.
+    let (resolved_param_types, resolved_return_types) =
+        monomorphize_param_types(typed, &typed.tag_variants);
+
     for decl in &typed.ast.decls {
         lower_decl(
             decl,
             &globals,
+            &value_globals,
             &typed.type_map,
             &typed.tag_variants,
             &mut module,
+            &resolved_param_types,
+            &resolved_return_types,
         )?;
     }
 
+    module.tag_variants = typed.tag_variants.clone();
     Ok(module)
 }

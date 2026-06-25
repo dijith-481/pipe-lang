@@ -11,23 +11,23 @@ let alice : Person = { name: `Alice`, age: 30, city: `Wonderland` }
 let bob : Person = { name: `Bob`, age: 25, city: `Builderland` }
 
 // Field access with dot operator
-let getName = (p) => p.name
+let get_name = (p) => p.name
 
-let isAdult = (p) => p.age >= 18
+let is_adult = (p) => p.age >= 18
 
 // Record update (functional style — creates new record)
-let withAge = (p: Person, newAge) => { name: p.name, age: newAge, city: p.city }
+let with_age = (p: Person, new_age) => { name: p.name, age: new_age, city: p.city }
 
 // Higher-order with records
-let adults = (people) => people.filter(isAdult)
+let adults = (people) => people.filter(is_adult)
 
-let names = (people) => people.map(getName)
+let names = (people) => people.map(get_name)
 
 let main = () => {
-    println(`Name: ${getName(alice)}`)
-    println(`Is adult: ${isAdult(alice)}`)
+    println(`Name: ${get_name(alice)}`)
+    println(`Is adult: ${is_adult(alice)}`)
 
-    let older = withAge(alice, 31)
+    let older = with_age(alice, 31)
     println(`Updated age: ${older.age}`)
 
     let people = [alice, bob]

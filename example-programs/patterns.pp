@@ -28,7 +28,7 @@ type Message =
   | Chat(str, str)
   | Ping
 
-let handleMessage = (msg) => match msg {
+let handle_message = (msg) => match msg {
     Login(user, _)    => `${user} logged in`
     Logout            => `user logged out`
     Chat(user, text)  => `${user}: ${text}`
@@ -43,5 +43,5 @@ let main = () => {
     println(``)
 
     let messages = [Login(`alice`, `secret`), Chat(`bob`, `hello`), Ping, Logout]
-    messages.map((m) => println(handleMessage(m)))
+    messages.map((m) => println(handle_message(m)))
 }

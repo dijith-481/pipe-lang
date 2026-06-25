@@ -590,6 +590,14 @@ impl TypeEnv {
                 ret: Rc::new(MonoType::Array(Rc::new(MonoType::Str))),
             }),
         );
+        // Bare alias: split(str, str) -> Array<str>
+        self.insert(
+            "split",
+            PolyType::mono(MonoType::Func {
+                params: Rc::from([MonoType::Str, MonoType::Str]),
+                ret: Rc::new(MonoType::Array(Rc::new(MonoType::Str))),
+            }),
+        );
 
         // Str.trim : (str) -> str
         self.insert(
@@ -599,10 +607,29 @@ impl TypeEnv {
                 ret: Rc::new(MonoType::Str),
             }),
         );
+        // Bare alias: trim(str) -> str
+        self.insert(
+            "trim",
+            PolyType::mono(MonoType::Func {
+                params: Rc::from([MonoType::Str]),
+                ret: Rc::new(MonoType::Str),
+            }),
+        );
 
         // Str.parse_i32 : (str) -> Result<i32, str>
         self.insert(
             "Str.parse_i32",
+            PolyType::mono(MonoType::Func {
+                params: Rc::from([MonoType::Str]),
+                ret: Rc::new(MonoType::Tag {
+                    name: "Result".into(),
+                    payload: Rc::from([MonoType::I32, MonoType::Str]),
+                }),
+            }),
+        );
+        // Bare alias: parse_i32(str) -> Result<i32, str>
+        self.insert(
+            "parse_i32",
             PolyType::mono(MonoType::Func {
                 params: Rc::from([MonoType::Str]),
                 ret: Rc::new(MonoType::Tag {
@@ -689,6 +716,42 @@ impl TypeEnv {
                 },
             ),
         );
+        // Bare alias: unwrap_or(Option<a>, a) -> a
+        let uo2_a = self.fresh_var();
+        self.insert(
+            "unwrap_or",
+            PolyType::poly(
+                vec![uo2_a],
+                MonoType::Func {
+                    params: Rc::from([
+                        MonoType::Tag {
+                            name: "Option".into(),
+                            payload: Rc::from([MonoType::Var(uo2_a)]),
+                        },
+                        MonoType::Var(uo2_a),
+                    ]),
+                    ret: Rc::new(MonoType::Var(uo2_a)),
+                },
+            ),
+        );
+        // Option.unwrap_or : <a>(Option<a>, a) -> a (snake_case alias)
+        let uo3_a = self.fresh_var();
+        self.insert(
+            "Option.unwrap_or",
+            PolyType::poly(
+                vec![uo3_a],
+                MonoType::Func {
+                    params: Rc::from([
+                        MonoType::Tag {
+                            name: "Option".into(),
+                            payload: Rc::from([MonoType::Var(uo3_a)]),
+                        },
+                        MonoType::Var(uo3_a),
+                    ]),
+                    ret: Rc::new(MonoType::Var(uo3_a)),
+                },
+            ),
+        );
 
         // ====================================================================
         // Result methods
@@ -751,26 +814,73 @@ impl TypeEnv {
             ),
         );
 
+        // Result.unwrapOr : <t, e>(Result<t, e>, t) -> t
+        let ru_t = self.fresh_var();
+        let ru_e = self.fresh_var();
+        self.insert(
+            "Result.unwrapOr",
+            PolyType::poly(
+                vec![ru_t, ru_e],
+                MonoType::Func {
+                    params: Rc::from([
+                        MonoType::Tag {
+                            name: "Result".into(),
+                            payload: Rc::from([MonoType::Var(ru_t), MonoType::Var(ru_e)]),
+                        },
+                        MonoType::Var(ru_t),
+                    ]),
+                    ret: Rc::new(MonoType::Var(ru_t)),
+                },
+            ),
+        );
+        // Result.unwrap_or : <t, e>(Result<t, e>, t) -> t (snake_case alias)
+        let ru2_t = self.fresh_var();
+        let ru2_e = self.fresh_var();
+        self.insert(
+            "Result.unwrap_or",
+            PolyType::poly(
+                vec![ru2_t, ru2_e],
+                MonoType::Func {
+                    params: Rc::from([
+                        MonoType::Tag {
+                            name: "Result".into(),
+                            payload: Rc::from([MonoType::Var(ru2_t), MonoType::Var(ru2_e)]),
+                        },
+                        MonoType::Var(ru2_t),
+                    ]),
+                    ret: Rc::new(MonoType::Var(ru2_t)),
+                },
+            ),
+        );
+
         // ====================================================================
         // Numeric conversion functions
         // ====================================================================
 
-        // to_i64 : (i32) -> i64
+        // to_i64 : <a>(a) -> i64  (polymorphic — works on any numeric type)
+        let ti64_a = self.fresh_var();
         self.insert(
             "to_i64",
-            PolyType::mono(MonoType::Func {
-                params: Rc::from([MonoType::I32]),
-                ret: Rc::new(MonoType::I64),
-            }),
+            PolyType::poly(
+                vec![ti64_a],
+                MonoType::Func {
+                    params: Rc::from([MonoType::Var(ti64_a)]),
+                    ret: Rc::new(MonoType::I64),
+                },
+            ),
         );
 
-        // to_i32 : (Usize) -> i32
+        // to_i32 : <a>(a) -> i32  (polymorphic — truncates floats, widens integers)
+        let ti32_a = self.fresh_var();
         self.insert(
             "to_i32",
-            PolyType::mono(MonoType::Func {
-                params: Rc::from([MonoType::Usize]),
-                ret: Rc::new(MonoType::I32),
-            }),
+            PolyType::poly(
+                vec![ti32_a],
+                MonoType::Func {
+                    params: Rc::from([MonoType::Var(ti32_a)]),
+                    ret: Rc::new(MonoType::I32),
+                },
+            ),
         );
 
         // to_usize : (i32) -> Usize
@@ -782,22 +892,30 @@ impl TypeEnv {
             }),
         );
 
-        // to_f64 : (i32) -> f64
+        // to_f64 : <a>(a) -> f64  (polymorphic — works on any numeric type)
+        let tf64_a = self.fresh_var();
         self.insert(
             "to_f64",
-            PolyType::mono(MonoType::Func {
-                params: Rc::from([MonoType::I32]),
-                ret: Rc::new(MonoType::F64),
-            }),
+            PolyType::poly(
+                vec![tf64_a],
+                MonoType::Func {
+                    params: Rc::from([MonoType::Var(tf64_a)]),
+                    ret: Rc::new(MonoType::F64),
+                },
+            ),
         );
 
-        // to_str : (i32) -> str
+        // to_str : <a>(a) -> str  (polymorphic — formats any primitive)
+        let tstr_a = self.fresh_var();
         self.insert(
             "to_str",
-            PolyType::mono(MonoType::Func {
-                params: Rc::from([MonoType::I32]),
-                ret: Rc::new(MonoType::Str),
-            }),
+            PolyType::poly(
+                vec![tstr_a],
+                MonoType::Func {
+                    params: Rc::from([MonoType::Var(tstr_a)]),
+                    ret: Rc::new(MonoType::Str),
+                },
+            ),
         );
 
         // I64.to_str : (i64) -> str
@@ -1014,10 +1132,13 @@ mod tests {
             "Str.trim",
             "Str.parse_i32",
             "Option.map",
-            "Option.flat_map",
+            "Option.flatMap",
+            "Option.unwrapOr",
             "Option.unwrap_or",
             "Result.map",
-            "Result.flat_map",
+            "Result.flatMap",
+            "Result.unwrapOr",
+            "Result.unwrap_or",
             "Effect.map",
             "Effect.flat_map",
             "to_i64",

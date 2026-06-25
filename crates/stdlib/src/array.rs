@@ -165,9 +165,7 @@ impl BuiltinFunction for ArrayLen {
     fn execute(&self, args: &[Value]) -> Result<Value, String> {
         expect_arity(self.name(), args, self.arity())?;
         let array = expect_array(self.name(), &args[0])?;
-        let len = i32::try_from(array.len())
-            .map_err(|_| format!("`{}` length does not fit in I32", self.name()))?;
-        Ok(Value::I32(len))
+        Ok(Value::Usize(array.len()))
     }
 }
 
@@ -431,6 +429,7 @@ mod tests {
             func: FuncPtr::Builtin(builtin),
             captures: Arc::from([]),
             arity,
+            call_arg_types: Arc::from([]),
         }))
     }
 
@@ -520,7 +519,7 @@ mod tests {
             .execute(&[int_array(&[1, 2, 3])])
             .expect("len should return length");
 
-        assert_eq!(result, Value::I32(3));
+        assert_eq!(result, Value::Usize(3));
     }
 
     #[test]
