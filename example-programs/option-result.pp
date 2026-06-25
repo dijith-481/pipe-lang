@@ -1,15 +1,9 @@
 // Option and Result — error handling without exceptions
 // `Some`, `None`, `Ok`, `Err`, `Option<T>`, `Result<T, E>`, and their methods
-// (`.map`, `.unwrap`, `.flatMap`, ...) are all in the prelude.
-
-type User = {
-    id    : i32
-    name  : str
-    email : str
-}
+// (`.map`, `.unwrapOr`, `.flatMap`, ...) are all in the prelude.
 
 // Simulated database lookup
-let findUser = (id) => match id {
+let find_user = (id) => match id {
     1 => Some({ id: 1, name: `Alice`,   email: `alice@example.com` })
     2 => Some({ id: 2, name: `Bob`,     email: `bob@example.com` })
     3 => Some({ id: 3, name: `Charlie`, email: `charlie@example.com` })
@@ -17,7 +11,7 @@ let findUser = (id) => match id {
 }
 
 // Parse a string to i32 (simplified)
-let parseAge = (s) => match s {
+let parse_age = (s) => match s {
     "0"  => Ok(0)
     "1"  => Ok(1)
     "2"  => Ok(2)
@@ -27,28 +21,28 @@ let parseAge = (s) => match s {
 }
 
 // Process user if found
-let greetUser = (userId) =>
-    findUser(userId)
+let greet_user = (user_id) =>
+    find_user(user_id)
         .map((user) => `Hello, ${user.name}!`)
 
 // Validate age
-let validateAge = (input) =>
-    parseAge(input)
+let validate_age = (input) =>
+    parse_age(input)
         .flatMap((age) => if age >= 0 { if age <= 150 { Ok(age) } else { Err(`age out of range`) } } else { Err(`age out of range`) })
 
 let main = () => {
     // Option usage
     println(`--- Option ---`)
-    println(greetUser(1).unwrap(`User not found`))
-    println(greetUser(99).unwrap(`User not found`))
+    println(greet_user(1).unwrap_or(`User not found`))
+    println(greet_user(99).unwrap_or(`User not found`))
 
     // Result usage
     println(`--- Result ---`)
-    let age1 = validateAge(`25`)
-    let age2 = validateAge(`abc`)
-    let age3 = validateAge(`200`)
+    let age1 = validate_age(`25`)
+    let age2 = validate_age(`abc`)
+    let age3 = validate_age(`200`)
 
-    println(age1.unwrap(`error`))
-    println(age2.unwrap(`error`))
-    println(age3.unwrap(`error`))
+    println(age1.unwrap_or(`error`))
+    println(age2.unwrap_or(`error`))
+    println(age3.unwrap_or(`error`))
 }

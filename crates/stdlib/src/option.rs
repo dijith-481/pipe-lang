@@ -16,6 +16,10 @@ pub struct OptionFlatMap;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct OptionUnwrapOr;
 
+/// `unwrap_or(option, default)` — bare name alias for Option.unwrapOr.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct UnwrapOr;
+
 fn expect_option(name: &str, value: &Value) -> Result<(u32, Arc<[Value]>), String> {
     match value {
         Value::Tag { tag, payload } => Ok((*tag, Arc::clone(payload))),
@@ -116,6 +120,31 @@ impl BuiltinFunction for OptionUnwrapOr {
     }
 }
 
+impl BuiltinFunction for UnwrapOr {
+    fn name(&self) -> &str {
+        "unwrap_or"
+    }
+
+    fn arity(&self) -> usize {
+        2
+    }
+
+    fn execute(&self, args: &[Value]) -> Result<Value, String> {
+        expect_arity(self.name(), args, self.arity())?;
+        let (tag, payload) = expect_option(self.name(), &args[0])?;
+        match tag {
+            0 => Ok(args[1].clone()),
+            1 => {
+                if payload.is_empty() {
+                    return Err(format!("`{}` called on Some with no payload", self.name()));
+                }
+                Ok(payload[0].clone())
+            }
+            other => Err(format!("`{}` unexpected tag {other}", self.name())),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -144,6 +173,7 @@ mod tests {
             func: FuncPtr::Builtin(builtin),
             captures: Arc::from([]),
             arity,
+            call_arg_types: Arc::from([]),
         }))
     }
 

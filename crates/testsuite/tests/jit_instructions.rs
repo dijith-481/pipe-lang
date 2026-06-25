@@ -1633,7 +1633,6 @@ fn fix_ne_tag_some() {
 // Affected programs: closures.pp, sorting.pp
 
 #[test]
-#[should_panic(expected = "Unbound")]
 fn bug_tuple_destructuring_unbound() {
     e2e_main_i32("let main = {\n    let (a, b) = (1, 2)\n    a\n}");
 }
@@ -1651,7 +1650,6 @@ fn bug_tuple_destructuring_unbound() {
 // Affected programs: patterns.pp, state-machine.pp
 
 #[test]
-#[should_panic(expected = "out of range for slice")]
 fn bug_tag_type_payload_slice() {
     let src = "\
 type T =
@@ -1677,7 +1675,6 @@ let main = match A(1.0) {
 // Affected programs: higher-order.pp (max function)
 
 #[test]
-#[should_panic(expected = "duplicate switch case")]
 fn bug_match_option_duplicate_switch() {
     let src = "\
 let main = [1,2,3].fold(None, (acc, x) =>
@@ -1702,7 +1699,6 @@ let main = [1,2,3].fold(None, (acc, x) =>
 // Affected programs: generics.pp (flip, compose, pipe, apply)
 
 #[test]
-#[should_panic(expected = "callee is not a closure, got str")]
 fn bug_polymorphic_flip_closure_type() {
     let src = "\
 let flip : ((a, b) -> c) -> (b, a) -> c = (f) => (b, a) => f(a, b)

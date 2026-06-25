@@ -119,6 +119,7 @@ fn builtin_apply_with_closure() {
         func: runtime::FuncPtr::Builtin(Arc::new(echo)),
         captures: Arc::new([]),
         arity,
+        call_arg_types: Arc::new([]),
     };
     let closure = Value::Closure(Arc::new(closure_data));
     let result = registry.execute("apply", &[closure, Value::I32(42)]);

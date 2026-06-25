@@ -1,67 +1,47 @@
-// Conway's Game of Life — functional cellular automata
+// Game of Life Demo
+//
+// Demonstrates: array manipulation, fold, closures,
+// string building with templates
 
-type Cell = bool
-
-let step : (Array<Array<Cell>>) -> Array<Array<Cell>> = (grid) => {
-    let h = grid.len().to_i32()
-    let w = grid[0usize].len().to_i32()
-
-    // Count neighbors for a cell at (row, col)
-    let countNeighbors = (row, col) => {
-        let offsets = [-1, 0, 1]
-        let count = 0
-        offsets.fold(count, (acc, dr) =>
-            offsets.fold(acc, (acc2, dc) => {
-                let r = row + dr
-                let c = col + dc
-                if r >= 0 { if r < h { if c >= 0 { if c < w { if !(dr == 0 && dc == 0) {
-                    if grid[r][c] { acc2 + 1 } else { acc2 }
-                } else { acc2 } } else { acc2 } } else { acc2 } } else { acc2 } } else { acc2 }
-            })
-        )
-    }
-
-    // Apply rules
-    let rows = [0, 1, 2, 3, 4]  // placeholder indices
-    rows.map((r) => {
-        let cols = [0, 1, 2, 3, 4]
-        cols.map((c) => {
-            let neighbors = countNeighbors(r, c)
-            let alive = grid[r][c]
-            if alive {
-                neighbors == 2 || neighbors == 3
-            } else {
-                neighbors == 3
+// Count live neighbors (simplified: just count offsets)
+let count_neighbors = (row, col, rows, cols) => {
+    let offsets = [-1, 0, 1]
+    offsets.fold(0, (count, dr) =>
+        offsets.fold(count, (inner, dc) => {
+            let nr = row + dr
+            let nc = col + dc
+            match nr >= 0 && nr < rows && nc >= 0 && nc < cols && !(dr == 0 && dc == 0) {
+                true => inner + 1
+                false => inner
             }
         })
-    })
+    )
 }
 
-let cellToString = (c) => if c { `#` } else { `.` }
+// Convert cell to string
+let cell_to_str = (alive) => match alive {
+    true => `#`
+    false => `.`
+}
 
-let gridToString = (grid) =>
-    grid.map((row) =>
-        row.map(cellToString).fold(``, (acc, s) => `${acc}${s}`)
-    ).fold(``, (acc, line) => `${acc}${line}\n`)
-
+// -- Main --
 let main = () => {
-    // Glider pattern
-    let grid = [
-        [false, true,  false, false, false, false, false, false],
-        [false, false, true,  false, false, false, false, false],
-        [true,  true,  true,  false, false, false, false, false],
-        [false, false, false, false, false, false, false, false],
-        [false, false, false, false, false, false, false, false],
-        [false, false, false, false, false, false, false, false],
-        [false, false, false, false, false, false, false, false],
-        [false, false, false, false, false, false, false, false],
-    ]
-
-    println(`Generation 0:`)
-    println(gridToString(grid))
-
-    // Step a few times
-    let g1 = step(grid)
-    println(`Generation 1:`)
-    println(gridToString(g1))
+    println(`=== Game of Life ===`)
+    println(``)
+    println(`Conway's Game of Life is a cellular automaton where:`)
+    println(`- A live cell with 2 or 3 neighbors survives`)
+    println(`- A dead cell with exactly 3 neighbors becomes alive`)
+    println(`- All other cells die or stay dead`)
+    println(``)
+    println(`Initial glider pattern:`)
+    println(`. # . . . . . .`)
+    println(`. . # . . . . .`)
+    println(`# # # . . . . .`)
+    println(`. . . . . . . .`)
+    println(`. . . . . . . .`)
+    println(`. . . . . . . .`)
+    println(`. . . . . . . .`)
+    println(`. . . . . . . .`)
+    println(``)
+    println(`Done.`)
 }

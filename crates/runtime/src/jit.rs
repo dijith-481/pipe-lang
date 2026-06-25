@@ -27,6 +27,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::value::JitArgType;
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::immediates::{Ieee32, Ieee64};
 use cranelift_codegen::ir::types::{self, I32};
@@ -403,6 +404,24 @@ pub fn compile_ir(ir_module: &IrModule) -> Result<CompiledModule, JitError> {
     }
 
     module.finalize_definitions().map_err(JitError::from)?;
+
+    // Register parameter types for all compiled functions so the stdlib
+    // can serialize arguments when calling JIT closures.
+    for (name, func_id, _) in &func_ids {
+        let code_ptr = module.get_finalized_function(*func_id);
+        let address = code_ptr as usize;
+        if let Some(param_tys) = fn_param_types.get(name) {
+            // Skip the first two params (args_buf, ret_buf) — those are the
+            // calling convention, not user-visible parameters.
+            // The actual user params are everything after captures in the
+            // function's IR params. For now, register all non-buffer params.
+            let jit_param_types: Vec<JitArgType> = param_tys
+                .iter()
+                .filter_map(|ty| ir_type_tag(ty).map(JitArgType::from_type_tag))
+                .collect();
+            crate::value::register_jit_param_types(address, jit_param_types);
+        }
+    }
 
     let (main_id, main_return_type) = func_ids
         .iter()
@@ -3693,6 +3712,7 @@ fn value_to_ret_buf(value: crate::value::Value, ret: *mut u8) {
     let (raw, tag): (i64, u32) = match value {
         RuntimeValue::I32(n) => (n as i64, 2),
         RuntimeValue::I64(n) => (n, 3),
+        RuntimeValue::Usize(n) => (n as i64, 3),
         RuntimeValue::F64(f) => (f.to_bits() as i64, 9),
         RuntimeValue::Bool(b) => (i64::from(b), 10),
         RuntimeValue::Unit => (0, 12),
@@ -3882,6 +3902,7 @@ unsafe extern "C" fn pipe_rt_box_value_jit(ptr: u64, desc_ptr: u64, desc_len: u3
                     func,
                     captures: captures.into(),
                     arity: capture_count,
+                    call_arg_types: std::sync::Arc::from([]),
                 }))
             }
             17 => {
@@ -3953,6 +3974,7 @@ unsafe extern "C" fn pipe_rt_unbox_value_jit(ptr: u64, _desc_ptr: u64, _desc_len
         match val {
             V::I32(n) => n.to_le_bytes().to_vec(),
             V::I64(n) => n.to_le_bytes().to_vec(),
+            V::Usize(n) => (n as u64).to_le_bytes().to_vec(),
             V::F64(f) => f.to_bits().to_le_bytes().to_vec(),
             V::Bool(b) => vec![b as u8],
             V::Unit => vec![],

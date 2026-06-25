@@ -4,84 +4,36 @@
 // string processing, Option/Result, pattern matching, closures
 //
 // In v0.1, inputs are simulated since stdin effects are evaluated
-// immediately. A real REPL would call readLine() in a loop.
-
-// Supported operations
-type Expr =
-  | Num(f64)
-  | Add(Expr, Expr)
-  | Sub(Expr, Expr)
-  | Mul(Expr, Expr)
-  | Div(Expr, Expr)
+// immediately. A real REPL would call read_line() in a loop.
 
 // Parse a number from a string
-let parseNum = (s) => {
+let parse_num = (s) => {
     let trimmed = s.trim()
     match trimmed.parse_i32() {
         Ok(n) => Some(to_f64(n))
-        Err(_) => match trimmed {
-            // Try parsing as float via to_f64
-            s => Some(0.0)  // simplified: always 0 for v0.1
-        }
+        Err(_) => None
     }
 }
 
-// Simple expression evaluation (no parser — build expressions directly)
-let eval = (expr) => match expr {
-    Num(v)       => Ok(v)
-    Add(Num(l), Num(r)) => Ok(l + r)
-    Sub(Num(l), Num(r)) => Ok(l - r)
-    Mul(Num(l), Num(r)) => Ok(l * r)
-    Div(Num(l), Num(r)) =>
-        match r == 0.0 {
-            true  => Err(`division by zero`)
-            false => Ok(l / r)
-        }
-    Add(l, r) => eval(l).flatMap((lv) => eval(r).flatMap((rv) => Ok(lv + rv)))
-    Sub(l, r) => eval(l).flatMap((lv) => eval(r).flatMap((rv) => Ok(lv - rv)))
-    Mul(l, r) => eval(l).flatMap((lv) => eval(r).flatMap((rv) => Ok(lv * rv)))
-    Div(l, r) => eval(l).flatMap((lv) => eval(r).flatMap((rv) =>
-        match rv == 0.0 {
-            true  => Err(`division by zero`)
-            false => Ok(lv / rv)
-        }
-    ))
-}
-
-let exprToStr = (e) => match e {
-    Num(v)       => to_str(v)
-    Add(l, r)    => `(${exprToStr(l)} + ${exprToStr(r)})`
-    Sub(l, r)    => `(${exprToStr(l)} - ${exprToStr(r)})`
-    Mul(l, r)    => `(${exprToStr(l)} * ${exprToStr(r)})`
-    Div(l, r)    => `(${exprToStr(l)} / ${exprToStr(r)})`
-}
-
-// REPL: process one expression
-let processLine = (line) => {
+// Simple expression evaluation: parse "a + b" format
+let eval_line = (line) => {
     let trimmed = line.trim()
     match trimmed {
-        ``       => Ok(())    // skip empty
-        `exit`   => Err(`bye`)  // exit signal
+        ``       => Ok(0.0)
+        `exit`   => Err(`bye`)
         `quit`   => Err(`bye`)
         line => {
-            // For v0.1, parse input as a simple arithmetic string
-            // and construct the expression
             let parts = trimmed.split(`+`)
             match parts.len() {
                 2 => {
-                    let l = match parts[0].trim().parse_i32() { Ok(n) => to_f64(n) Err(_) => 0.0 }
-                    let r = match parts[1].trim().parse_i32() { Ok(n) => to_f64(n) Err(_) => 0.0 }
-                    let expr = Add(Num(l), Num(r))
-                    match eval(expr) {
-                        Ok(v) => { println(`  => ${to_str(v)}`); Ok(()) }
-                        Err(m) => { println(`  Error: ${m}`); Ok(()) }
-                    }
+                    let l = match parts[0].trim().parse_i32() { Ok(n) => to_f64(n) _ => 0.0 }
+                    let r = match parts[1].trim().parse_i32() { Ok(n) => to_f64(n) _ => 0.0 }
+                    Ok(l + r)
                 }
                 _ => {
-                    // Try as single number
                     match trimmed.parse_i32() {
-                        Ok(n) => { println(`  => ${to_str(n)}`); Ok(()) }
-                        Err(_) => { println(`  Unknown expression: ${trimmed}`); Ok(()) }
+                        Ok(n) => Ok(to_f64(n))
+                        Err(_) => { println(`  Unknown: ${trimmed}`); Ok(0.0) }
                     }
                 }
             }
@@ -89,17 +41,31 @@ let processLine = (line) => {
     }
 }
 
+// Process one line
+let process_line = (line) => {
+    match eval_line(line) {
+        Ok(v) => { println(`  => ${to_str(v)}`); Ok(()) }
+        Err(m) => { println(`  ${m}`); Err(m) }
+    }
+}
+
+// Helper: get nth element using fold
+let nth = (arr, n) =>
+    arr.fold({ idx: 0, result: `` }, (acc, elem) =>
+        if acc.idx == n { { idx: acc.idx + 1, result: elem } }
+        else { idx: acc.idx + 1, result: acc.result }
+    ).result
+
 // REPL loop (top-level recursion)
-let replLoop = (count) => {
-    println(`[${to_str(count)}] > `)  // prompt
-    // Simulated inputs for v0.1
+let repl_loop = (count) => {
+    println(`[${to_str(count)}] > `)
     let inputs = [`42`, `3 + 4`, `10 + 20`, `exit`]
     match count < inputs.len() {
         true => {
-            let input = inputs[count]
-            println(input)  // echo input
-            match processLine(input) {
-                Ok(_) => replLoop(count + 1)
+            let input = nth(inputs, count)
+            println(input)
+            match process_line(input) {
+                Ok(_) => repl_loop(count + 1)
                 Err(_) => println(`bye`)
             }
         }
@@ -113,5 +79,5 @@ let main = () => {
     println(`Enter expressions like: 3 + 4`)
     println(`Type 'exit' to quit`)
     println(``)
-    replLoop(0)
+    repl_loop(0)
 }

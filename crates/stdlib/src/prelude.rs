@@ -53,8 +53,11 @@ pub fn prelude_builtins() -> Vec<Arc<dyn BuiltinFunction>> {
         Arc::new(string::StrConcat),
         Arc::new(string::StrLen),
         Arc::new(string::StrSplit),
+        Arc::new(string::Split),
         Arc::new(string::StrTrim),
+        Arc::new(string::Trim),
         Arc::new(string::StrParseI32),
+        Arc::new(string::ParseI32),
         // IO
         Arc::new(io::IoPrintln),
         Arc::new(io::IoPrint),
@@ -64,6 +67,7 @@ pub fn prelude_builtins() -> Vec<Arc<dyn BuiltinFunction>> {
         Arc::new(option::OptionMap),
         Arc::new(option::OptionFlatMap),
         Arc::new(option::OptionUnwrapOr),
+        Arc::new(option::UnwrapOr),
         // Result combinators
         Arc::new(rslt::ResultMap),
         Arc::new(rslt::ResultFlatMap),
@@ -95,6 +99,7 @@ fn closure_value(builtin: Arc<dyn BuiltinFunction>, arity: usize) -> Value {
         func: FuncPtr::Builtin(builtin),
         captures: Arc::from([]),
         arity,
+        call_arg_types: Arc::from([]),
     }))
 }
 
@@ -359,10 +364,11 @@ impl BuiltinFunction for Take {
             other => return Err(format!("`take` expected Array, got {other:?}")),
         };
         let n = match &args[1] {
-            Value::I32(n) => *n,
-            other => return Err(format!("`take` expected I32, got {other:?}")),
+            Value::I32(n) => *n as usize,
+            Value::Usize(n) => *n,
+            other => return Err(format!("`take` expected I32 or Usize, got {other:?}")),
         };
-        let n = n.max(0).min(arr.len() as i32) as usize;
+        let n = n.min(arr.len());
         Ok(Value::array(arr[..n].to_vec()))
     }
 }
@@ -447,6 +453,7 @@ impl BuiltinFunction for EffectMap {
             func: FuncPtr::Builtin(Arc::new(EffectMapInner(effect, func))),
             captures: Arc::from([]),
             arity: 0,
+            call_arg_types: Arc::from([]),
         })))
     }
 }
@@ -499,6 +506,7 @@ impl BuiltinFunction for EffectFlatMap {
             func: FuncPtr::Builtin(Arc::new(EffectFlatMapInner(effect, func))),
             captures: Arc::from([]),
             arity: 0,
+            call_arg_types: Arc::from([]),
         })))
     }
 }

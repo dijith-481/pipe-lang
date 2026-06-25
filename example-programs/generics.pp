@@ -19,12 +19,12 @@ let pipe : ((a) -> b, (b) -> c) -> (a) -> c = (f, g) => (x) => g(f(x))
 let apply : ((a) -> b, a) -> b = (f, x) => f(x)
 
 // Type signatures with generics
-let mapOption = (opt, f) => match opt {
+let map_option = (opt, f) => match opt {
     None    => None
     Some(x) => Some(f(x))
 }
 
-let mapResult = (result, f) => match result {
+let map_result = (result, f) => match result {
     Err(e)  => Err(e)
     Ok(v)   => Ok(f(v))
 }
@@ -39,16 +39,16 @@ let main = () => {
     // Compose
     let double = (n) => n * 2
     let increment = (n) => n + 1
-    let doubleThenInc = compose(increment, double)
-    println(`doubleThenInc(5) = ${doubleThenInc(5)}`)
+    let double_then_inc = compose(increment, double)
+    println(`double_then_inc(5) = ${double_then_inc(5)}`)
 
     // Map over Option
     let opt = Some(10)
-    let mapped = mapOption(opt, (n) => n * 3)
-    println(`mapOption(Some(10), *3) = ${mapped}`)
+    let mapped = map_option(opt, (n) => n * 3)
+    println(`map_option(Some(10), *3) = ${mapped}`)
 
     // Map over Result
     let res = Ok(42)
-    let mappedRes = mapResult(res, (n) => n - 10)
-    println(`mapResult(Ok(42), -10) = ${mappedRes}`)
+    let mapped_res = map_result(res, (n) => n - 10)
+    println(`map_result(Ok(42), -10) = ${mapped_res}`)
 }

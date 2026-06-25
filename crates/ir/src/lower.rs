@@ -65,13 +65,20 @@ fn mono_to_ir_inner(ty: &MonoType, tag_variants: Option<&TagVariants>) -> IrType
         MonoType::Effect(inner) => IrType::Effect(Box::new(mono_to_ir_inner(inner, tag_variants))),
         MonoType::Tag { name, payload } => {
             if let Some(variants) = tag_variants.and_then(|tv| tv.get(name.as_str())) {
+                // Use the combined payload from tag_variants (which has all
+                // variant payloads flattened) instead of the MonoType payload
+                // (which only has the constructor's own payload).
+                let combined: Vec<MonoType> = variants
+                    .iter()
+                    .flat_map(|(_, ptys)| ptys.iter().cloned())
+                    .collect();
                 let mut offset = 0;
                 let ir_variants: Vec<TagVariant> = variants
                     .iter()
                     .enumerate()
                     .map(|(i, (vname, vtemplate))| {
                         let count = vtemplate.len();
-                        let vpayload: Vec<IrType> = payload[offset..offset + count]
+                        let vpayload: Vec<IrType> = combined[offset..offset + count]
                             .iter()
                             .map(|t| mono_to_ir_inner(t, tag_variants))
                             .collect();
@@ -305,6 +312,11 @@ impl<'a> FunctionBuilder<'a> {
     /// Returns the `IrType` for an expression span using the type map.
     fn expr_type(&self, span: ast::span::Span) -> IrType {
         expr_ir_type(span, self.type_map, Some(self.tag_variants))
+    }
+
+    /// Converts a `MonoType` to `IrType` using this builder's tag_variants.
+    fn mono_to_ir(&self, ty: &MonoType) -> IrType {
+        mono_to_ir_inner(ty, Some(self.tag_variants))
     }
 }
 
@@ -719,7 +731,8 @@ fn lower_expr<'src>(
                         })
                     })
                     .unwrap_or(IrType::I32);
-                inner_fb.func.params.push((v, cap.clone(), cap_ty));
+                inner_fb.func.params.push((v, cap.clone(), cap_ty.clone()));
+                inner_fb.value_types.insert(v, cap_ty);
                 inner_fb.bind(cap.clone(), v);
             }
             // Declared params — resolve type from annotation, type_map, or default I32.
@@ -728,19 +741,24 @@ fn lower_expr<'src>(
             let lambda_mono = fb.type_map.get(span);
             for (pidx, p) in params.iter().enumerate() {
                 let v = inner_fb.alloc_value();
-                let param_ty = p
-                    .ty
-                    .and_then(|ann| typechecker::infer::type_expr_to_mono(ann).ok())
-                    .as_ref()
-                    .map(mono_to_ir)
-                    .or_else(|| {
-                        lambda_mono.and_then(|mono| match mono {
-                            MonoType::Func { params: ptys, .. } => ptys.get(pidx).map(mono_to_ir),
-                            _ => None,
+                let param_ty =
+                    p.ty.and_then(|ann| typechecker::infer::type_expr_to_mono(ann).ok())
+                        .as_ref()
+                        .map(|t| fb.mono_to_ir(t))
+                        .or_else(|| {
+                            lambda_mono.and_then(|mono| match mono {
+                                MonoType::Func { params: ptys, .. } => {
+                                    ptys.get(pidx).map(|t| fb.mono_to_ir(t))
+                                }
+                                _ => None,
+                            })
                         })
-                    })
-                    .unwrap_or(IrType::I32);
-                inner_fb.func.params.push((v, p.name.into(), param_ty));
+                        .unwrap_or(IrType::I32);
+                inner_fb
+                    .func
+                    .params
+                    .push((v, p.name.into(), param_ty.clone()));
+                inner_fb.value_types.insert(v, param_ty);
                 inner_fb.bind(p.name.into(), v);
             }
 
@@ -1030,8 +1048,39 @@ fn lower_pattern<'src>(
 fn bind_pattern_local<'src>(fb: &mut FunctionBuilder<'_>, pat: &Pattern<'src>, v: ValueId) {
     match pat {
         Pattern::Binding(name, _) => fb.bind((*name).into(), v),
-        Pattern::Wildcard(_) => {}
-        _ => {}
+        Pattern::Wildcard(_) | Pattern::Literal(_, _) => {}
+        Pattern::Tuple { patterns, .. } => {
+            for (i, p) in patterns.iter().enumerate() {
+                let fv = fb.emit(Instruction::TagGet {
+                    value: v,
+                    index: i as u32,
+                });
+                bind_pattern_local(fb, p, fv);
+            }
+        }
+        Pattern::Constructor { fields, .. } => {
+            for (i, p) in fields.iter().enumerate() {
+                let fv = fb.emit(Instruction::TagGet {
+                    value: v,
+                    index: i as u32,
+                });
+                bind_pattern_local(fb, p, fv);
+            }
+        }
+        Pattern::Record { fields, .. } => {
+            for (i, f) in fields.iter().enumerate() {
+                let fv = fb.emit(Instruction::RecordGet {
+                    record: v,
+                    field: f.name.into(),
+                    field_index: i as u32,
+                });
+                if let Some(p) = f.pattern {
+                    bind_pattern_local(fb, p, fv);
+                } else {
+                    fb.bind(f.name.into(), fv);
+                }
+            }
+        }
     }
 }
 
@@ -1141,7 +1190,7 @@ fn lower_decl<'src>(
                             .ty
                             .and_then(|ann| typechecker::infer::type_expr_to_mono(ann).ok())
                             .as_ref()
-                            .map(mono_to_ir)
+                            .map(|t| fb.mono_to_ir(t))
                             .or_else(|| {
                                 // Use monomorphized param type if available.
                                 if let Some(tys) = mono_param_tys {
@@ -1151,13 +1200,14 @@ fn lower_decl<'src>(
                                 type_map.get(span).and_then(|mono| match mono {
                                     MonoType::Func { params: ptys, .. } => {
                                         let idx = params.iter().position(|q| q.name == p.name)?;
-                                        Some(mono_to_ir(&ptys[idx]))
+                                        Some(fb.mono_to_ir(&ptys[idx]))
                                     }
                                     _ => None,
                                 })
                             })
                             .unwrap_or(IrType::I32);
-                        fb.func.params.push((v, p.name.into(), param_ty));
+                        fb.func.params.push((v, p.name.into(), param_ty.clone()));
+                        fb.value_types.insert(v, param_ty);
                         fb.bind(p.name.into(), v);
                     }
                     let body_v = lower_expr(&mut fb, body, &mut hoisted)?;
@@ -1283,8 +1333,14 @@ fn monomorphize_param_types(
                 let mut resolved_params = Vec::with_capacity(ptys.len());
                 for (i, pty) in ptys.iter().enumerate() {
                     if mono_type_has_vars(pty) {
-                        let concrete = resolve_var_from_call_sites(i, site_arg_lists);
-                        resolved_params.push(concrete);
+                        if site_arg_lists.is_empty() {
+                            // No call sites — use the type annotation's type
+                            // instead of defaulting to Str.
+                            resolved_params.push(mono_to_ir(pty));
+                        } else {
+                            let concrete = resolve_var_from_call_sites(i, site_arg_lists);
+                            resolved_params.push(concrete);
+                        }
                     } else {
                         resolved_params.push(mono_to_ir(pty));
                     }
@@ -1722,7 +1778,7 @@ fn resolve_var_from_call_sites(param_idx: usize, call_site_arg_lists: &[Vec<IrTy
 pub fn lower(typed: &TypedProgram<'_>) -> Result<IrModule, LowerError> {
     let mut module = IrModule::new();
 
-    let globals: HashSet<SmolStr> = typed
+    let mut globals: HashSet<SmolStr> = typed
         .ast
         .decls
         .iter()
@@ -1731,6 +1787,46 @@ pub fn lower(typed: &TypedProgram<'_>) -> Result<IrModule, LowerError> {
             _ => None,
         })
         .collect();
+
+    // Add known builtin names so the lowerer emits CallNamed for them
+    // instead of returning Unbound. These are resolved at runtime by
+    // the BuiltinRegistry.
+    let builtin_names = [
+        "id",
+        "const",
+        "flip",
+        "compose",
+        "pipe",
+        "apply",
+        "map",
+        "filter",
+        "fold",
+        "flatMap",
+        "concat",
+        "prepend",
+        "len",
+        "head",
+        "tail",
+        "split",
+        "trim",
+        "parse_i32",
+        "println",
+        "print",
+        "read_line",
+        "readFile",
+        "to_i64",
+        "to_i32",
+        "to_f64",
+        "to_str",
+        "drop",
+        "take",
+        "sqrt",
+        "unwrap",
+        "unwrap_or",
+    ];
+    for name in builtin_names {
+        globals.insert((*name).into());
+    }
 
     // Track globals defined with a non-lambda expression (e.g. `let t = mk(5)`).
     // These are closure VALUES, not function definitions. When used as the
