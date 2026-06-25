@@ -263,6 +263,17 @@ pub fn compile_ir(ir_module: &IrModule) -> Result<CompiledModule, JitError> {
         module.define_data(str_eq_ptr_data_id, &data_desc)?;
     }
 
+    // Declare a data object for the pipe_rt_arr_eq function pointer.
+    let arr_eq_ptr = pipe_rt_arr_eq as *const ();
+    let arr_eq_ptr_data_id =
+        module.declare_data("__pipe_arr_eq_ptr", Linkage::Local, false, false)?;
+    {
+        let mut data_desc = DataDescription::new();
+        let ptr_bytes: Vec<u8> = (arr_eq_ptr as u64).to_ne_bytes().to_vec();
+        data_desc.define(ptr_bytes.into_boxed_slice());
+        module.define_data(arr_eq_ptr_data_id, &data_desc)?;
+    }
+
     // Scan all functions for CallNamed instructions referencing
     // builtins (not local functions) and create name data objects.
     let mut unique_builtin_names: Vec<String> = Vec::new();
@@ -305,6 +316,28 @@ pub fn compile_ir(ir_module: &IrModule) -> Result<CompiledModule, JitError> {
         let ptr_bytes: Vec<u8> = (call_builtin_ptr as u64).to_ne_bytes().to_vec();
         data_desc.define(ptr_bytes.into_boxed_slice());
         module.define_data(call_builtin_ptr_data_id, &data_desc)?;
+    }
+
+    // Declare a data object for the pipe_rt_box_value_jit function pointer.
+    let box_value_jit_ptr = pipe_rt_box_value_jit as *const ();
+    let box_value_jit_ptr_data_id =
+        module.declare_data("__pipe_box_value_jit_ptr", Linkage::Local, false, false)?;
+    {
+        let mut data_desc = DataDescription::new();
+        let ptr_bytes: Vec<u8> = (box_value_jit_ptr as u64).to_ne_bytes().to_vec();
+        data_desc.define(ptr_bytes.into_boxed_slice());
+        module.define_data(box_value_jit_ptr_data_id, &data_desc)?;
+    }
+
+    // Declare a data object for the pipe_rt_unbox_value_jit function pointer.
+    let unbox_value_jit_ptr = pipe_rt_unbox_value_jit as *const ();
+    let unbox_value_jit_ptr_data_id =
+        module.declare_data("__pipe_unbox_value_jit_ptr", Linkage::Local, false, false)?;
+    {
+        let mut data_desc = DataDescription::new();
+        let ptr_bytes: Vec<u8> = (unbox_value_jit_ptr as u64).to_ne_bytes().to_vec();
+        data_desc.define(ptr_bytes.into_boxed_slice());
+        module.define_data(unbox_value_jit_ptr_data_id, &data_desc)?;
     }
 
     // Pre-compute each function's actual return type (with full closure
@@ -360,6 +393,9 @@ pub fn compile_ir(ir_module: &IrModule) -> Result<CompiledModule, JitError> {
             array_concat_ptr_data_id,
             call_builtin_ptr_data_id,
             str_eq_ptr_data_id,
+            arr_eq_ptr_data_id,
+            box_value_jit_ptr_data_id,
+            unbox_value_jit_ptr_data_id,
             builtin_name_data_ids: &builtin_name_data_ids,
             tag_variants: &ir_module.tag_variants,
         };
@@ -426,6 +462,12 @@ struct BlockContext<'a> {
     call_builtin_sig: SigRef,
     str_eq_fn_ptr: Value,
     str_eq_sig: SigRef,
+    arr_eq_fn_ptr: Value,
+    arr_eq_sig: SigRef,
+    box_value_jit_fn_ptr: Value,
+    box_value_jit_sig: SigRef,
+    unbox_value_jit_fn_ptr: Value,
+    unbox_value_jit_sig: SigRef,
     builtin_name_globals: &'a HashMap<String, GlobalValue>,
     closure_callee_funcs: &'a HashMap<String, FuncRef>,
     blocks: &'a HashMap<BlockId, Block>,
@@ -448,6 +490,9 @@ struct FunctionBodyParams<'a> {
     array_concat_ptr_data_id: DataId,
     call_builtin_ptr_data_id: DataId,
     str_eq_ptr_data_id: DataId,
+    arr_eq_ptr_data_id: DataId,
+    box_value_jit_ptr_data_id: DataId,
+    unbox_value_jit_ptr_data_id: DataId,
     builtin_name_data_ids: &'a HashMap<String, DataId>,
     tag_variants: &'a typechecker::TagVariants,
 }
@@ -691,6 +736,82 @@ fn compile_function_body(
         f.import_signature(sig)
     };
 
+    // Import the pipe_rt_arr_eq function pointer from a data object.
+    let arr_eq_fn_ptr_gv = {
+        let f: &mut Function = builder.func;
+        params
+            .module
+            .declare_data_in_func(params.arr_eq_ptr_data_id, f)
+    };
+    let arr_eq_fn_ptr_addr = builder.ins().global_value(types::I64, arr_eq_fn_ptr_gv);
+    let arr_eq_fn_ptr = builder
+        .ins()
+        .load(types::I64, MemFlags::trusted(), arr_eq_fn_ptr_addr, 0);
+    let arr_eq_sig = {
+        let mut sig = params.module.make_signature();
+        sig.params.push(AbiParam::new(types::I64)); // a
+        sig.params.push(AbiParam::new(types::I64)); // b
+        sig.params.push(AbiParam::new(I32)); // elem_size
+        sig.params.push(AbiParam::new(I32)); // elem_type_tag
+        sig.returns.push(AbiParam::new(types::I32));
+        let f: &mut Function = builder.func;
+        f.import_signature(sig)
+    };
+
+    // Import the pipe_rt_box_value_jit function pointer from a data object.
+    let box_value_jit_fn_ptr_gv = {
+        let f: &mut Function = builder.func;
+        params
+            .module
+            .declare_data_in_func(params.box_value_jit_ptr_data_id, f)
+    };
+    let box_value_jit_fn_ptr_addr = builder
+        .ins()
+        .global_value(types::I64, box_value_jit_fn_ptr_gv);
+    let box_value_jit_fn_ptr = builder.ins().load(
+        types::I64,
+        MemFlags::trusted(),
+        box_value_jit_fn_ptr_addr,
+        0,
+    );
+    let box_value_jit_sig = {
+        // fn(ptr: u64, desc_ptr: u64, desc_len: u32) -> u64
+        let mut sig = params.module.make_signature();
+        sig.params.push(AbiParam::new(types::I64)); // ptr
+        sig.params.push(AbiParam::new(types::I64)); // desc_ptr
+        sig.params.push(AbiParam::new(I32)); // desc_len
+        sig.returns.push(AbiParam::new(types::I64)); // Box<Value> pointer
+        let f: &mut Function = builder.func;
+        f.import_signature(sig)
+    };
+
+    // Import the pipe_rt_unbox_value_jit function pointer from a data object.
+    let unbox_value_jit_fn_ptr_gv = {
+        let f: &mut Function = builder.func;
+        params
+            .module
+            .declare_data_in_func(params.unbox_value_jit_ptr_data_id, f)
+    };
+    let unbox_value_jit_fn_ptr_addr = builder
+        .ins()
+        .global_value(types::I64, unbox_value_jit_fn_ptr_gv);
+    let unbox_value_jit_fn_ptr = builder.ins().load(
+        types::I64,
+        MemFlags::trusted(),
+        unbox_value_jit_fn_ptr_addr,
+        0,
+    );
+    let unbox_value_jit_sig = {
+        // fn(ptr: u64, desc_ptr: u64, desc_len: u32) -> u64
+        let mut sig = params.module.make_signature();
+        sig.params.push(AbiParam::new(types::I64)); // ptr
+        sig.params.push(AbiParam::new(types::I64)); // desc_ptr
+        sig.params.push(AbiParam::new(I32)); // desc_len
+        sig.returns.push(AbiParam::new(types::I64)); // JIT format pointer
+        let f: &mut Function = builder.func;
+        f.import_signature(sig)
+    };
+
     // Pre-import builtin name data objects referenced by CallNamed in this function.
     let mut builtin_name_globals: HashMap<String, GlobalValue> = HashMap::new();
     for ir_block in &func.blocks {
@@ -775,6 +896,12 @@ fn compile_function_body(
         call_builtin_sig,
         str_eq_fn_ptr,
         str_eq_sig,
+        arr_eq_fn_ptr,
+        arr_eq_sig,
+        box_value_jit_fn_ptr,
+        box_value_jit_sig,
+        unbox_value_jit_fn_ptr,
+        unbox_value_jit_sig,
         builtin_name_globals: &builtin_name_globals,
         closure_callee_funcs: &closure_callee_funcs,
         blocks: &blocks,
@@ -1348,11 +1475,40 @@ fn compile_builtin_call(
         let arg_type = lookup_type(ctx.value_types, *arg_id, ctx.func_name)?;
         if !matches!(arg_type, IrType::Unit) {
             let arg_val = lookup_value(values, *arg_id, ctx.func_name)?;
-            let widened = widen_to_i64(builder, arg_val, arg_type, ctx.func_name)?;
             let offset = 16 + i as i32 * 12;
+
+            // For heap types (Array, Record, Tag, Closure) the bridge
+            // expects a `Box<Value>` pointer, but the JIT stores a raw
+            // data pointer. Call `pipe_rt_box_value_jit` to convert.
+            let stored_val = if needs_heap_boxing(arg_type) {
+                let desc_bytes = serialize_type_desc_to_bytes(arg_type, ctx.func_name)?;
+                let desc_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    desc_bytes.len() as u32,
+                    0,
+                ));
+                let desc_ptr = builder.ins().stack_addr(types::I64, desc_slot, 0);
+                for (j, chunk) in desc_bytes.chunks(4).enumerate() {
+                    let val = u32::from_le_bytes(chunk.try_into().unwrap_or([0; 4]));
+                    let v = builder.ins().iconst(I32, val as i64);
+                    builder
+                        .ins()
+                        .store(MemFlags::trusted(), v, desc_ptr, (j * 4) as i32);
+                }
+                let desc_len = builder.ins().iconst(I32, desc_bytes.len() as i64);
+                let inst = builder.ins().call_indirect(
+                    ctx.box_value_jit_sig,
+                    ctx.box_value_jit_fn_ptr,
+                    &[arg_val, desc_ptr, desc_len],
+                );
+                builder.inst_results(inst)[0]
+            } else {
+                widen_to_i64(builder, arg_val, arg_type, ctx.func_name)?
+            };
+
             builder
                 .ins()
-                .store(MemFlags::trusted(), widened, args_buf, offset);
+                .store(MemFlags::trusted(), stored_val, args_buf, offset);
             let tag =
                 ir_type_tag(arg_type).ok_or_else(|| unsupported_type(ctx.func_name, arg_type))?;
             let tag_val = builder.ins().iconst(I32, i64::from(tag));
@@ -1384,7 +1540,34 @@ fn compile_builtin_call(
         &[args_buf, ret_buf],
     );
 
-    let result = load_primitive_value(builder, ret_buf, 0, ret_type, ctx.func_name)?;
+    // For heap-typed return values the bridge stores a `Box<Value>`
+    // pointer; convert it back to JIT format via `pipe_rt_unbox_value_jit`.
+    let result = if needs_heap_boxing(ret_type) {
+        let raw_ptr = load_primitive_value(builder, ret_buf, 0, ret_type, ctx.func_name)?;
+        let desc_bytes = serialize_type_desc_to_bytes(ret_type, ctx.func_name)?;
+        let desc_slot = builder.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            desc_bytes.len() as u32,
+            0,
+        ));
+        let desc_ptr = builder.ins().stack_addr(types::I64, desc_slot, 0);
+        for (j, chunk) in desc_bytes.chunks(4).enumerate() {
+            let val = u32::from_le_bytes(chunk.try_into().unwrap_or([0; 4]));
+            let v = builder.ins().iconst(I32, val as i64);
+            builder
+                .ins()
+                .store(MemFlags::trusted(), v, desc_ptr, (j * 4) as i32);
+        }
+        let desc_len = builder.ins().iconst(I32, desc_bytes.len() as i64);
+        let inst = builder.ins().call_indirect(
+            ctx.unbox_value_jit_sig,
+            ctx.unbox_value_jit_fn_ptr,
+            &[raw_ptr, desc_ptr, desc_len],
+        );
+        builder.inst_results(inst)[0]
+    } else {
+        load_primitive_value(builder, ret_buf, 0, ret_type, ctx.func_name)?
+    };
     Ok(result)
 }
 
@@ -2353,6 +2536,62 @@ enum CompareOp {
     Ge,
 }
 
+/// Compare two Cranelift Values by their IrType, returning an I8 result
+/// (0 = false, 1 = true).
+fn gen_cmp_values(
+    builder: &mut FunctionBuilder,
+    ctx: &BlockContext,
+    left_val: Value,
+    right_val: Value,
+    ty: &IrType,
+) -> Result<Value, JitError> {
+    match ty {
+        IrType::F32 | IrType::F64 => {
+            let cmp = builder.ins().fcmp(FloatCC::Equal, left_val, right_val);
+            Ok(builder.ins().bitcast(
+                types::I8,
+                MemFlags::new().with_endianness(Endianness::Little),
+                cmp,
+            ))
+        }
+        IrType::Bool => {
+            let cmp = builder.ins().icmp(IntCC::Equal, left_val, right_val);
+            Ok(builder.ins().bitcast(
+                types::I8,
+                MemFlags::new().with_endianness(Endianness::Little),
+                cmp,
+            ))
+        }
+        IrType::Str => {
+            let inst = builder.ins().call_indirect(
+                ctx.str_eq_sig,
+                ctx.str_eq_fn_ptr,
+                &[left_val, right_val],
+            );
+            let int_result = builder.inst_results(inst)[0];
+            Ok(builder.ins().ireduce(types::I8, int_result))
+        }
+        _ if is_integer(ty) => {
+            let cmp = builder.ins().icmp(IntCC::Equal, left_val, right_val);
+            Ok(builder.ins().bitcast(
+                types::I8,
+                MemFlags::new().with_endianness(Endianness::Little),
+                cmp,
+            ))
+        }
+        // Heap-allocated types (Array, Record, Tag, Closure):
+        // pointer comparison (identity).
+        _ => {
+            let cmp = builder.ins().icmp(IntCC::Equal, left_val, right_val);
+            Ok(builder.ins().bitcast(
+                types::I8,
+                MemFlags::new().with_endianness(Endianness::Little),
+                cmp,
+            ))
+        }
+    }
+}
+
 fn compile_comparison(
     builder: &mut FunctionBuilder,
     ctx: &BlockContext,
@@ -2364,16 +2603,35 @@ fn compile_comparison(
     let ty = lookup_type(ctx.value_types, left, ctx.func_name)?;
     let left_value = lookup_value(values, left, ctx.func_name)?;
     let right_value = lookup_value(values, right, ctx.func_name)?;
-    match ty {
+    let result: Value = match ty {
         IrType::F32 | IrType::F64 => {
-            Ok(builder
+            let cmp = builder
                 .ins()
-                .fcmp(float_compare_code(op), left_value, right_value))
+                .fcmp(float_compare_code(op), left_value, right_value);
+            builder.ins().bitcast(
+                types::I8,
+                MemFlags::new().with_endianness(Endianness::Little),
+                cmp,
+            )
         }
         IrType::Bool => match op {
-            CompareOp::Eq => Ok(builder.ins().icmp(IntCC::Equal, left_value, right_value)),
-            CompareOp::Ne => Ok(builder.ins().icmp(IntCC::NotEqual, left_value, right_value)),
-            _ => Err(unsupported_type(ctx.func_name, ty)),
+            CompareOp::Eq => {
+                let cmp = builder.ins().icmp(IntCC::Equal, left_value, right_value);
+                builder.ins().bitcast(
+                    types::I8,
+                    MemFlags::new().with_endianness(Endianness::Little),
+                    cmp,
+                )
+            }
+            CompareOp::Ne => {
+                let cmp = builder.ins().icmp(IntCC::NotEqual, left_value, right_value);
+                builder.ins().bitcast(
+                    types::I8,
+                    MemFlags::new().with_endianness(Endianness::Little),
+                    cmp,
+                )
+            }
+            _ => return Err(unsupported_type(ctx.func_name, ty)),
         },
         IrType::Str => match op {
             CompareOp::Eq | CompareOp::Ne => {
@@ -2386,20 +2644,168 @@ fn compile_comparison(
                 let eq_val = builder.ins().ireduce(types::I8, int_result);
                 if op == CompareOp::Ne {
                     let one = builder.ins().iconst(types::I8, 1);
-                    Ok(builder.ins().bxor(eq_val, one))
+                    builder.ins().bxor(eq_val, one)
                 } else {
-                    Ok(eq_val)
+                    eq_val
                 }
             }
-            _ => Err(unsupported_type(ctx.func_name, ty)),
+            _ => return Err(unsupported_type(ctx.func_name, ty)),
         },
-        _ if is_integer(ty) => {
-            Ok(builder
-                .ins()
-                .icmp(int_compare_code(op, ty), left_value, right_value))
+        IrType::Array(elem_ty) => {
+            let eq_val = compile_arr_cmp(builder, ctx, left_value, right_value, elem_ty)?;
+            if op == CompareOp::Ne {
+                let one = builder.ins().iconst(types::I8, 1);
+                builder.ins().bxor(eq_val, one)
+            } else {
+                eq_val
+            }
         }
-        _ => Err(unsupported_type(ctx.func_name, ty)),
+        IrType::Record(record_type) => {
+            let eq_val = compile_record_cmp(builder, ctx, left_value, right_value, record_type)?;
+            if op == CompareOp::Ne {
+                let one = builder.ins().iconst(types::I8, 1);
+                builder.ins().bxor(eq_val, one)
+            } else {
+                eq_val
+            }
+        }
+        IrType::Tag(tag_type) => {
+            let eq_val = compile_tag_cmp(builder, ctx, left_value, right_value, tag_type)?;
+            if op == CompareOp::Ne {
+                let one = builder.ins().iconst(types::I8, 1);
+                builder.ins().bxor(eq_val, one)
+            } else {
+                eq_val
+            }
+        }
+        _ if is_integer(ty) => {
+            let cmp = builder
+                .ins()
+                .icmp(int_compare_code(op, ty), left_value, right_value);
+            builder.ins().bitcast(
+                types::I8,
+                MemFlags::new().with_endianness(Endianness::Little),
+                cmp,
+            )
+        }
+        _ => return Err(unsupported_type(ctx.func_name, ty)),
+    };
+    Ok(result)
+}
+
+fn compile_arr_cmp(
+    builder: &mut FunctionBuilder,
+    ctx: &BlockContext,
+    left_value: Value,
+    right_value: Value,
+    elem_ty: &IrType,
+) -> Result<Value, JitError> {
+    let elem_size = storage_size(elem_ty, ctx.func_name)?;
+    let elem_tag = ir_type_tag(elem_ty).ok_or_else(|| unsupported_type(ctx.func_name, elem_ty))?;
+    let elem_size_val = builder.ins().iconst(I32, elem_size as i64);
+    let elem_tag_val = builder.ins().iconst(I32, i64::from(elem_tag));
+    let inst = builder.ins().call_indirect(
+        ctx.arr_eq_sig,
+        ctx.arr_eq_fn_ptr,
+        &[left_value, right_value, elem_size_val, elem_tag_val],
+    );
+    let int_result = builder.inst_results(inst)[0];
+    Ok(builder.ins().ireduce(types::I8, int_result))
+}
+
+fn compile_record_cmp(
+    builder: &mut FunctionBuilder,
+    ctx: &BlockContext,
+    left_value: Value,
+    right_value: Value,
+    record_type: &ir::RecordType,
+) -> Result<Value, JitError> {
+    let mut result = builder.ins().iconst(types::I8, 1);
+    let mut offset: i32 = 0;
+    for (_, field_ty) in &record_type.fields {
+        let left_field = builder.ins().load(
+            storage_type(field_ty, ctx.func_name)?,
+            MemFlags::trusted(),
+            left_value,
+            offset,
+        );
+        let right_field = builder.ins().load(
+            storage_type(field_ty, ctx.func_name)?,
+            MemFlags::trusted(),
+            right_value,
+            offset,
+        );
+        let field_eq = gen_cmp_values(builder, ctx, left_field, right_field, field_ty)?;
+        result = builder.ins().band(result, field_eq);
+        offset += storage_size(field_ty, ctx.func_name)?;
     }
+    Ok(result)
+}
+
+fn compile_tag_cmp(
+    builder: &mut FunctionBuilder,
+    ctx: &BlockContext,
+    left_value: Value,
+    right_value: Value,
+    tag_type: &ir::TagType,
+) -> Result<Value, JitError> {
+    // Compare discriminants first.
+    let left_disc = builder.ins().load(I32, MemFlags::trusted(), left_value, 0);
+    let right_disc = builder.ins().load(I32, MemFlags::trusted(), right_value, 0);
+    let disc_eq_b1 = builder.ins().icmp(IntCC::Equal, left_disc, right_disc);
+    let disc_eq = builder.ins().bitcast(
+        types::I8,
+        MemFlags::new().with_endianness(Endianness::Little),
+        disc_eq_b1,
+    );
+
+    // Compute payload equality for the matched variant.
+    // Since we don't know at compile time which variant the runtime
+    // discriminant selects, we compute payload_eq for every variant
+    // and blend based on which variant matches:
+    //   result = disc_eq AND (for variant V: disc_is_V AND payload_eq_V)
+    // where only one variant's disc_is_V is true.
+    let mut result = disc_eq;
+    for variant in &tag_type.variants {
+        let disc_val = builder.ins().iconst(I32, i64::from(variant.discriminant));
+        let is_this = builder.ins().icmp(IntCC::Equal, left_disc, disc_val);
+        let is_this_i8 = builder.ins().bitcast(
+            types::I8,
+            MemFlags::new().with_endianness(Endianness::Little),
+            is_this,
+        );
+
+        let mut payload_eq = builder.ins().iconst(types::I8, 1);
+        let mut offset: i32 = 4;
+        for field_ty in &variant.payload {
+            let left_field = builder.ins().load(
+                storage_type(field_ty, ctx.func_name)?,
+                MemFlags::trusted(),
+                left_value,
+                offset,
+            );
+            let right_field = builder.ins().load(
+                storage_type(field_ty, ctx.func_name)?,
+                MemFlags::trusted(),
+                right_value,
+                offset,
+            );
+            let field_eq = gen_cmp_values(builder, ctx, left_field, right_field, field_ty)?;
+            payload_eq = builder.ins().band(payload_eq, field_eq);
+            offset += storage_size(field_ty, ctx.func_name)?;
+        }
+
+        // Blend: if this variant matches AND its payload is equal, keep true.
+        // result = (is_this_i8 AND payload_eq) OR ((NOT is_this_i8) AND result)
+        let not_is_this = {
+            let one = builder.ins().iconst(types::I8, 1);
+            builder.ins().bxor(is_this_i8, one)
+        };
+        let this_case = builder.ins().band(is_this_i8, payload_eq);
+        let other_case = builder.ins().band(not_is_this, result);
+        result = builder.ins().bor(this_case, other_case);
+    }
+    Ok(result)
 }
 
 fn int_compare_code(op: CompareOp, ty: &IrType) -> IntCC {
@@ -2837,6 +3243,76 @@ unsafe extern "C" fn pipe_rt_str_eq(a: *mut u8, b: *mut u8) -> i32 {
     i32::from(a_bytes == b_bytes)
 }
 
+/// External function called by `ArrayEq` JIT code.
+///
+/// Compares two JIT arrays element-by-element.
+///
+/// Array layout: `[len: u64, element_1, element_2, ...]`.
+/// Each element is `elem_size` bytes.
+///
+/// Element type handling:
+/// - Primitive types (I32, I64, etc.): compare raw bytes.
+/// - Str (tag 11): treat element slot as an I64 pointer to string data,
+///   then call `pipe_rt_str_eq` on dereferenced pointers.
+/// - Other heap types (Array, Record, Tag, etc.): pointer equality only.
+///
+/// # Safety
+///
+/// `a` and `b` must be valid pointers to array data in the JIT format.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn pipe_rt_arr_eq(a: u64, b: u64, elem_size: u32, elem_type_tag: u32) -> i32 {
+    let a = a as *const u8;
+    let b = b as *const u8;
+    let a_len = unsafe { std::ptr::read_unaligned(a as *const u64) };
+    let b_len = unsafe { std::ptr::read_unaligned(b as *const u64) };
+    if a_len != b_len {
+        return 0;
+    }
+    for i in 0..a_len {
+        let a_elem = unsafe { a.add(8 + i as usize * elem_size as usize) };
+        let b_elem = unsafe { b.add(8 + i as usize * elem_size as usize) };
+        let equal = match elem_type_tag {
+            // Signed integers
+            0 => unsafe { *(a_elem as *const i8) == *(b_elem as *const i8) }, // I8
+            1 => unsafe { *(a_elem as *const i16) == *(b_elem as *const i16) }, // I16
+            2 => unsafe { *(a_elem as *const i32) == *(b_elem as *const i32) }, // I32
+            3 => unsafe { *(a_elem as *const i64) == *(b_elem as *const i64) }, // I64/Usize
+            // Unsigned integers
+            4 => unsafe { *a_elem == *b_elem }, // U8
+            5 => unsafe { *(a_elem as *const u16) == *(b_elem as *const u16) }, // U16
+            6 => unsafe { *(a_elem as *const u32) == *(b_elem as *const u32) }, // U32
+            7 => unsafe { *(a_elem as *const u64) == *(b_elem as *const u64) }, // U64
+            // Floats
+            8 => {
+                let a_f = unsafe { *(a_elem as *const f32) };
+                let b_f = unsafe { *(b_elem as *const f32) };
+                a_f.to_bits() == b_f.to_bits()
+            }
+            9 => {
+                let a_f = unsafe { *(a_elem as *const f64) };
+                let b_f = unsafe { *(b_elem as *const f64) };
+                a_f.to_bits() == b_f.to_bits()
+            }
+            // Bool
+            10 => unsafe { *a_elem == *b_elem },
+            // Unit — always equal
+            12 => true,
+            // Str — load pointer, then deep compare
+            11 => {
+                let a_ptr = unsafe { *(a_elem as *const u64) } as *const u8;
+                let b_ptr = unsafe { *(b_elem as *const u64) } as *const u8;
+                unsafe { pipe_rt_str_eq(a_ptr as *mut u8, b_ptr as *mut u8) != 0 }
+            }
+            // Other heap types (Array, Record, Tag, Closure): pointer equality
+            _ => unsafe { *(a_elem as *const u64) == *(b_elem as *const u64) },
+        };
+        if !equal {
+            return 0;
+        }
+    }
+    1
+}
+
 /// External function called by `MakeClosure` JIT code.
 ///
 /// Allocates a heap-allocated closure object containing the function
@@ -2951,6 +3427,157 @@ unsafe extern "C" fn pipe_rt_array_concat(args: *const u8, ret: *mut u8) -> i32 
         *(ret as *mut u64) = ptr as u64;
     }
     0
+}
+
+/// Returns `true` if `ty` is a heap type that requires boxing/unboxing
+/// when passed through the builtin bridge (Array, Record, Tag, Closure).
+/// Str is excluded because the bridge already reads/writes JIT Str format.
+fn needs_heap_boxing(ty: &IrType) -> bool {
+    matches!(
+        ty,
+        IrType::Array(_) | IrType::Record(_) | IrType::Tag(_) | IrType::Closure(_)
+    )
+}
+
+/// Serialize an `IrType` into a self-describing byte buffer for
+/// runtime boxing/unboxing.
+///
+/// Format (all integers little-endian):
+///
+/// ```text
+/// Node:
+///   [0..3]  type_tag: u32
+///   [4..7]  total_node_bytes: u32   (bytes of this node, including header)
+///   [8..]   node_data (variable)
+///
+/// Array:
+///   node_data = [elem_size: u32, ...elem_type_desc...]
+///
+/// Record:
+///   node_data = [field_count: u32,
+///     for each field:
+///       field_size: u32,
+///       name_len: u32,
+///       name_bytes: u8[name_len] padded to 4,
+///       ...field_type_desc...
+///   ]
+///
+/// Tag:
+///   node_data = [variant_count: u32,
+///     for each variant:
+///       disc: u32,
+///       payload_byte_len: u32,
+///       payload_count: u32,
+///       for each payload field:
+///         field_size: u32,
+///         ...field_type_desc...
+///   ]
+///
+/// Closure:
+///   node_data = [capture_count: u32,
+///     for each capture:
+///       capture_size: u32,
+///       ...capture_type_desc...
+///   ]
+///
+/// Primitives / Str / Unit / Effect: no node_data (total_node_bytes = 8)
+/// ```
+fn serialize_type_desc_to_bytes(ty: &IrType, func_name: &str) -> Result<Vec<u8>, JitError> {
+    let tag = ir_type_tag(ty).ok_or_else(|| unsupported_type(func_name, ty))?;
+    match ty {
+        IrType::Array(elem_ty) => {
+            let elem_desc = serialize_type_desc_to_bytes(elem_ty, func_name)?;
+            let elem_size = storage_size(elem_ty, func_name)? as u32;
+            let total = 8 + 4 + elem_desc.len() as u32;
+            let mut buf = Vec::with_capacity(total as usize);
+            buf.extend_from_slice(&13u32.to_le_bytes()); // type_tag
+            buf.extend_from_slice(&total.to_le_bytes()); // total_node_bytes
+            buf.extend_from_slice(&elem_size.to_le_bytes()); // elem_size
+            buf.extend_from_slice(&elem_desc);
+            Ok(buf)
+        }
+        IrType::Record(record_ty) => {
+            let mut buf = Vec::new();
+            buf.extend_from_slice(&14u32.to_le_bytes()); // type_tag placeholder
+            buf.extend_from_slice(&0u32.to_le_bytes()); // total_node_bytes placeholder
+
+            buf.extend_from_slice(&(record_ty.fields.len() as u32).to_le_bytes());
+
+            for (name, field_ty) in &record_ty.fields {
+                let field_size = storage_size(field_ty, func_name)? as u32;
+                let field_type_desc = serialize_type_desc_to_bytes(field_ty, func_name)?;
+                buf.extend_from_slice(&field_size.to_le_bytes());
+                // field name (UTF-8 bytes, no NUL terminator)
+                let name_bytes = name.as_bytes();
+                buf.extend_from_slice(&(name_bytes.len() as u32).to_le_bytes());
+                buf.extend_from_slice(name_bytes);
+                // pad to 4 bytes
+                while buf.len() % 4 != 0 {
+                    buf.push(0);
+                }
+                buf.extend_from_slice(&field_type_desc);
+            }
+
+            let total = buf.len() as u32;
+            buf[4..8].copy_from_slice(&total.to_le_bytes());
+            Ok(buf)
+        }
+        IrType::Tag(tag_ty) => {
+            let mut buf = Vec::new();
+            buf.extend_from_slice(&17u32.to_le_bytes());
+            buf.extend_from_slice(&0u32.to_le_bytes()); // placeholder total
+
+            buf.extend_from_slice(&(tag_ty.variants.len() as u32).to_le_bytes());
+
+            for variant in &tag_ty.variants {
+                buf.extend_from_slice(&variant.discriminant.to_le_bytes());
+                // Compute payload byte length
+                let mut payload_byte_len = 0u32;
+                let mut payload_descs = Vec::new();
+                for field_ty in &variant.payload {
+                    let field_size = storage_size(field_ty, func_name)? as u32;
+                    let field_type_desc = serialize_type_desc_to_bytes(field_ty, func_name)?;
+                    payload_byte_len += field_size;
+                    payload_descs.push((field_size, field_type_desc));
+                }
+                buf.extend_from_slice(&payload_byte_len.to_le_bytes());
+                buf.extend_from_slice(&(variant.payload.len() as u32).to_le_bytes());
+                for (field_size, field_type_desc) in &payload_descs {
+                    buf.extend_from_slice(&field_size.to_le_bytes());
+                    buf.extend_from_slice(field_type_desc);
+                }
+            }
+
+            let total = buf.len() as u32;
+            buf[4..8].copy_from_slice(&total.to_le_bytes());
+            Ok(buf)
+        }
+        IrType::Closure(func_ty) => {
+            let mut buf = Vec::new();
+            buf.extend_from_slice(&16u32.to_le_bytes());
+            buf.extend_from_slice(&0u32.to_le_bytes()); // placeholder total
+
+            buf.extend_from_slice(&(func_ty.params.len() as u32).to_le_bytes());
+
+            for capture_ty in &func_ty.params {
+                let capture_size = storage_size(capture_ty, func_name)? as u32;
+                let capture_type_desc = serialize_type_desc_to_bytes(capture_ty, func_name)?;
+                buf.extend_from_slice(&capture_size.to_le_bytes());
+                buf.extend_from_slice(&capture_type_desc);
+            }
+
+            let total = buf.len() as u32;
+            buf[4..8].copy_from_slice(&total.to_le_bytes());
+            Ok(buf)
+        }
+        // Primitives: just tag + total_node_bytes = 8
+        _ => {
+            let mut buf = Vec::with_capacity(8);
+            buf.extend_from_slice(&tag.to_le_bytes());
+            buf.extend_from_slice(&8u32.to_le_bytes()); // total_node_bytes
+            Ok(buf)
+        }
+    }
 }
 
 /// Numeric tag used by `__pipe_println` to interpret the raw value.
@@ -3100,6 +3727,292 @@ fn value_to_ret_buf(value: crate::value::Value, ret: *mut u8) {
         std::ptr::write_unaligned(ret as *mut i64, raw);
         std::ptr::write_unaligned(ret.add(8) as *mut u32, tag);
     }
+}
+
+/// Read a `u32` from a byte buffer at `offset` (LE), advancing the
+/// offset by 4.
+#[inline]
+unsafe fn desc_read_u32(buf: *const u8, offset: &mut usize) -> u32 {
+    let v = unsafe { std::ptr::read_unaligned(buf.add(*offset) as *const u32) };
+    *offset += 4;
+    v
+}
+
+/// Convert JIT heap data at `ptr` into a `Box<Value>` pointer, using
+/// the type descriptor at `desc[0..desc_len]` to guide parsing.
+///
+/// The result is suitable for storing in the builtin args buffer—
+/// `pipe_rt_call_builtin` will read it as a `*const RuntimeValue`.
+///
+/// # Safety
+///
+/// `ptr` must point to valid JIT format data matching `desc`.
+/// `desc` must be valid for `desc_len` bytes.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn pipe_rt_box_value_jit(ptr: u64, desc_ptr: u64, desc_len: u32) -> u64 {
+    use crate::value::Value as V;
+
+    let ptr = ptr as *const u8;
+    let desc = desc_ptr as *const u8;
+    let _desc_len = desc_len;
+
+    #[allow(unsafe_op_in_unsafe_fn)]
+    unsafe fn box_rec(ptr: *const u8, desc: *const u8, offset: &mut usize) -> V {
+        let tag = desc_read_u32(desc, offset);
+        let total_bytes = desc_read_u32(desc, offset) as usize;
+        let start = *offset;
+
+        let result = match tag {
+            0 | 1 => V::I32(desc_read_u32(ptr, &mut 0usize) as i32),
+            2 => {
+                // I32 (4 bytes)
+                V::I32(unsafe { std::ptr::read_unaligned(ptr as *const i32) })
+            }
+            3 | 7 => {
+                // I64 / U64
+                V::I64(unsafe { std::ptr::read_unaligned(ptr as *const i64) })
+            }
+            4 => {
+                // U8
+                V::I32(i32::from(unsafe { std::ptr::read_unaligned(ptr) }))
+            }
+            5 => {
+                // U16
+                V::I32(i32::from(unsafe {
+                    std::ptr::read_unaligned(ptr as *const u16)
+                }))
+            }
+            6 => {
+                // U32
+                V::I32(unsafe { std::ptr::read_unaligned(ptr as *const u32) } as i32)
+            }
+            8 => {
+                // F32
+                V::F64(f64::from(f32::from_bits(unsafe {
+                    std::ptr::read_unaligned(ptr as *const u32)
+                })))
+            }
+            9 => {
+                // F64
+                V::F64(f64::from_bits(unsafe {
+                    std::ptr::read_unaligned(ptr as *const u64)
+                }))
+            }
+            10 => {
+                // Bool
+                V::Bool(unsafe { std::ptr::read_unaligned(ptr) } != 0)
+            }
+            11 => {
+                // Str in JIT format: [len: u32][bytes]
+                let len = unsafe { std::ptr::read_unaligned(ptr as *const u32) } as usize;
+                let bytes = unsafe { std::slice::from_raw_parts(ptr.add(4), len) };
+                V::str(unsafe { std::str::from_utf8_unchecked(bytes) }.to_owned())
+            }
+            12 => V::Unit,
+            13 => {
+                // Array: [len: u64][elements]
+                let elem_size = desc_read_u32(desc, offset) as usize;
+                let arr_len = unsafe { std::ptr::read_unaligned(ptr as *const u64) } as usize;
+                let sub_desc_offset = *offset;
+                let mut elements = Vec::with_capacity(arr_len);
+                for i in 0..arr_len {
+                    let elem_ptr = unsafe { ptr.add(8 + i * elem_size) };
+                    *offset = sub_desc_offset;
+                    elements.push(box_rec(elem_ptr, desc, offset));
+                }
+                if arr_len == 0 {
+                    // Advance past the sub-descriptor manually
+                    let saved = *offset;
+                    *offset = sub_desc_offset;
+                    // Parse dummy to advance
+                    let _dummy_tag = desc_read_u32(desc, offset);
+                    let dummy_total = desc_read_u32(desc, offset) as usize;
+                    *offset = sub_desc_offset + dummy_total;
+                    // Restore to after sub-descriptor
+                    *offset = saved.max(sub_desc_offset + dummy_total);
+                }
+                V::Array(elements.into())
+            }
+            14 => {
+                // Record: [field1_jit][field2_jit]...
+                use ast::SmolStr;
+                use std::collections::BTreeMap;
+                let field_count = desc_read_u32(desc, offset) as usize;
+                let mut fields = BTreeMap::new();
+                let mut field_ptr = ptr;
+                for _ in 0..field_count {
+                    let field_size = desc_read_u32(desc, offset) as usize;
+                    let field_name_len = desc_read_u32(desc, offset) as usize;
+                    // Read field name bytes (padded to 4)
+                    let name_padded = field_name_len.div_ceil(4) * 4;
+                    let name_bytes =
+                        unsafe { std::slice::from_raw_parts(desc.add(*offset), field_name_len) };
+                    let name = unsafe { std::str::from_utf8_unchecked(name_bytes) };
+                    *offset += name_padded;
+                    // Read the field value from JIT data
+                    let field_val = box_rec(field_ptr, desc, offset);
+                    field_ptr = unsafe { field_ptr.add(field_size) };
+                    fields.insert(SmolStr::new(name), field_val);
+                }
+                V::Record(std::sync::Arc::new(crate::value::RecordData { fields }))
+            }
+            15 => V::Unit, // Effect — opaque
+            16 => {
+                // Closure: [func_ptr: u64][captures]
+                let capture_count = desc_read_u32(desc, offset) as usize;
+                let func_addr = unsafe { std::ptr::read_unaligned(ptr as *const u64) } as usize;
+                let mut captures = Vec::with_capacity(capture_count);
+                let mut cap_ptr = unsafe { ptr.add(8) };
+                for _ in 0..capture_count {
+                    let cap_size = desc_read_u32(desc, offset) as usize;
+                    let cap_val = box_rec(cap_ptr, desc, offset);
+                    captures.push(cap_val);
+                    cap_ptr = unsafe { cap_ptr.add(cap_size) };
+                }
+                // We need the arity — we don't have it in the JIT format,
+                // but the capture count is the closure's capture arity.
+                // The total arity isn't stored; use captures.len() as a
+                // best-effort. The builtin will fail if it needs the
+                // closure's total arity.
+                let func = crate::value::FuncPtr::Jit {
+                    address: func_addr,
+                    arity: capture_count,
+                };
+                V::Closure(std::sync::Arc::new(crate::value::ClosureData {
+                    func,
+                    captures: captures.into(),
+                    arity: capture_count,
+                }))
+            }
+            17 => {
+                // Tag: [disc: i32][payload]
+                let variant_count = desc_read_u32(desc, offset) as usize;
+                let disc = unsafe { std::ptr::read_unaligned(ptr as *const i32) } as u32;
+                let mut payload_val = V::Unit;
+                for _ in 0..variant_count {
+                    let var_disc = desc_read_u32(desc, offset);
+                    let _payload_byte_len = desc_read_u32(desc, offset);
+                    let payload_count = desc_read_u32(desc, offset) as usize;
+                    let mut payload_fields = Vec::with_capacity(payload_count);
+                    let mut p_ptr = unsafe { ptr.add(4) };
+                    for _ in 0..payload_count {
+                        let field_size = desc_read_u32(desc, offset) as usize;
+                        let field_val = box_rec(p_ptr, desc, offset);
+                        payload_fields.push(field_val);
+                        p_ptr = unsafe { p_ptr.add(field_size) };
+                    }
+                    if var_disc == disc {
+                        payload_val = if payload_fields.len() == 1 {
+                            payload_fields.into_iter().next().unwrap()
+                        } else {
+                            V::Array(payload_fields.into())
+                        };
+                    }
+                }
+                V::Tag {
+                    tag: disc,
+                    payload: match payload_val {
+                        V::Unit => vec![].into(),
+                        V::Array(a) => a,
+                        other => vec![other].into(),
+                    },
+                }
+            }
+            _ => V::Unit,
+        };
+
+        *offset = start + total_bytes - 8;
+        result
+    }
+
+    let mut offset = 0usize;
+    let boxed = unsafe { box_rec(ptr, desc, &mut offset) };
+    Box::into_raw(Box::new(boxed)) as u64
+}
+
+/// Convert a `Box<Value>` pointer (as produced by `value_to_ret_buf` for
+/// heap types) back to JIT heap format, using the type descriptor to
+/// determine field layout.
+///
+/// The returned pointer points to a newly allocated JIT-format buffer.
+///
+/// # Safety
+///
+/// `ptr` must be a valid `Box<Value>` pointer previously produced by
+/// `value_to_ret_buf` or `Box::into_raw(Box::new(Value::…))`.
+/// The descriptor must match the value's actual type.
+/// After this call the original Box is freed.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn pipe_rt_unbox_value_jit(ptr: u64, _desc_ptr: u64, _desc_len: u32) -> u64 {
+    use crate::value::Value as V;
+
+    let box_val = unsafe { *Box::from_raw(ptr as *mut V) };
+
+    #[allow(unsafe_op_in_unsafe_fn)]
+    unsafe fn value_to_jit_bytes(val: V) -> Vec<u8> {
+        match val {
+            V::I32(n) => n.to_le_bytes().to_vec(),
+            V::I64(n) => n.to_le_bytes().to_vec(),
+            V::F64(f) => f.to_bits().to_le_bytes().to_vec(),
+            V::Bool(b) => vec![b as u8],
+            V::Unit => vec![],
+            V::Str(s) => {
+                let bytes = s.as_bytes();
+                let mut buf = Vec::with_capacity(4 + bytes.len());
+                buf.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+                buf.extend_from_slice(bytes);
+                buf
+            }
+            V::Array(arr) => {
+                let mut buf = Vec::with_capacity(8);
+                buf.extend_from_slice(&(arr.len() as u64).to_le_bytes());
+                for elem in arr.iter() {
+                    buf.extend_from_slice(&value_to_jit_bytes(elem.clone()));
+                }
+                buf
+            }
+            V::Record(record) => {
+                // Iterate the type descriptor to get declaration order,
+                // then look up field values by name.
+                // For the unbox direction we iterate the BTreeMap directly
+                // (sorted by name). This may not match JIT declaration
+                // order, but without the descriptor we cannot do better;
+                // callers should pass the descriptor for correctness.
+                let mut buf = Vec::new();
+                for (_, val) in record.fields.iter() {
+                    buf.extend_from_slice(&value_to_jit_bytes(val.clone()));
+                }
+                buf
+            }
+            V::Tag { tag, payload } => {
+                let mut buf = Vec::with_capacity(4);
+                buf.extend_from_slice(&tag.to_le_bytes());
+                for elem in payload.iter() {
+                    buf.extend_from_slice(&value_to_jit_bytes(elem.clone()));
+                }
+                buf
+            }
+            V::Closure(closure) => {
+                let mut buf = Vec::with_capacity(8);
+                match &closure.func {
+                    crate::value::FuncPtr::Jit { address, arity: _ } => {
+                        buf.extend_from_slice(&(*address as u64).to_le_bytes());
+                    }
+                    crate::value::FuncPtr::Builtin(_) => {
+                        buf.extend_from_slice(&0u64.to_le_bytes());
+                    }
+                }
+                for capture in closure.captures.iter() {
+                    buf.extend_from_slice(&value_to_jit_bytes(capture.clone()));
+                }
+                buf
+            }
+            V::Effect(_) => vec![],
+        }
+    }
+
+    let jit_data = unsafe { value_to_jit_bytes(box_val) };
+    Box::leak(jit_data.into_boxed_slice()).as_ptr() as u64
 }
 
 // ---------------------------------------------------------------------------

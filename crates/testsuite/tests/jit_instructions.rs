@@ -14,6 +14,7 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use ast::SmolStr;
 use ir::{
@@ -1266,10 +1267,56 @@ fn fix_tag_get_non_first_variant() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG C14: value_to_ret_buf must not return null for Array/Record builtins
+// BUG C13: builtin bridge must box JIT heap pointers
 // ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
+#[test]
+fn fix_builtin_array_arg_through_bridge() {
+    use runtime::{BuiltinFunction, BuiltinRegistry, Value, init_global_registry};
+
+    #[derive(Debug)]
+    struct ArrayLenBuiltin;
+    impl BuiltinFunction for ArrayLenBuiltin {
+        fn name(&self) -> &str {
+            "test_array_len"
+        }
+        fn arity(&self) -> usize {
+            1
+        }
+        fn execute(&self, args: &[Value]) -> Result<Value, String> {
+            runtime::expect_arity("test_array_len", args, 1)?;
+            match &args[0] {
+                Value::Array(arr) => Ok(Value::I32(arr.len() as i32)),
+                other => Err(format!("expected Array, got {other:?}")),
+            }
+        }
+    }
+
+    let mut registry = BuiltinRegistry::new();
+    registry.register(Arc::new(ArrayLenBuiltin));
+    init_global_registry(registry);
+
+    let module = make_main(IrType::I32, |func, entry| {
+        let len = push_inst(func, entry, Instruction::ConstI32(3));
+        let init = push_inst(func, entry, Instruction::ConstI32(0));
+        let arr = push_inst(func, entry, Instruction::ArrayAlloc { len, init });
+        push_inst(
+            func,
+            entry,
+            Instruction::CallNamed(Box::new(ir::CallNamedData {
+                name: SmolStr::new("test_array_len"),
+                args: vec![arr],
+                return_type: IrType::I32,
+            })),
+        )
+    });
+    let compiled = compile_ir(&module).expect("compile should succeed");
+    let result = compiled.call_main().expect("main should run");
+    assert_eq!(
+        result, 3,
+        "test_array_len(arr(3)) must return 3, got {result}"
+    );
+}
 // BUG C17: Eq/Ne must support heap types (Str, Array, Record, Tag)
 // ---------------------------------------------------------------------------
 
@@ -1353,3 +1400,224 @@ fn fix_e2e_record_field_compound() {
     ";
     assert_eq!(e2e_main_i32(src), 30);
 }
+
+// ---------------------------------------------------------------------------
+// BUG C17: Eq/Ne for Array(I32)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fix_eq_arr_i32() {
+    let module = make_main(IrType::Bool, |func, entry| {
+        let len = push_inst(func, entry, Instruction::ConstI32(3));
+        let init = push_inst(func, entry, Instruction::ConstI32(0));
+        let arr_a = push_inst(func, entry, Instruction::ArrayAlloc { len, init });
+        let arr_b = push_inst(func, entry, Instruction::ArrayAlloc { len, init });
+
+        let idx0 = push_inst(func, entry, Instruction::ConstI32(0));
+        let val1 = push_inst(func, entry, Instruction::ConstI32(1));
+        let _ = push_inst(
+            func,
+            entry,
+            Instruction::ArraySet {
+                array: arr_a,
+                index: idx0,
+                value: val1,
+            },
+        );
+        let _ = push_inst(
+            func,
+            entry,
+            Instruction::ArraySet {
+                array: arr_b,
+                index: idx0,
+                value: val1,
+            },
+        );
+
+        let idx1 = push_inst(func, entry, Instruction::ConstI32(1));
+        let val2 = push_inst(func, entry, Instruction::ConstI32(2));
+        let _ = push_inst(
+            func,
+            entry,
+            Instruction::ArraySet {
+                array: arr_a,
+                index: idx1,
+                value: val2,
+            },
+        );
+        let _ = push_inst(
+            func,
+            entry,
+            Instruction::ArraySet {
+                array: arr_b,
+                index: idx1,
+                value: val2,
+            },
+        );
+
+        let idx2 = push_inst(func, entry, Instruction::ConstI32(2));
+        let val3 = push_inst(func, entry, Instruction::ConstI32(3));
+        let _ = push_inst(
+            func,
+            entry,
+            Instruction::ArraySet {
+                array: arr_a,
+                index: idx2,
+                value: val3,
+            },
+        );
+        let _ = push_inst(
+            func,
+            entry,
+            Instruction::ArraySet {
+                array: arr_b,
+                index: idx2,
+                value: val3,
+            },
+        );
+
+        push_inst(func, entry, Instruction::Eq(arr_a, arr_b))
+    });
+    let compiled = compile_ir(&module).expect("Array Eq should compile");
+    assert_eq!(compiled.call_main().expect("main should run"), 1);
+}
+
+#[test]
+fn fix_ne_arr_i32_different_len() {
+    let module = make_main(IrType::Bool, |func, entry| {
+        let len_a = push_inst(func, entry, Instruction::ConstI32(2));
+        let len_b = push_inst(func, entry, Instruction::ConstI32(3));
+        let init = push_inst(func, entry, Instruction::ConstI32(0));
+        let arr_a = push_inst(func, entry, Instruction::ArrayAlloc { len: len_a, init });
+        let arr_b = push_inst(func, entry, Instruction::ArrayAlloc { len: len_b, init });
+        push_inst(func, entry, Instruction::Ne(arr_a, arr_b))
+    });
+    let compiled = compile_ir(&module).expect("Array Ne should compile");
+    assert_eq!(compiled.call_main().expect("main should run"), 1);
+}
+
+// ---------------------------------------------------------------------------
+// BUG C17: Eq/Ne for Record
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fix_eq_record() {
+    let module = make_main(IrType::Bool, |func, entry| {
+        let age = push_inst(func, entry, Instruction::ConstI32(30));
+        let rec_a = push_inst(
+            func,
+            entry,
+            Instruction::RecordAlloc(Box::new(RecordAllocData {
+                type_name: SmolStr::new("Person"),
+                fields: vec![age],
+            })),
+        );
+        let rec_b = push_inst(
+            func,
+            entry,
+            Instruction::RecordAlloc(Box::new(RecordAllocData {
+                type_name: SmolStr::new("Person"),
+                fields: vec![age],
+            })),
+        );
+        push_inst(func, entry, Instruction::Eq(rec_a, rec_b))
+    });
+    let compiled = compile_ir(&module).expect("Record Eq should compile");
+    assert_eq!(compiled.call_main().expect("main should run"), 1);
+}
+
+#[test]
+fn fix_ne_record_different() {
+    let module = make_main(IrType::Bool, |func, entry| {
+        let age_a = push_inst(func, entry, Instruction::ConstI32(30));
+        let age_b = push_inst(func, entry, Instruction::ConstI32(40));
+        let rec_a = push_inst(
+            func,
+            entry,
+            Instruction::RecordAlloc(Box::new(RecordAllocData {
+                type_name: SmolStr::new("Person"),
+                fields: vec![age_a],
+            })),
+        );
+        let rec_b = push_inst(
+            func,
+            entry,
+            Instruction::RecordAlloc(Box::new(RecordAllocData {
+                type_name: SmolStr::new("Person"),
+                fields: vec![age_b],
+            })),
+        );
+        push_inst(func, entry, Instruction::Ne(rec_a, rec_b))
+    });
+    let compiled = compile_ir(&module).expect("Record Ne should compile");
+    assert_eq!(compiled.call_main().expect("main should run"), 1);
+}
+
+// ---------------------------------------------------------------------------
+// BUG C17: Eq/Ne for Tag
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fix_eq_tag_some() {
+    let module = make_main(IrType::Bool, |func, entry| {
+        let payload = push_inst(func, entry, Instruction::ConstI32(42));
+        let tag_a = push_inst(
+            func,
+            entry,
+            Instruction::TagConstruct(Box::new(TagConstructData {
+                type_name: SmolStr::new("Option"),
+                variant: SmolStr::new("Some"),
+                discriminant: 1,
+                payload: vec![payload],
+            })),
+        );
+        let tag_b = push_inst(
+            func,
+            entry,
+            Instruction::TagConstruct(Box::new(TagConstructData {
+                type_name: SmolStr::new("Option"),
+                variant: SmolStr::new("Some"),
+                discriminant: 1,
+                payload: vec![payload],
+            })),
+        );
+        push_inst(func, entry, Instruction::Eq(tag_a, tag_b))
+    });
+    let compiled = compile_ir(&module).expect("Tag Eq should compile");
+    assert_eq!(compiled.call_main().expect("main should run"), 1);
+}
+
+#[test]
+fn fix_ne_tag_some() {
+    let module = make_main(IrType::Bool, |func, entry| {
+        let payload_a = push_inst(func, entry, Instruction::ConstI32(42));
+        let payload_b = push_inst(func, entry, Instruction::ConstI32(99));
+        let tag_a = push_inst(
+            func,
+            entry,
+            Instruction::TagConstruct(Box::new(TagConstructData {
+                type_name: SmolStr::new("Option"),
+                variant: SmolStr::new("Some"),
+                discriminant: 1,
+                payload: vec![payload_a],
+            })),
+        );
+        let tag_b = push_inst(
+            func,
+            entry,
+            Instruction::TagConstruct(Box::new(TagConstructData {
+                type_name: SmolStr::new("Option"),
+                variant: SmolStr::new("Some"),
+                discriminant: 1,
+                payload: vec![payload_b],
+            })),
+        );
+        push_inst(func, entry, Instruction::Ne(tag_a, tag_b))
+    });
+    let compiled = compile_ir(&module).expect("Tag Ne should compile");
+    assert_eq!(compiled.call_main().expect("main should run"), 1);
+}
+
+// ---------------------------------------------------------------------------
+// BUG C6: e2e_compose_lambda crash (pre-existing) — see `e2e_compose_lambda` above
+// ---------------------------------------------------------------------------

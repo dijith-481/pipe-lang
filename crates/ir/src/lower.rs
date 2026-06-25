@@ -790,6 +790,17 @@ fn lower_expr<'src>(
                                 return_type,
                             },
                         ))))
+                    } else if fb.lookup(name).is_some() {
+                        // Local variable or parameter used in call position.
+                        // Evaluate it to get the closure value, then call via CallIndirect.
+                        let callee = lower_expr(fb, func, hoisted)?;
+                        Ok(fb.emit(Instruction::CallIndirect(Box::new(
+                            crate::CallIndirectData {
+                                callee,
+                                args: arg_vals,
+                                return_type,
+                            },
+                        ))))
                     } else {
                         Ok(
                             fb.emit(Instruction::CallNamed(Box::new(crate::CallNamedData {
