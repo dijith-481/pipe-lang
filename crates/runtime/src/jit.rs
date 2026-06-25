@@ -315,8 +315,8 @@ pub fn compile_ir(ir_module: &IrModule) -> Result<CompiledModule, JitError> {
         .iter()
         .map(|(n, (_, r))| (n.clone(), r.clone()))
         .collect();
-    let empty_actual: HashMap<String, IrType> = HashMap::new();
-    for (name, _func_id, _ret_type) in &func_ids {
+    let func_names: Vec<String> = func_ids.iter().map(|(n, _, _)| n.clone()).collect();
+    for name in &func_names {
         let Some(func) = ir_module.function(name) else {
             continue;
         };
@@ -324,7 +324,7 @@ pub fn compile_ir(ir_module: &IrModule) -> Result<CompiledModule, JitError> {
             func,
             &fn_declared_return_types,
             &fn_param_types,
-            &empty_actual,
+            &fn_actual_return_types,
             &ir_module.tag_variants,
         ) {
             for block in &func.blocks {
@@ -2541,25 +2541,23 @@ fn infer_instruction_type(
     fn_actual_return_types: &HashMap<String, IrType>,
     tag_variants: &typechecker::TagVariants,
 ) -> Result<IrType, JitError> {
-    // Override MakeClosure inference to include proper param types
-    // (capture types + declared param types) in the FuncType.
+    // Override MakeClosure inference: use fn_param_types which already
+    // includes both capture types (first) and declared param types (after),
+    // matching the lowered IrFunction param order. This lets
+    // compile_call_indirect correctly separate captures from call args.
     if let ir::Instruction::MakeClosure(data) = inst {
-        let func_type = if let Some(param_tys) = fn_param_types.get(data.func_name.as_str()) {
-            let ret = fn_return_types
-                .get(data.func_name.as_str())
-                .cloned()
-                .unwrap_or(IrType::Unit);
-            ir::FuncType {
-                params: param_tys.clone(),
-                ret: Box::new(ret),
-            }
-        } else {
-            ir::FuncType {
-                params: vec![],
-                ret: Box::new(IrType::Unit),
-            }
-        };
-        return Ok(IrType::Closure(Box::new(func_type)));
+        let params = fn_param_types
+            .get(data.func_name.as_str())
+            .cloned()
+            .unwrap_or_default();
+        let ret = fn_return_types
+            .get(data.func_name.as_str())
+            .cloned()
+            .unwrap_or(IrType::Unit);
+        return Ok(IrType::Closure(Box::new(ir::FuncType {
+            params,
+            ret: Box::new(ret),
+        })));
     }
     // Override CallNamed inference for closures: use fn_actual_return_types
     // to preserve full capture params in the closure FuncType.

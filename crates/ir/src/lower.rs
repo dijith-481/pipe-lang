@@ -229,6 +229,7 @@ struct FunctionBuilder<'a> {
     locals: HashMap<SmolStr, ValueId>,
     value_types: HashMap<ValueId, IrType>,
     globals: &'a HashSet<SmolStr>,
+    value_globals: &'a HashSet<SmolStr>,
     type_map: &'a HashMap<ast::span::Span, MonoType>,
     tag_variants: &'a TagVariants,
 }
@@ -238,6 +239,7 @@ impl<'a> FunctionBuilder<'a> {
         name: SmolStr,
         ret: IrType,
         globals: &'a HashSet<SmolStr>,
+        value_globals: &'a HashSet<SmolStr>,
         type_map: &'a HashMap<ast::span::Span, MonoType>,
         tag_variants: &'a TagVariants,
     ) -> Self {
@@ -250,6 +252,7 @@ impl<'a> FunctionBuilder<'a> {
             locals: HashMap::new(),
             value_types: HashMap::new(),
             globals,
+            value_globals,
             type_map,
             tag_variants,
         }
@@ -340,7 +343,7 @@ fn lower_expr<'src>(
                     .get(span)
                     .map(|t| matches!(t, MonoType::Func { .. }))
                     .unwrap_or(false);
-                if is_func {
+                if is_func && !fb.value_globals.contains::<str>(name) {
                     Ok(fb.emit(Instruction::MakeClosure(Box::new(MakeClosureData {
                         func_name: (*name).into(),
                         captures: vec![],
@@ -512,15 +515,18 @@ fn lower_expr<'src>(
             }
 
             if is_tag {
-                // Tag types: TagDiscriminant + Switch (original path).
-                let disc_v = fb.emit(Instruction::TagDiscriminant(subj_v));
+                // Tag types: TagDiscriminant + Switch.
+                // Find the block containing subj_v (the entry block) BEFORE
+                // switching current_block, so TagDiscriminant and Switch are
+                // emitted into the correct block (not the last arm's block).
                 let subject_block_idx = fb
                     .func
                     .blocks
                     .iter()
-                    .position(|b| b.instructions.iter().any(|(vid, _)| *vid == Some(disc_v)))
+                    .position(|b| b.instructions.iter().any(|(vid, _)| *vid == Some(subj_v)))
                     .unwrap_or(0);
                 fb.current_block = subject_block_idx;
+                let disc_v = fb.emit(Instruction::TagDiscriminant(subj_v));
                 fb.set_terminator(Terminator::Switch {
                     discriminant: disc_v,
                     arms: switch_arms,
@@ -693,6 +699,7 @@ fn lower_expr<'src>(
                 inner_name.clone(),
                 body_ret_ty,
                 fb.globals,
+                fb.value_globals,
                 fb.type_map,
                 fb.tag_variants,
             );
@@ -772,6 +779,17 @@ fn lower_expr<'src>(
                                 payload: arg_vals,
                             }))),
                         )
+                    } else if fb.value_globals.contains::<str>(name) {
+                        // Value-defined global (e.g. `let t = mk(5)`): evaluate it
+                        // to get the closure value, then call it with args.
+                        let callee = lower_expr(fb, func, hoisted)?;
+                        Ok(fb.emit(Instruction::CallIndirect(Box::new(
+                            crate::CallIndirectData {
+                                callee,
+                                args: arg_vals,
+                                return_type,
+                            },
+                        ))))
                     } else {
                         Ok(
                             fb.emit(Instruction::CallNamed(Box::new(crate::CallNamedData {
@@ -1071,9 +1089,11 @@ fn decl_return_type(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn lower_decl<'src>(
     decl: &Decl<'src>,
     globals: &HashSet<SmolStr>,
+    value_globals: &HashSet<SmolStr>,
     type_map: &HashMap<ast::span::Span, MonoType>,
     tag_variants: &TagVariants,
     module: &mut IrModule,
@@ -1096,6 +1116,7 @@ fn lower_decl<'src>(
                         (*name).into(),
                         ret_ty,
                         globals,
+                        value_globals,
                         type_map,
                         tag_variants,
                     );
@@ -1137,6 +1158,7 @@ fn lower_decl<'src>(
                         (*name).into(),
                         ret_ty,
                         globals,
+                        value_globals,
                         type_map,
                         tag_variants,
                     );
@@ -1699,6 +1721,23 @@ pub fn lower(typed: &TypedProgram<'_>) -> Result<IrModule, LowerError> {
         })
         .collect();
 
+    // Track globals defined with a non-lambda expression (e.g. `let t = mk(5)`).
+    // These are closure VALUES, not function definitions. When used as the
+    // func position of an application, they must be evaluated first (via
+    // CallNamed with no args) and then the result called via CallIndirect,
+    // rather than emitting CallNamed(name, args) directly.
+    let value_globals: HashSet<SmolStr> = typed
+        .ast
+        .decls
+        .iter()
+        .filter_map(|d| match d {
+            Decl::Bind { name, value, .. } if !matches!(value, Expr::Lambda { .. }) => {
+                Some((*name).into())
+            }
+            _ => None,
+        })
+        .collect();
+
     // Monomorphization pre-pass: resolve polymorphic parameter types from
     // call sites. When a function parameter has an unresolved type variable,
     // we look at how the function is actually called to determine the
@@ -1709,6 +1748,7 @@ pub fn lower(typed: &TypedProgram<'_>) -> Result<IrModule, LowerError> {
         lower_decl(
             decl,
             &globals,
+            &value_globals,
             &typed.type_map,
             &typed.tag_variants,
             &mut module,
@@ -1717,5 +1757,6 @@ pub fn lower(typed: &TypedProgram<'_>) -> Result<IrModule, LowerError> {
         )?;
     }
 
+    module.tag_variants = typed.tag_variants.clone();
     Ok(module)
 }

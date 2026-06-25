@@ -919,7 +919,20 @@ pub fn infer_instruction_type(
         Instruction::CallIndirect(data) => Some(data.return_type.clone()),
         Instruction::MakeClosure(data) => {
             let func_type = lookup_func_type(data.func_name.as_str(), fn_return_types);
-            Some(IrType::Closure(Box::new(func_type)))
+            // Include capture types before the declared param types so
+            // the JIT's `compile_call_indirect` correctly computes the
+            // capture offset (offset 8 + capture_sizes).
+            let capture_types: Vec<IrType> = data
+                .captures
+                .iter()
+                .filter_map(|vid| lookup_type(types, *vid).cloned())
+                .collect();
+            let mut all_params = capture_types;
+            all_params.extend(func_type.params);
+            Some(IrType::Closure(Box::new(FuncType {
+                params: all_params,
+                ret: func_type.ret,
+            })))
         }
         Instruction::TagConstruct(data) => {
             let payload_types: Vec<IrType> = data
