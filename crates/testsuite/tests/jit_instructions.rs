@@ -1621,3 +1621,106 @@ fn fix_ne_tag_some() {
 // ---------------------------------------------------------------------------
 // BUG C6: e2e_compose_lambda crash (pre-existing) — see `e2e_compose_lambda` above
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// BUG C18: Tuple destructuring `let (a, b) = expr` leaves names unbound
+// ---------------------------------------------------------------------------
+//
+// `let` with a tuple pattern on the left side (`let (a, b) = (1, 2)`) does
+// not bind `a` and `b` in the IR lowerer's local scope, causing
+// "unbound name in IR lowering" when they are referenced afterward.
+//
+// Affected programs: closures.pp, sorting.pp
+
+#[test]
+#[should_panic(expected = "Unbound")]
+fn bug_tuple_destructuring_unbound() {
+    e2e_main_i32("let main = {\n    let (a, b) = (1, 2)\n    a\n}");
+}
+
+// ---------------------------------------------------------------------------
+// BUG C19: Tag type with multi-field payloads panics in IR lowerer
+// ---------------------------------------------------------------------------
+//
+// When a tag type alias has variants with multiple payload fields (e.g.
+// `| A(f64) | B(f64, f64)`), the lowerer's `mono_to_ir_inner` slices into
+// `payload` using the wrong offset, causing:
+//   "range end index X out of range for slice of length Y"
+// at crates/ir/src/lower.rs:74.
+//
+// Affected programs: patterns.pp, state-machine.pp
+
+#[test]
+#[should_panic(expected = "out of range for slice")]
+fn bug_tag_type_payload_slice() {
+    let src = "\
+type T =
+  | A(f64)
+  | B(f64, f64)
+
+let main = match A(1.0) {
+  A(x) => 1
+  B(x, y) => 2
+}
+";
+    let _ = lower_and_compile(src);
+}
+
+// ---------------------------------------------------------------------------
+// BUG C20: Option match inside fold closure produces duplicate switch cases
+// ---------------------------------------------------------------------------
+//
+// `match x { None => ..., Some(m) => ... }` inside a closure passed to
+// `fold` produces duplicate switch case 0 in the JIT:
+//   "unimplemented IR instruction: duplicate switch case 0 (in main_lambda_5)"
+//
+// Affected programs: higher-order.pp (max function)
+
+#[test]
+#[should_panic(expected = "duplicate switch case")]
+fn bug_match_option_duplicate_switch() {
+    let src = "\
+let main = [1,2,3].fold(None, (acc, x) =>
+  match acc {
+    None    => Some(x)
+    Some(m) => if x > m { Some(x) } else { Some(m) }
+  })
+";
+    let _ = lower_and_compile(src);
+}
+
+// ---------------------------------------------------------------------------
+// BUG C21: Polymorphic closure with type annotation gets str type
+// ---------------------------------------------------------------------------
+//
+// A higher-order function with a type annotation like:
+//   let flip : ((a, b) -> c) -> (b, a) -> c = (f) => (b, a) => f(a, b)
+// when never called (no monomorphization site), causes `f` inside the inner
+// lambda to have type `str` instead of `Closure(...)`, producing:
+//   "unimplemented IR instruction: CallIndirect: callee is not a closure, got str"
+//
+// Affected programs: generics.pp (flip, compose, pipe, apply)
+
+#[test]
+#[should_panic(expected = "callee is not a closure, got str")]
+fn bug_polymorphic_flip_closure_type() {
+    let src = "\
+let flip : ((a, b) -> c) -> (b, a) -> c = (f) => (b, a) => f(a, b)
+let main = 42
+";
+    let _ = lower_and_compile(src);
+}
+
+// ---------------------------------------------------------------------------
+// BUG C22: Game of Life crashes with null pointer in runtime
+// ---------------------------------------------------------------------------
+//
+// Running `game-of-life.pp` panics with:
+//   "NonNull::new_unchecked requires that the pointer is non-null"
+//
+// This cannot be tested via `#[should_panic]` because it causes a
+// non-unwinding abort. Tracked here for documentation.
+//
+// Source: example-programs/game-of-life.pp
+// Run: pipe-lang run example-programs/game-of-life.pp
+// ---------------------------------------------------------------------------
