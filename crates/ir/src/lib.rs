@@ -19,7 +19,6 @@
 
 use std::collections::HashMap;
 
-use typechecker;
 use std::fmt;
 
 use ast::SmolStr;
@@ -829,7 +828,10 @@ fn mono_type_to_ir(ty: &typechecker::MonoType, tag_variants: &typechecker::TagVa
         MonoType::Unit => IrType::Unit,
         MonoType::Array(inner) => IrType::Array(Box::new(mono_type_to_ir(inner, tag_variants))),
         MonoType::Func { params, ret } => IrType::Closure(Box::new(FuncType {
-            params: params.iter().map(|p| mono_type_to_ir(p, tag_variants)).collect(),
+            params: params
+                .iter()
+                .map(|p| mono_type_to_ir(p, tag_variants))
+                .collect(),
             ret: Box::new(mono_type_to_ir(ret, tag_variants)),
         })),
         MonoType::Record(fields) => IrType::Record(RecordType {
@@ -930,28 +932,27 @@ pub fn infer_instruction_type(
             // being constructed. Fall back to a single-variant type if
             // the tag is not in the variants map (e.g. user-defined tag
             // without prelude registration).
-            let variants: Vec<TagVariant> = if let Some(vlist) =
-                tag_variants.get(data.type_name.as_str())
-            {
-                vlist
-                    .iter()
-                    .enumerate()
-                    .map(|(i, (vname, vtemplate))| TagVariant {
-                        name: vname.clone(),
-                        discriminant: i as u32,
-                        payload: vtemplate
-                            .iter()
-                            .map(|t| mono_type_to_ir(t, tag_variants))
-                            .collect(),
-                    })
-                    .collect()
-            } else {
-                vec![TagVariant {
-                    name: data.variant.clone(),
-                    discriminant: data.discriminant,
-                    payload: payload_types,
-                }]
-            };
+            let variants: Vec<TagVariant> =
+                if let Some(vlist) = tag_variants.get(data.type_name.as_str()) {
+                    vlist
+                        .iter()
+                        .enumerate()
+                        .map(|(i, (vname, vtemplate))| TagVariant {
+                            name: vname.clone(),
+                            discriminant: i as u32,
+                            payload: vtemplate
+                                .iter()
+                                .map(|t| mono_type_to_ir(t, tag_variants))
+                                .collect(),
+                        })
+                        .collect()
+                } else {
+                    vec![TagVariant {
+                        name: data.variant.clone(),
+                        discriminant: data.discriminant,
+                        payload: payload_types,
+                    }]
+                };
             Some(IrType::Tag(TagType {
                 name: data.type_name.clone(),
                 variants,

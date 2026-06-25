@@ -13,6 +13,8 @@
 
 #![allow(dead_code)]
 
+use std::collections::HashMap;
+
 use ast::SmolStr;
 use ir::{
     BasicBlock, CallIndirectData, Instruction, IrDecl, IrFunction, IrModule, IrType,
@@ -1149,9 +1151,7 @@ fn e2e_thunk_apply_with_arg() {
     // let t = mk(5)
     // t(10) → 15
     assert_eq!(
-        e2e_main_i32(
-            "let mk = (n) => (x) => x + n\nlet t = mk(5)\nlet main = t(10)"
-        ),
+        e2e_main_i32("let mk = (n) => (x) => x + n\nlet t = mk(5)\nlet main = t(10)"),
         15
     );
 }
@@ -1209,4 +1209,147 @@ fn e2e_match_result_ok() {
         }\n\
     ";
     assert_eq!(e2e_main_i32(src), 42);
+}
+
+// ---------------------------------------------------------------------------
+// BUG C12: TagGet must handle multi-variant tags correctly
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fix_tag_get_non_first_variant() {
+    // Build a tag type with variants [None(), Some(i32)].
+    // Construct Some(42) (variant 1, disc=1) and extract payload
+    // at index 0. compile_tag_get currently uses .first() which
+    // returns None (empty payload), causing UB/wrong codegen.
+    let mut module = IrModule::new();
+    module.tag_variants = {
+        let mut tv: typechecker::TagVariants = HashMap::new();
+        tv.insert(
+            SmolStr::new("Option"),
+            vec![
+                (SmolStr::new("None"), vec![]),
+                (SmolStr::new("Some"), vec![typechecker::MonoType::I32]),
+            ],
+        );
+        tv
+    };
+
+    // Build main: construct Some(42), extract payload[0]
+    let mut func = IrFunction::new(SmolStr::new("main"), IrType::I32);
+    let entry_id = func.alloc_block();
+    let mut entry = BasicBlock::new(entry_id);
+    let payload = push_inst(&mut func, &mut entry, Instruction::ConstI32(42));
+    let tag = push_inst(
+        &mut func,
+        &mut entry,
+        Instruction::TagConstruct(Box::new(TagConstructData {
+            type_name: SmolStr::new("Option"),
+            variant: SmolStr::new("Some"),
+            discriminant: 1,
+            payload: vec![payload],
+        })),
+    );
+    let extracted = push_inst(
+        &mut func,
+        &mut entry,
+        Instruction::TagGet {
+            value: tag,
+            index: 0,
+        },
+    );
+    entry.terminator = Terminator::Return(extracted);
+    func.blocks.push(entry);
+    module.decls.push(IrDecl::Function(func));
+
+    let compiled = compile_ir(&module).expect("should compile");
+    assert_eq!(compiled.call_main().expect("main should run"), 42);
+}
+
+// ---------------------------------------------------------------------------
+// BUG C14: value_to_ret_buf must not return null for Array/Record builtins
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// BUG C17: Eq/Ne must support heap types (Str, Array, Record, Tag)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fix_eq_str_literals() {
+    // Eq on two Str constants should compile and return Bool(true).
+    let module = make_main(IrType::Bool, |func, entry| {
+        let a = push_inst(func, entry, Instruction::ConstStr(SmolStr::new("hello")));
+        let b = push_inst(func, entry, Instruction::ConstStr(SmolStr::new("hello")));
+        push_inst(func, entry, Instruction::Eq(a, b))
+    });
+    let compiled = compile_ir(&module).expect("Eq on Str should compile");
+    // Current behaviour: compile_comparison returns Err for heap types.
+    // After fix: should return 1 (true).
+    let result = compiled.call_main().expect("main should run");
+    assert_eq!(result, 1, "Eq on equal strings must return true");
+}
+
+// ---------------------------------------------------------------------------
+// Full pipeline: C1/C2 - un-annotated bool subject in match
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fix_e2e_match_unannotated_bool() {
+    // The lowerer must correctly determine the subject type
+    // even when it's an un-annotated param resolved through patterns.
+    let src = "\
+        let f = (x) => match x { true => 10, false => 20 }\n\
+        let main = f(true)\n\
+    ";
+    assert_eq!(e2e_main_i32(src), 10);
+}
+
+// ---------------------------------------------------------------------------
+// Full pipeline: C4 - suffixed literal patterns must use correct discriminant
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fix_e2e_match_u64_literal_pattern() {
+    // 42u64 in pattern must use discriminant 42, not 0.
+    let src = "\
+        let f = (n: u64) => match n { 42u64 => 1i32, _ => 0i32 }\n\
+        let main = f(42u64)\n\
+    ";
+    assert_eq!(e2e_main_i32(src), 1);
+}
+
+#[test]
+fn fix_e2e_match_u8_literal_pattern() {
+    let src = "\
+        let f = (n: u8) => match n { 255u8 => 1i32, _ => 0i32 }\n\
+        let main = f(255u8)\n\
+    ";
+    assert_eq!(e2e_main_i32(src), 1);
+}
+
+// ---------------------------------------------------------------------------
+// Full pipeline: C9 - hex literals
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fix_e2e_hex_literal() {
+    let src = "\
+        let main = 0xFFu8\n\
+    ";
+    let compiled = lower_and_compile(src);
+    let result = compiled.call_main().expect("main should run");
+    // U8 return type is supported by call_main (losslessly fits in i32)
+    assert_eq!(result, 255);
+}
+
+// ---------------------------------------------------------------------------
+// Full pipeline: Record field access on compound expressions
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fix_e2e_record_field_compound() {
+    let src = "\
+        let make_person = () => { name: \"Alice\", age: 30 }\n\
+        let main = make_person().age\n\
+    ";
+    assert_eq!(e2e_main_i32(src), 30);
 }

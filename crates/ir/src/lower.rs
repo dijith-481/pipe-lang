@@ -277,7 +277,8 @@ impl<'a> FunctionBuilder<'a> {
     fn emit(&mut self, inst: Instruction) -> ValueId {
         let v = self.alloc_value();
         // Infer type BEFORE moving `inst` into the block.
-        let ty = infer_instruction_type(&inst, &self.value_types, &HashMap::new(), self.tag_variants);
+        let ty =
+            infer_instruction_type(&inst, &self.value_types, &HashMap::new(), self.tag_variants);
         self.func.blocks[self.current_block]
             .instructions
             .push((Some(v), inst));
@@ -322,19 +323,17 @@ fn lower_expr<'src>(
         Expr::Ident(name, span) => {
             if let Some(v) = fb.lookup(name) {
                 Ok(v)
-            } else if let Some((tag_type, disc, _)) =
-                find_tag_constructor(name, fb.tag_variants)
-            {
+            } else if let Some((tag_type, disc, _)) = find_tag_constructor(name, fb.tag_variants) {
                 // Bare tag constructor like `None` (0-arg). Emit a
                 // `TagConstruct` with no payload.
-                Ok(fb.emit(Instruction::TagConstruct(Box::new(
-                    TagConstructData {
+                Ok(
+                    fb.emit(Instruction::TagConstruct(Box::new(TagConstructData {
                         type_name: tag_type.into(),
                         variant: (*name).into(),
                         discriminant: disc,
                         payload: vec![],
-                    },
-                ))))
+                    }))),
+                )
             } else if fb.globals.contains(*name) {
                 let is_func = fb
                     .type_map
@@ -684,7 +683,8 @@ fn lower_expr<'src>(
                 .filter(|n| fb.locals.contains_key(n.as_str()))
                 .collect();
 
-            let inner_name: SmolStr = format!("{}_lambda_{}", fb.func.name, fb.func.next_value_id).into();
+            let inner_name: SmolStr =
+                format!("{}_lambda_{}", fb.func.name, fb.func.next_value_id).into();
 
             // Determine the body return type from the type map.
             let body_ret_ty = fb.expr_type(body.span());
@@ -763,25 +763,23 @@ fn lower_expr<'src>(
                 .unwrap_or(IrType::Unit);
             match func {
                 Expr::Ident(name, _) => {
-                    if let Some((tag_type, disc, _)) =
-                        find_tag_constructor(name, fb.tag_variants)
-                    {
-                        Ok(fb.emit(Instruction::TagConstruct(Box::new(
-                            TagConstructData {
+                    if let Some((tag_type, disc, _)) = find_tag_constructor(name, fb.tag_variants) {
+                        Ok(
+                            fb.emit(Instruction::TagConstruct(Box::new(TagConstructData {
                                 type_name: tag_type.into(),
                                 variant: (*name).into(),
                                 discriminant: disc,
                                 payload: arg_vals,
-                            },
-                        ))))
+                            }))),
+                        )
                     } else {
-                        Ok(fb.emit(Instruction::CallNamed(Box::new(
-                            crate::CallNamedData {
+                        Ok(
+                            fb.emit(Instruction::CallNamed(Box::new(crate::CallNamedData {
                                 name: (*name).into(),
                                 args: arg_vals,
                                 return_type,
-                            },
-                        ))))
+                            }))),
+                        )
                     }
                 }
                 _ => {
@@ -804,11 +802,66 @@ fn lower_expr<'src>(
 // ---------------------------------------------------------------------------
 
 /// Returns the discriminant value for a literal pattern arm.
+/// Strip a known integer type suffix (like "u64", "i32", "usize") from a literal
+/// string, returning the numeric portion (with any hex/octal/binary prefix intact).
+fn strip_int_suffix(text: &str) -> &str {
+    if let Some(s) = text.strip_suffix("i64") {
+        s
+    } else if let Some(s) = text.strip_suffix("i32") {
+        s
+    } else if let Some(s) = text.strip_suffix("i16") {
+        s
+    } else if let Some(s) = text.strip_suffix("i8") {
+        s
+    } else if let Some(s) = text.strip_suffix("u64") {
+        s
+    } else if let Some(s) = text.strip_suffix("u32") {
+        s
+    } else if let Some(s) = text.strip_suffix("u16") {
+        s
+    } else if let Some(s) = text.strip_suffix("u8") {
+        s
+    } else if let Some(s) = text.strip_suffix("usize") {
+        s
+    } else {
+        text
+    }
+}
+
+/// Parse a numeric string (after suffix removal) into an i64, handling hex/octal/binary.
+fn parse_numeric_i64(text: &str) -> i64 {
+    if let Some(rest) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
+        i64::from_str_radix(rest, 16).unwrap_or(0)
+    } else if let Some(rest) = text.strip_prefix("0o").or_else(|| text.strip_prefix("0O")) {
+        i64::from_str_radix(rest, 8).unwrap_or(0)
+    } else if let Some(rest) = text.strip_prefix("0b").or_else(|| text.strip_prefix("0B")) {
+        i64::from_str_radix(rest, 2).unwrap_or(0)
+    } else {
+        text.parse::<i64>().unwrap_or(0)
+    }
+}
+
+/// Parse a numeric string into the given unsigned type, handling hex/octal/binary.
+macro_rules! parse_numeric_as {
+    ($text:expr, $ty:ty) => {{
+        let t = $text;
+        if let Some(rest) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
+            <$ty>::from_str_radix(rest, 16).unwrap_or(0)
+        } else if let Some(rest) = t.strip_prefix("0o").or_else(|| t.strip_prefix("0O")) {
+            <$ty>::from_str_radix(rest, 8).unwrap_or(0)
+        } else if let Some(rest) = t.strip_prefix("0b").or_else(|| t.strip_prefix("0B")) {
+            <$ty>::from_str_radix(rest, 2).unwrap_or(0)
+        } else {
+            t.parse::<$ty>().unwrap_or(0)
+        }
+    }};
+}
+
 fn literal_discriminant(lit: &ast::ast::LiteralPattern<'_>) -> i64 {
     match lit {
         ast::ast::LiteralPattern::Bool(true) => 1,
         ast::ast::LiteralPattern::Bool(false) => 0,
-        ast::ast::LiteralPattern::Int(s) => s.parse::<i64>().unwrap_or(0),
+        ast::ast::LiteralPattern::Int(s) => parse_numeric_i64(strip_int_suffix(s)),
         _ => 0,
     }
 }
@@ -959,33 +1012,34 @@ fn bind_pattern_local<'src>(fb: &mut FunctionBuilder<'_>, pat: &Pattern<'src>, v
 
 fn parse_int_literal(text: &str) -> Instruction {
     if let Some(s) = text.strip_suffix("i64") {
-        return Instruction::ConstI64(s.parse().unwrap_or(0));
+        return Instruction::ConstI64(parse_numeric_i64(s));
     }
     if let Some(s) = text.strip_suffix("i32") {
-        return Instruction::ConstI32(s.parse().unwrap_or(0));
+        return Instruction::ConstI32(parse_numeric_i64(s) as i32);
     }
     if let Some(s) = text.strip_suffix("i16") {
-        return Instruction::ConstI16(s.parse().unwrap_or(0));
+        return Instruction::ConstI16(parse_numeric_i64(s) as i16);
     }
     if let Some(s) = text.strip_suffix("i8") {
-        return Instruction::ConstI8(s.parse().unwrap_or(0));
+        return Instruction::ConstI8(parse_numeric_i64(s) as i8);
     }
     if let Some(s) = text.strip_suffix("u64") {
-        return Instruction::ConstU64(s.parse().unwrap_or(0));
+        return Instruction::ConstU64(parse_numeric_as!(s, u64));
     }
     if let Some(s) = text.strip_suffix("u32") {
-        return Instruction::ConstU32(s.parse().unwrap_or(0));
+        return Instruction::ConstU32(parse_numeric_as!(s, u32));
     }
     if let Some(s) = text.strip_suffix("u16") {
-        return Instruction::ConstU16(s.parse().unwrap_or(0));
+        return Instruction::ConstU16(parse_numeric_as!(s, u16));
     }
     if let Some(s) = text.strip_suffix("u8") {
-        return Instruction::ConstU8(s.parse().unwrap_or(0));
+        return Instruction::ConstU8(parse_numeric_as!(s, u8));
     }
     if let Some(s) = text.strip_suffix("usize") {
-        return Instruction::ConstUsize(s.parse().unwrap_or(0));
+        return Instruction::ConstUsize(parse_numeric_as!(s, usize));
     }
-    Instruction::ConstI32(text.parse().unwrap_or(0))
+    // No suffix: default to I32, but handle hex/octal/binary
+    Instruction::ConstI32(parse_numeric_i64(text) as i32)
 }
 
 fn parse_float_literal(text: &str) -> Instruction {

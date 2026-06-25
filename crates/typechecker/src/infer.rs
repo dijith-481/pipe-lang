@@ -970,12 +970,22 @@ pub fn infer_decl_with_map<'a>(
                     span: *span,
                 })?;
                 let final_ty = sub.apply(&inferred);
+                // Refresh all type_map entries: resolve type variables that
+                // were bound after the entry was first recorded (e.g. match
+                // subject types resolved through arm pattern unification).
+                for (_, ty) in type_map.iter_mut() {
+                    *ty = sub.apply(ty);
+                }
                 let poly = generalize(env, &mut sub, &final_ty);
                 env.insert(*name, poly.clone());
                 type_map.insert(*span, poly.body.clone());
                 return Ok(poly);
             }
 
+            // Refresh all type_map entries (same reason as above).
+            for (_, ty) in type_map.iter_mut() {
+                *ty = sub.apply(ty);
+            }
             let poly = generalize(env, &mut sub, &inferred);
             env.insert(*name, poly.clone());
             type_map.insert(*span, poly.body.clone());

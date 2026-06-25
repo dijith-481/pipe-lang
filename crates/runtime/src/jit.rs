@@ -252,6 +252,17 @@ pub fn compile_ir(ir_module: &IrModule) -> Result<CompiledModule, JitError> {
         module.define_data(array_concat_ptr_data_id, &data_desc)?;
     }
 
+    // Declare a data object for the pipe_rt_str_eq function pointer.
+    let str_eq_ptr = pipe_rt_str_eq as *const ();
+    let str_eq_ptr_data_id =
+        module.declare_data("__pipe_str_eq_ptr", Linkage::Local, false, false)?;
+    {
+        let mut data_desc = DataDescription::new();
+        let ptr_bytes: Vec<u8> = (str_eq_ptr as u64).to_ne_bytes().to_vec();
+        data_desc.define(ptr_bytes.into_boxed_slice());
+        module.define_data(str_eq_ptr_data_id, &data_desc)?;
+    }
+
     // Scan all functions for CallNamed instructions referencing
     // builtins (not local functions) and create name data objects.
     let mut unique_builtin_names: Vec<String> = Vec::new();
@@ -348,6 +359,7 @@ pub fn compile_ir(ir_module: &IrModule) -> Result<CompiledModule, JitError> {
             alloc_array_ptr_data_id,
             array_concat_ptr_data_id,
             call_builtin_ptr_data_id,
+            str_eq_ptr_data_id,
             builtin_name_data_ids: &builtin_name_data_ids,
             tag_variants: &ir_module.tag_variants,
         };
@@ -412,6 +424,8 @@ struct BlockContext<'a> {
     array_concat_sig: SigRef,
     call_builtin_fn_ptr: Value,
     call_builtin_sig: SigRef,
+    str_eq_fn_ptr: Value,
+    str_eq_sig: SigRef,
     builtin_name_globals: &'a HashMap<String, GlobalValue>,
     closure_callee_funcs: &'a HashMap<String, FuncRef>,
     blocks: &'a HashMap<BlockId, Block>,
@@ -433,6 +447,7 @@ struct FunctionBodyParams<'a> {
     alloc_array_ptr_data_id: DataId,
     array_concat_ptr_data_id: DataId,
     call_builtin_ptr_data_id: DataId,
+    str_eq_ptr_data_id: DataId,
     builtin_name_data_ids: &'a HashMap<String, DataId>,
     tag_variants: &'a typechecker::TagVariants,
 }
@@ -656,6 +671,26 @@ fn compile_function_body(
         f.import_signature(sig)
     };
 
+    // Import the pipe_rt_str_eq function pointer from a data object.
+    let str_eq_fn_ptr_gv = {
+        let f: &mut Function = builder.func;
+        params
+            .module
+            .declare_data_in_func(params.str_eq_ptr_data_id, f)
+    };
+    let str_eq_fn_ptr_addr = builder.ins().global_value(types::I64, str_eq_fn_ptr_gv);
+    let str_eq_fn_ptr = builder
+        .ins()
+        .load(types::I64, MemFlags::trusted(), str_eq_fn_ptr_addr, 0);
+    let str_eq_sig = {
+        let mut sig = params.module.make_signature();
+        sig.params.push(AbiParam::new(types::I64));
+        sig.params.push(AbiParam::new(types::I64));
+        sig.returns.push(AbiParam::new(types::I32));
+        let f: &mut Function = builder.func;
+        f.import_signature(sig)
+    };
+
     // Pre-import builtin name data objects referenced by CallNamed in this function.
     let mut builtin_name_globals: HashMap<String, GlobalValue> = HashMap::new();
     for ir_block in &func.blocks {
@@ -738,6 +773,8 @@ fn compile_function_body(
         array_concat_sig,
         call_builtin_fn_ptr,
         call_builtin_sig,
+        str_eq_fn_ptr,
+        str_eq_sig,
         builtin_name_globals: &builtin_name_globals,
         closure_callee_funcs: &closure_callee_funcs,
         blocks: &blocks,
@@ -1919,21 +1956,19 @@ fn compile_tag_get(
         IrType::Tag(tt) => tt.clone(),
         _ => return Err(unsupported_type(ctx.func_name, tag_ty)),
     };
+
+    // Search all variants for one that has a payload field at `index`.
+    // The typechecker ensures all variants sharing an index have the same
+    // field type, so any matching variant gives the correct layout.
     let variant = tag_type
         .variants
-        .first()
+        .iter()
+        .find(|v| (index as usize) < v.payload.len())
         .ok_or_else(|| JitError::UnimplementedInstruction {
-            instruction: format!("TagGet: tag type {} has no variants", tag_type.name),
+            instruction: format!("TagGet: index {index} out of bounds in all variants"),
             function: ctx.func_name.to_string(),
         })?;
-    let field_type =
-        variant
-            .payload
-            .get(index as usize)
-            .ok_or_else(|| JitError::UnimplementedInstruction {
-                instruction: format!("TagGet: index {index} out of bounds"),
-                function: ctx.func_name.to_string(),
-            })?;
+    let field_type = &variant.payload[index as usize];
 
     let mut offset: i32 = 4;
     for i in 0..index as usize {
@@ -2308,7 +2343,7 @@ fn compile_bool_binary(
     Ok(emit(builder, left_value, right_value))
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum CompareOp {
     Eq,
     Ne,
@@ -2338,6 +2373,24 @@ fn compile_comparison(
         IrType::Bool => match op {
             CompareOp::Eq => Ok(builder.ins().icmp(IntCC::Equal, left_value, right_value)),
             CompareOp::Ne => Ok(builder.ins().icmp(IntCC::NotEqual, left_value, right_value)),
+            _ => Err(unsupported_type(ctx.func_name, ty)),
+        },
+        IrType::Str => match op {
+            CompareOp::Eq | CompareOp::Ne => {
+                let inst = builder.ins().call_indirect(
+                    ctx.str_eq_sig,
+                    ctx.str_eq_fn_ptr,
+                    &[left_value, right_value],
+                );
+                let int_result = builder.inst_results(inst)[0];
+                let eq_val = builder.ins().ireduce(types::I8, int_result);
+                if op == CompareOp::Ne {
+                    let one = builder.ins().iconst(types::I8, 1);
+                    Ok(builder.ins().bxor(eq_val, one))
+                } else {
+                    Ok(eq_val)
+                }
+            }
             _ => Err(unsupported_type(ctx.func_name, ty)),
         },
         _ if is_integer(ty) => {
@@ -2511,12 +2564,10 @@ fn infer_instruction_type(
     // Override CallNamed inference for closures: use fn_actual_return_types
     // to preserve full capture params in the closure FuncType.
     if let ir::Instruction::CallNamed(data) = inst {
-        let base_ty =
-            ir::infer_instruction_type(inst, types, fn_return_types, tag_variants).ok_or_else(|| {
-                JitError::UnimplementedInstruction {
-                    instruction: format!("{inst:?}"),
-                    function: func_name.to_string(),
-                }
+        let base_ty = ir::infer_instruction_type(inst, types, fn_return_types, tag_variants)
+            .ok_or_else(|| JitError::UnimplementedInstruction {
+                instruction: format!("{inst:?}"),
+                function: func_name.to_string(),
             })?;
         if matches!(base_ty, IrType::Closure(_))
             && let Some(actual_ty) = fn_actual_return_types.get(data.name.as_str())
@@ -2768,6 +2819,26 @@ unsafe extern "C" fn pipe_rt_str_concat(args: *const u8, ret: *mut u8) -> i32 {
     0
 }
 
+/// External function called by compiled Eq/Ne instructions on Str values.
+///
+/// Compares two strings in JIT heap format (`[length: u32][utf8 data]`)
+/// by content. Returns 1 if equal, 0 if not.
+///
+/// # Safety
+///
+/// `a` and `b` must be valid pointers to at least 4 readable bytes, and
+/// the length field must be consistent with the total allocation size.
+unsafe extern "C" fn pipe_rt_str_eq(a: *mut u8, b: *mut u8) -> i32 {
+    let a_len = unsafe { std::ptr::read_unaligned(a as *const u32) };
+    let b_len = unsafe { std::ptr::read_unaligned(b as *const u32) };
+    if a_len != b_len {
+        return 0;
+    }
+    let a_bytes = unsafe { std::slice::from_raw_parts(a.add(4), a_len as usize) };
+    let b_bytes = unsafe { std::slice::from_raw_parts(b.add(4), b_len as usize) };
+    i32::from(a_bytes == b_bytes)
+}
+
 /// External function called by `MakeClosure` JIT code.
 ///
 /// Allocates a heap-allocated closure object containing the function
@@ -3009,8 +3080,14 @@ fn value_to_ret_buf(value: crate::value::Value, ret: *mut u8) {
             let ptr = Box::leak(buf.into_boxed_slice()).as_ptr();
             (ptr as i64, 11)
         }
-        RuntimeValue::Array(_) => (0, 13),
-        RuntimeValue::Record(_) => (0, 14),
+        RuntimeValue::Array(a) => {
+            let ptr = Box::into_raw(Box::new(RuntimeValue::Array(a))) as i64;
+            (ptr, 13)
+        }
+        RuntimeValue::Record(r) => {
+            let ptr = Box::into_raw(Box::new(RuntimeValue::Record(r))) as i64;
+            (ptr, 14)
+        }
         RuntimeValue::Closure(c) => {
             let ptr = Box::into_raw(Box::new(RuntimeValue::Closure(c))) as i64;
             (ptr, 16)
@@ -3890,5 +3967,57 @@ mod tests {
         let ret_buf = call_main_raw(&compiled);
         let ptr = u64::from_ne_bytes(ret_buf[..8].try_into().unwrap());
         check_len_prefixed_str(ptr, b"pi is 3.14");
+    }
+
+    #[test]
+    fn value_to_ret_buf_encodes_array_as_non_null_pointer() {
+        use std::sync::Arc;
+        let arr = crate::value::Value::Array(Arc::from(
+            vec![
+                crate::value::Value::I32(1),
+                crate::value::Value::I32(2),
+                crate::value::Value::I32(3),
+            ]
+            .into_boxed_slice(),
+        ));
+        let mut ret_buf = [0u8; 12];
+        value_to_ret_buf(arr, ret_buf.as_mut_ptr());
+        let raw = unsafe { std::ptr::read_unaligned(ret_buf.as_ptr() as *const i64) };
+        let tag = unsafe { std::ptr::read_unaligned(ret_buf.as_ptr().add(8) as *const u32) };
+        assert_eq!(tag, 13, "tag must be Array");
+        assert!(
+            raw != 0 && (raw as u64) >= 0x1000,
+            "pointer must be non-null: got {raw:#x}",
+        );
+        // Verify the pointer actually points to a valid Value::Array.
+        let decoded = unsafe { &*(raw as *const crate::value::Value) };
+        match decoded {
+            crate::value::Value::Array(a) => assert_eq!(a.len(), 3),
+            _ => panic!("expected Array, got {decoded:?}"),
+        }
+    }
+
+    #[test]
+    fn value_to_ret_buf_encodes_record_as_non_null_pointer() {
+        use ast::SmolStr;
+        use std::collections::BTreeMap;
+        use std::sync::Arc;
+        let mut fields = BTreeMap::new();
+        fields.insert(SmolStr::new("x"), crate::value::Value::I32(10));
+        let rec = crate::value::Value::Record(Arc::new(crate::value::RecordData { fields }));
+        let mut ret_buf = [0u8; 12];
+        value_to_ret_buf(rec, ret_buf.as_mut_ptr());
+        let raw = unsafe { std::ptr::read_unaligned(ret_buf.as_ptr() as *const i64) };
+        let tag = unsafe { std::ptr::read_unaligned(ret_buf.as_ptr().add(8) as *const u32) };
+        assert_eq!(tag, 14, "tag must be Record");
+        assert!(
+            raw != 0 && (raw as u64) >= 0x1000,
+            "pointer must be non-null: got {raw:#x}",
+        );
+        let decoded = unsafe { &*(raw as *const crate::value::Value) };
+        match decoded {
+            crate::value::Value::Record(r) => assert_eq!(r.fields.len(), 1),
+            _ => panic!("expected Record, got {decoded:?}"),
+        }
     }
 }
