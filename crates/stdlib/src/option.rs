@@ -8,11 +8,11 @@ use crate::closure::call_closure;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct OptionMap;
 
-/// `Option.flatMap(option, function)` — applies function returning Option, flattens one level.
+/// `Option.flat_map(option, function)` — applies function returning Option, flattens one level.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct OptionFlatMap;
 
-/// `Option.unwrapOr(option, default)` — returns the payload if Some, otherwise the default.
+/// `Option.unwrap_or(option, default)` — returns the payload if Some, otherwise the default.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct OptionUnwrapOr;
 
@@ -63,7 +63,7 @@ impl BuiltinFunction for OptionMap {
 
 impl BuiltinFunction for OptionFlatMap {
     fn name(&self) -> &str {
-        "Option.flatMap"
+        "Option.flat_map"
     }
 
     fn arity(&self) -> usize {
@@ -97,7 +97,7 @@ impl BuiltinFunction for OptionFlatMap {
 
 impl BuiltinFunction for OptionUnwrapOr {
     fn name(&self) -> &str {
-        "Option.unwrapOr"
+        "Option.unwrap_or"
     }
 
     fn arity(&self) -> usize {

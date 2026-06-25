@@ -278,8 +278,8 @@ let greet : (str) -> str = (name) => `Hello, ${name}!`
 
 // Effectful computation
 let main : () -> Effect<()> = () =>
-    io.readLine()
-        .flatMap((name) => println(greet(name)))
+    read_line()
+        .flat_map((name) => println(greet(name)))
 ```
 
 ### Effect Operators
@@ -287,7 +287,7 @@ let main : () -> Effect<()> = () =>
 | Method | Signature | Description |
 |--------|-----------|-------------|
 | `map` | `Effect<A>, (A) -> B -> Effect<B>` | Transform the result |
-| `flatMap` | `Effect<A>, (A) -> Effect<B> -> Effect<B>` | Chain effects sequentially |
+| `flat_map` | `Effect<A>, (A) -> Effect<B> -> Effect<B>` | Chain effects sequentially |
 
 The runtime evaluates the single `Effect<()>` returned by `main`. Pure functions cannot call effectful functions (the typechecker rejects it).
 
@@ -314,8 +314,8 @@ The runtime evaluates the single `Effect<()>` returned by `main`. Pure functions
 |----------|-----------|-------------|
 | `println` | `(str) -> Effect<()>` | Print with newline |
 | `print` | `(str) -> Effect<()>` | Print without newline |
-| `readLine` | `() -> Effect<str>` | Read line from stdin |
-| `readFile` | `(str) -> Effect<Result<str, str>>` | Read file, returns Ok/Err |
+| `read_line` | `() -> Effect<str>` | Read line from stdin |
+| `read_file` | `(str) -> Effect<Result<str, str>>` | Read file, returns Ok/Err |
 
 ### 7.2 Array Methods
 
@@ -326,7 +326,7 @@ All methods are available as `array.method(args)`:
 | `map` | `<A, B>(Array<A>, (A) -> B) -> Array<B>` | Transform elements |
 | `filter` | `<T>(Array<T>, (T) -> bool) -> Array<T>` | Keep matching elements |
 | `fold` | `<A, B>(Array<A>, B, (B, A) -> B) -> B` | Left fold / reduce |
-| `flatMap` | `<A, B>(Array<A>, (A) -> Array<B>) -> Array<B>` | Map + flatten |
+| `flat_map` | `<A, B>(Array<A>, (A) -> Array<B>) -> Array<B>` | Map + flatten |
 | `concat` | `<T>(Array<T>, Array<T>) -> Array<T>` | Concatenate arrays |
 | `prepend` | `<T>(Array<T>, T) -> Array<T>` | Prepend element |
 | `len` | `<T>(Array<T>) -> usize` | Array length |
@@ -338,15 +338,15 @@ All methods are available as `array.method(args)`:
 | Method | Signature | Description |
 |--------|-----------|-------------|
 | `map` | `<A, B>(Option<A>, (A) -> B) -> Option<B>` | Transform inner value |
-| `flatMap` | `<A, B>(Option<A>, (A) -> Option<B>) -> Option<B>` | Chain optional operations |
-| `unwrapOr` | `<A>(Option<A>, A) -> A` | Unwrap with default |
+| `flat_map` | `<A, B>(Option<A>, (A) -> Option<B>) -> Option<B>` | Chain optional operations |
+| `unwrap_or` | `<A>(Option<A>, A) -> A` | Unwrap with default |
 
 ### 7.4 Result Methods
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
 | `map` | `<T, E, U>(Result<T, E>, (T) -> U) -> Result<U, E>` | Transform success |
-| `flatMap` | `<T, E, U>(Result<T, E>, (T) -> Result<U, E>) -> Result<U, E>` | Chain fallible operations |
+| `flat_map` | `<T, E, U>(Result<T, E>, (T) -> Result<U, E>) -> Result<U, E>` | Chain fallible operations |
 
 ### 7.5 String Methods
 

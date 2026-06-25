@@ -1,6 +1,6 @@
 // Tiny REPL — interactive expression evaluator
 //
-// Demonstrates: IO effects (readLine/println), recursion at module level,
+// Demonstrates: IO effects (read_line/println), recursion at module level,
 // string processing, Option/Result, pattern matching, closures
 //
 // In v0.1, inputs are simulated since stdin effects are evaluated

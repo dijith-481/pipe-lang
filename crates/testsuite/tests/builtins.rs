@@ -195,16 +195,29 @@ fn closure_builtins_are_registered() {
 }
 
 // ---------------------------------------------------------------------------
-// Drop, Take, Sqrt, Unwrap — UNIMPLEMENTED in stdlib
+// Drop, Take, Sqrt, UnwrapOr — IMPLEMENTED in stdlib
 // ---------------------------------------------------------------------------
 
 #[test]
-fn builtin_drop_returns_unit() {
+fn builtin_drop_removes_first_n() {
     let registry = full_registry();
+    let arr = Value::array(vec![
+        Value::I32(1),
+        Value::I32(2),
+        Value::I32(3),
+        Value::I32(4),
+    ]);
     let result = registry
-        .execute("drop", &[Value::I32(42)])
+        .execute("drop", &[arr, Value::I32(2)])
         .expect("drop should work");
-    assert_eq!(result, Value::Unit);
+    match result {
+        Value::Array(elems) => {
+            assert_eq!(elems.len(), 2);
+            assert_eq!(elems[0], Value::I32(3));
+            assert_eq!(elems[1], Value::I32(4));
+        }
+        other => panic!("expected Array, got {other:?}"),
+    }
 }
 
 #[test]
@@ -261,21 +274,23 @@ fn builtin_sqrt_zero() {
 }
 
 #[test]
-fn builtin_unwrap_some() {
+fn builtin_unwrap_or_some() {
     let registry = full_registry();
     let some = Value::tag(1, vec![Value::I32(42)]);
     let result = registry
-        .execute("unwrap", &[some])
-        .expect("unwrap Some should work");
+        .execute("unwrap_or", &[some, Value::I32(0)])
+        .expect("unwrap_or Some should work");
     assert_eq!(result, Value::I32(42));
 }
 
 #[test]
-fn builtin_unwrap_none_panics() {
+fn builtin_unwrap_or_none_returns_default() {
     let registry = full_registry();
     let none = Value::tag(0, vec![]);
-    let result = registry.execute("unwrap", &[none]);
-    assert!(result.is_err(), "unwrap None should error");
+    let result = registry
+        .execute("unwrap_or", &[none, Value::I32(99)])
+        .expect("unwrap_or None should return default");
+    assert_eq!(result, Value::I32(99));
 }
 
 // ---------------------------------------------------------------------------

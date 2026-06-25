@@ -16,6 +16,10 @@ pub struct ToF64;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ToStr;
 
+/// `sqrt(value)` — computes the square root of an F64.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Sqrt;
+
 impl BuiltinFunction for ToI64 {
     fn name(&self) -> &str {
         "to_i64"
@@ -117,6 +121,24 @@ impl BuiltinFunction for ToStr {
     }
 }
 
+impl BuiltinFunction for Sqrt {
+    fn name(&self) -> &str {
+        "sqrt"
+    }
+
+    fn arity(&self) -> usize {
+        1
+    }
+
+    fn execute(&self, args: &[Value]) -> Result<Value, String> {
+        expect_arity(self.name(), args, self.arity())?;
+        match &args[0] {
+            Value::F64(n) => Ok(Value::F64(n.sqrt())),
+            actual => Err(format!("`{}` expected F64, got {actual:?}", self.name())),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,5 +218,21 @@ mod tests {
     #[test]
     fn to_str_rejects_unit() {
         assert!(ToStr.execute(&[Value::Unit]).is_err());
+    }
+
+    #[test]
+    fn sqrt_returns_square_root() {
+        let result = Sqrt
+            .execute(&[Value::F64(9.0)])
+            .expect("sqrt should compute square root");
+        assert_eq!(result, Value::F64(3.0));
+    }
+
+    #[test]
+    fn sqrt_rejects_non_f64() {
+        let error = Sqrt
+            .execute(&[Value::I32(4)])
+            .expect_err("sqrt should reject non-F64");
+        assert!(error.contains("expected F64"));
     }
 }
