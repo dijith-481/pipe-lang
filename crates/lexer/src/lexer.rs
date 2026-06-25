@@ -2,38 +2,6 @@ use ast::span::Span;
 
 use crate::error::LexError;
 
-/// Process escape sequences in a string slice, returning an owned String.
-/// Handles: \n, \t, \\, \", \0, and passes through unknown escapes literally.
-fn process_escapes(s: &str) -> String {
-    let mut buf = String::with_capacity(s.len());
-    let mut chars = s.chars();
-    while let Some(ch) = chars.next() {
-        if ch == '\\' {
-            match chars.next() {
-                Some('n') => buf.push('\n'),
-                Some('t') => buf.push('\t'),
-                Some('\\') => buf.push('\\'),
-                Some('"') => buf.push('"'),
-                Some('0') => buf.push('\0'),
-                Some(other) => {
-                    buf.push('\\');
-                    buf.push(other);
-                }
-                None => buf.push('\\'),
-            }
-        } else {
-            buf.push(ch);
-        }
-    }
-    buf
-}
-
-/// Leak a String into a `&'a str` so it lives as long as the source.
-/// Acceptable for a compiler — strings are small.
-fn leak_str(s: String) -> &'static str {
-    Box::leak(s.into_boxed_str())
-}
-
 /// A single token produced by the lexer.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Token<'a> {
@@ -200,7 +168,7 @@ impl<'a> Lexer<'a> {
                 '"' => {
                     self.advance();
                     let raw = &self.source[start + 1..self.current_pos - 1];
-                    return Ok(TokenKind::Str(leak_str(process_escapes(raw))));
+                    return Ok(TokenKind::Str(raw));
                 }
                 '\\' => {
                     self.advance();
@@ -241,7 +209,7 @@ impl<'a> Lexer<'a> {
                     let chunk_end = self.current_pos;
                     let raw = &self.source[chunk_start..chunk_end];
                     self.pending.push_back(Token {
-                        kind: TokenKind::TemplateStr(leak_str(process_escapes(raw))),
+                        kind: TokenKind::TemplateStr(raw),
                         span: Span::new(chunk_start, chunk_end),
                     });
                     self.advance(); // consume `
@@ -259,7 +227,7 @@ impl<'a> Lexer<'a> {
                         let chunk_end = self.current_pos;
                         let raw = &self.source[chunk_start..chunk_end];
                         self.pending.push_back(Token {
-                            kind: TokenKind::TemplateStr(leak_str(process_escapes(raw))),
+                            kind: TokenKind::TemplateStr(raw),
                             span: Span::new(chunk_start, chunk_end),
                         });
                         self.advance(); // consume $
