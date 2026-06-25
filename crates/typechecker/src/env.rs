@@ -743,6 +743,24 @@ impl TypeEnv {
                 },
             ),
         );
+        // Option.unwrap_or : <a>(Option<a>, a) -> a (snake_case alias)
+        let uo3_a = self.fresh_var();
+        self.insert(
+            "Option.unwrap_or",
+            PolyType::poly(
+                vec![uo3_a],
+                MonoType::Func {
+                    params: Rc::from([
+                        MonoType::Tag {
+                            name: "Option".into(),
+                            payload: Rc::from([MonoType::Var(uo3_a)]),
+                        },
+                        MonoType::Var(uo3_a),
+                    ]),
+                    ret: Rc::new(MonoType::Var(uo3_a)),
+                },
+            ),
+        );
 
         // ====================================================================
         // Result methods
@@ -801,6 +819,45 @@ impl TypeEnv {
                         name: "Result".into(),
                         payload: Rc::from([MonoType::Var(rfm_u), MonoType::Var(rfm_e)]),
                     }),
+                },
+            ),
+        );
+
+        // Result.unwrapOr : <t, e>(Result<t, e>, t) -> t
+        let ru_t = self.fresh_var();
+        let ru_e = self.fresh_var();
+        self.insert(
+            "Result.unwrapOr",
+            PolyType::poly(
+                vec![ru_t, ru_e],
+                MonoType::Func {
+                    params: Rc::from([
+                        MonoType::Tag {
+                            name: "Result".into(),
+                            payload: Rc::from([MonoType::Var(ru_t), MonoType::Var(ru_e)]),
+                        },
+                        MonoType::Var(ru_t),
+                    ]),
+                    ret: Rc::new(MonoType::Var(ru_t)),
+                },
+            ),
+        );
+        // Result.unwrap_or : <t, e>(Result<t, e>, t) -> t (snake_case alias)
+        let ru2_t = self.fresh_var();
+        let ru2_e = self.fresh_var();
+        self.insert(
+            "Result.unwrap_or",
+            PolyType::poly(
+                vec![ru2_t, ru2_e],
+                MonoType::Func {
+                    params: Rc::from([
+                        MonoType::Tag {
+                            name: "Result".into(),
+                            payload: Rc::from([MonoType::Var(ru2_t), MonoType::Var(ru2_e)]),
+                        },
+                        MonoType::Var(ru2_t),
+                    ]),
+                    ret: Rc::new(MonoType::Var(ru2_t)),
                 },
             ),
         );
@@ -1087,8 +1144,11 @@ mod tests {
             "Option.map",
             "Option.flatMap",
             "Option.unwrapOr",
+            "Option.unwrap_or",
             "Result.map",
             "Result.flatMap",
+            "Result.unwrapOr",
+            "Result.unwrap_or",
             "Effect.map",
             "Effect.flatMap",
             "to_i64",

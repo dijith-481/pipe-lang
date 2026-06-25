@@ -541,11 +541,25 @@ fn infer_inner<'a>(
         }
 
         Expr::Application { func, args, span } => {
-            let func_ty = infer(env, sub, type_map, func)?;
+            let mut func_ty = infer(env, sub, type_map, func)?;
             let arg_tys: Vec<MonoType> = args
                 .iter()
                 .map(|a| infer(env, sub, type_map, a))
                 .collect::<Result<_, TypeError>>()?;
+
+            // Method dispatch: if the function is a bare name and the first arg
+            // is a Tag type, try the qualified method name (e.g. Option.map).
+            if let Expr::Ident(name, _) = *func
+                && !args.is_empty()
+            {
+                let first_arg_ty = sub.apply(&arg_tys[0]);
+                if let MonoType::Tag { name: tag_name, .. } = &first_arg_ty {
+                    let qualified = format!("{}.{}", tag_name, name);
+                    if let Some(qualified_poly) = env.lookup(&qualified).cloned() {
+                        func_ty = instantiate(env, sub, &qualified_poly);
+                    }
+                }
+            }
 
             let ret_var = env.fresh_var();
             sub.ensure_key(ret_var);
@@ -767,17 +781,33 @@ fn infer_inner<'a>(
             field,
             span,
         } => {
-            let obj_ty = infer(env, sub, type_map, object)?;
-            let oa = sub.apply(&obj_ty);
+            let raw_obj_ty = infer_inner(env, sub, type_map, object)?;
+            let oa = sub.apply(&raw_obj_ty);
             match &oa {
                 MonoType::Record(fields) => {
-                    fields
-                        .get(*field)
-                        .cloned()
-                        .ok_or_else(|| TypeError::FieldNotFound {
+                    if let Some(ty) = fields.get(*field).cloned() {
+                        Ok(ty)
+                    } else if matches!(&raw_obj_ty, MonoType::Var(_)) {
+                        // Row-polymorphic record extension: the variable was
+                        // previously bound to a record that doesn't have this
+                        // field yet.  Extend the record and unify.
+                        let fv = env.fresh_var();
+                        sub.ensure_key(fv);
+                        let fv_ty = MonoType::Var(fv);
+                        let mut extended = (**fields).clone();
+                        extended.insert((*field).into(), fv_ty.clone());
+                        let expected_rec = MonoType::Record(Rc::new(extended));
+                        unify(sub, &oa, &expected_rec).map_err(|_| TypeError::FieldNotFound {
+                            field: (*field).to_string(),
+                            span: *span,
+                        })?;
+                        Ok(sub.apply(&fv_ty))
+                    } else {
+                        Err(TypeError::FieldNotFound {
                             field: (*field).to_string(),
                             span: *span,
                         })
+                    }
                 }
                 MonoType::Var(_) => {
                     let fv = env.fresh_var();

@@ -977,7 +977,18 @@ pub fn infer_instruction_type(
                 IrType::Tag(tag_type) => tag_type
                     .variants
                     .iter()
-                    .find_map(|v| v.payload.get(*index as usize).cloned()),
+                    .find_map(|v| v.payload.get(*index as usize).cloned())
+                    .or_else(|| {
+                        tag_variants
+                            .get(tag_type.name.as_str())
+                            .and_then(|variants| {
+                                variants.iter().find_map(|(_, payload)| {
+                                    payload
+                                        .get(*index as usize)
+                                        .map(|t| mono_type_to_ir(t, tag_variants))
+                                })
+                            })
+                    }),
                 _ => None,
             })
         }

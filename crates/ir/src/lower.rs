@@ -1271,6 +1271,7 @@ fn lower_decl<'src>(
 /// resolved types are used to resolve inner functions that they call.
 fn monomorphize_param_types(
     typed: &TypedProgram<'_>,
+    tag_variants: &TagVariants,
 ) -> (HashMap<String, Vec<IrType>>, HashMap<String, IrType>) {
     let mut resolved: HashMap<String, Vec<IrType>> = HashMap::new();
     let mut resolved_returns: HashMap<String, IrType> = HashMap::new();
@@ -1334,15 +1335,13 @@ fn monomorphize_param_types(
                 for (i, pty) in ptys.iter().enumerate() {
                     if mono_type_has_vars(pty) {
                         if site_arg_lists.is_empty() {
-                            // No call sites — use the type annotation's type
-                            // instead of defaulting to Str.
-                            resolved_params.push(mono_to_ir(pty));
+                            resolved_params.push(mono_to_ir_inner(pty, Some(tag_variants)));
                         } else {
                             let concrete = resolve_var_from_call_sites(i, site_arg_lists);
                             resolved_params.push(concrete);
                         }
                     } else {
-                        resolved_params.push(mono_to_ir(pty));
+                        resolved_params.push(mono_to_ir_inner(pty, Some(tag_variants)));
                     }
                 }
                 let prev = resolved.insert((*name).into(), resolved_params);
@@ -1365,7 +1364,8 @@ fn monomorphize_param_types(
                         changed = true;
                     }
                 } else if !resolved_returns.contains_key(*name) {
-                    resolved_returns.insert((*name).into(), mono_to_ir(ret));
+                    resolved_returns
+                        .insert((*name).into(), mono_to_ir_inner(ret, Some(tag_variants)));
                     changed = true;
                 }
             }
@@ -1849,7 +1849,8 @@ pub fn lower(typed: &TypedProgram<'_>) -> Result<IrModule, LowerError> {
     // call sites. When a function parameter has an unresolved type variable,
     // we look at how the function is actually called to determine the
     // concrete type.
-    let (resolved_param_types, resolved_return_types) = monomorphize_param_types(typed);
+    let (resolved_param_types, resolved_return_types) =
+        monomorphize_param_types(typed, &typed.tag_variants);
 
     for decl in &typed.ast.decls {
         lower_decl(

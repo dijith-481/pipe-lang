@@ -42,7 +42,7 @@ let main = () => {
     let age2 = validate_age(`abc`)
     let age3 = validate_age(`200`)
 
-    println(age1.unwrap_or(`error`))
-    println(age2.unwrap_or(`error`))
-    println(age3.unwrap_or(`error`))
+    println(age1.map((age) => `${age}`).unwrap_or(`error`))
+    println(age2.map((age) => `${age}`).unwrap_or(`error`))
+    println(age3.map((age) => `${age}`).unwrap_or(`error`))
 }
