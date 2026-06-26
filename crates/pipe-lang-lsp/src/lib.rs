@@ -103,14 +103,7 @@ fn analyze_source(source: &str) -> (HashMap<Span, String>, Vec<Diagnostic>) {
     };
 
     match typechecker::typecheck(&program) {
-        Ok(typed) => (
-            typed
-                .type_map
-                .into_iter()
-                .map(|(span, ty)| (span, ty.to_string()))
-                .collect(),
-            Vec::new(),
-        ),
+        Ok(typed) => (build_lsp_type_map(&program, &typed.type_map), Vec::new()),
         Err(errors) => (
             HashMap::new(),
             errors
@@ -119,6 +112,161 @@ fn analyze_source(source: &str) -> (HashMap<Span, String>, Vec<Diagnostic>) {
                 .map(|err| compiler_error_to_lsp(source, err))
                 .collect(),
         ),
+    }
+}
+
+fn build_lsp_type_map(
+    program: &ast::ast::Program<'_>,
+    type_map: &HashMap<ast::ast::NodeId, typechecker::MonoType>,
+) -> HashMap<Span, String> {
+    let mut lsp_map = HashMap::new();
+    for decl in &program.decls {
+        walk_decl(decl, type_map, &mut lsp_map);
+    }
+    lsp_map
+}
+
+fn walk_decl(
+    decl: &ast::ast::Decl<'_>,
+    type_map: &HashMap<ast::ast::NodeId, typechecker::MonoType>,
+    lsp_map: &mut HashMap<Span, String>,
+) {
+    if let Some(ty) = type_map.get(&decl.id()) {
+        lsp_map.insert(decl.span(), ty.to_string());
+    }
+    match decl {
+        ast::ast::Decl::Bind { value, .. } => {
+            walk_expr(value, type_map, lsp_map);
+        }
+        ast::ast::Decl::TypeAlias { .. } | ast::ast::Decl::Use { .. } => {}
+    }
+}
+
+fn walk_expr(
+    expr: &ast::ast::Expr<'_>,
+    type_map: &HashMap<ast::ast::NodeId, typechecker::MonoType>,
+    lsp_map: &mut HashMap<Span, String>,
+) {
+    if let Some(ty) = type_map.get(&expr.id()) {
+        lsp_map.insert(expr.span(), ty.to_string());
+    }
+    match expr {
+        ast::ast::Expr::IntLiteral(..)
+        | ast::ast::Expr::FloatLiteral(..)
+        | ast::ast::Expr::Str(..)
+        | ast::ast::Expr::Bool(..)
+        | ast::ast::Expr::Ident(..) => {}
+        ast::ast::Expr::Application { func, args, .. } => {
+            walk_expr(func, type_map, lsp_map);
+            for arg in args {
+                walk_expr(arg, type_map, lsp_map);
+            }
+        }
+        ast::ast::Expr::Lambda { body, .. } => {
+            walk_expr(body, type_map, lsp_map);
+        }
+        ast::ast::Expr::Binary { left, right, .. } => {
+            walk_expr(left, type_map, lsp_map);
+            walk_expr(right, type_map, lsp_map);
+        }
+        ast::ast::Expr::Unary { operand, .. } => {
+            walk_expr(operand, type_map, lsp_map);
+        }
+        ast::ast::Expr::Match { subject, arms, .. } => {
+            walk_expr(subject, type_map, lsp_map);
+            for arm in arms {
+                walk_pattern(arm.pattern, type_map, lsp_map);
+                walk_expr(arm.body, type_map, lsp_map);
+            }
+        }
+        ast::ast::Expr::Block { stmts, result, .. } => {
+            for stmt in stmts {
+                match stmt {
+                    ast::ast::Stmt::Let { pattern, value } => {
+                        walk_pattern(pattern, type_map, lsp_map);
+                        walk_expr(value, type_map, lsp_map);
+                    }
+                    ast::ast::Stmt::Expr(e) => {
+                        walk_expr(e, type_map, lsp_map);
+                    }
+                }
+            }
+            walk_expr(result, type_map, lsp_map);
+        }
+        ast::ast::Expr::Record { fields, .. } => {
+            for field in fields {
+                walk_expr(field.value, type_map, lsp_map);
+            }
+        }
+        ast::ast::Expr::FieldAccess { object, .. } => {
+            walk_expr(object, type_map, lsp_map);
+        }
+        ast::ast::Expr::Tuple { elems, .. } => {
+            for elem in elems {
+                walk_expr(elem, type_map, lsp_map);
+            }
+        }
+        ast::ast::Expr::If {
+            condition,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            walk_expr(condition, type_map, lsp_map);
+            walk_expr(then_branch, type_map, lsp_map);
+            walk_expr(else_branch, type_map, lsp_map);
+        }
+        ast::ast::Expr::Array { elems, .. } => {
+            for elem in elems {
+                walk_expr(elem, type_map, lsp_map);
+            }
+        }
+        ast::ast::Expr::Template { parts, .. } => {
+            for part in parts {
+                match part {
+                    ast::ast::TemplatePart::Str(_) => {}
+                    ast::ast::TemplatePart::Expr(e) => {
+                        walk_expr(e, type_map, lsp_map);
+                    }
+                }
+            }
+        }
+        ast::ast::Expr::Index { array, index, .. } => {
+            walk_expr(array, type_map, lsp_map);
+            walk_expr(index, type_map, lsp_map);
+        }
+    }
+}
+
+fn walk_pattern(
+    pat: &ast::ast::Pattern<'_>,
+    type_map: &HashMap<ast::ast::NodeId, typechecker::MonoType>,
+    lsp_map: &mut HashMap<Span, String>,
+) {
+    if let Some(ty) = type_map.get(&pat.id()) {
+        lsp_map.insert(pat.span(), ty.to_string());
+    }
+    match pat {
+        ast::ast::Pattern::Wildcard(..)
+        | ast::ast::Pattern::Literal(..)
+        | ast::ast::Pattern::Binding(..) => {}
+        ast::ast::Pattern::Constructor { fields, .. } => {
+            for field in fields {
+                walk_pattern(field, type_map, lsp_map);
+            }
+        }
+        ast::ast::Pattern::Tuple { patterns, .. } => {
+            for p in patterns {
+                walk_pattern(p, type_map, lsp_map);
+            }
+        }
+        ast::ast::Pattern::Record { fields, .. } => {
+            for field in fields {
+                if let Some(p) = field.pattern {
+                    walk_pattern(p, type_map, lsp_map);
+                }
+            }
+        }
     }
 }
 

@@ -865,6 +865,8 @@ fn mono_type_to_ir(ty: &typechecker::MonoType, tag_variants: &typechecker::TagVa
         }
         MonoType::Effect(inner) => IrType::Effect(Box::new(mono_type_to_ir(inner, tag_variants))),
         MonoType::Var(_) => IrType::I32,
+        MonoType::IntVar(_) => IrType::I32,
+        MonoType::FloatVar(_) => IrType::F64,
     }
 }
 

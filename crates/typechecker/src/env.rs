@@ -698,10 +698,39 @@ impl TypeEnv {
             ),
         );
 
-        // Option.unwrap_or : <a>(Option<a>, a) -> a
+        // Option.flatMap : <a, b>(Option<a>, (a) -> Option<b>) -> Option<b>
+        let ofm_a2 = self.fresh_var();
+        let ofm_b2 = self.fresh_var();
+        self.insert(
+            "Option.flatMap",
+            PolyType::poly(
+                vec![ofm_a2, ofm_b2],
+                MonoType::Func {
+                    params: Rc::from([
+                        MonoType::Tag {
+                            name: "Option".into(),
+                            payload: Rc::from([MonoType::Var(ofm_a2)]),
+                        },
+                        MonoType::Func {
+                            params: Rc::from([MonoType::Var(ofm_a2)]),
+                            ret: Rc::new(MonoType::Tag {
+                                name: "Option".into(),
+                                payload: Rc::from([MonoType::Var(ofm_b2)]),
+                            }),
+                        },
+                    ]),
+                    ret: Rc::new(MonoType::Tag {
+                        name: "Option".into(),
+                        payload: Rc::from([MonoType::Var(ofm_b2)]),
+                    }),
+                },
+            ),
+        );
+
+        // Option.unwrapOr : <a>(Option<a>, a) -> a
         let uo_a = self.fresh_var();
         self.insert(
-            "Option.unwrap_or",
+            "Option.unwrapOr",
             PolyType::poly(
                 vec![uo_a],
                 MonoType::Func {
@@ -809,6 +838,36 @@ impl TypeEnv {
                     ret: Rc::new(MonoType::Tag {
                         name: "Result".into(),
                         payload: Rc::from([MonoType::Var(rfm_u), MonoType::Var(rfm_e)]),
+                    }),
+                },
+            ),
+        );
+
+        // Result.flatMap : <t, e, u>(Result<t, e>, (t) -> Result<u, e>) -> Result<u, e>
+        let rfm2_t = self.fresh_var();
+        let rfm2_e = self.fresh_var();
+        let rfm2_u = self.fresh_var();
+        self.insert(
+            "Result.flatMap",
+            PolyType::poly(
+                vec![rfm2_t, rfm2_e, rfm2_u],
+                MonoType::Func {
+                    params: Rc::from([
+                        MonoType::Tag {
+                            name: "Result".into(),
+                            payload: Rc::from([MonoType::Var(rfm2_t), MonoType::Var(rfm2_e)]),
+                        },
+                        MonoType::Func {
+                            params: Rc::from([MonoType::Var(rfm2_t)]),
+                            ret: Rc::new(MonoType::Tag {
+                                name: "Result".into(),
+                                payload: Rc::from([MonoType::Var(rfm2_u), MonoType::Var(rfm2_e)]),
+                            }),
+                        },
+                    ]),
+                    ret: Rc::new(MonoType::Tag {
+                        name: "Result".into(),
+                        payload: Rc::from([MonoType::Var(rfm2_u), MonoType::Var(rfm2_e)]),
                     }),
                 },
             ),

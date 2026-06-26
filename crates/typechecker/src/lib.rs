@@ -13,8 +13,8 @@ pub use crate::infer::{
 pub use crate::types::{MonoType, PolyType, TypeId};
 pub use crate::unify::{Substitution, unify};
 
+use ast::ast::NodeId;
 use ast::ast::{Decl, Expr, Program};
-use ast::span::Span;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -22,15 +22,16 @@ use std::rc::Rc;
 pub struct TypedProgram<'a> {
     pub ast: &'a Program<'a>,
     pub env: TypeEnv,
-    /// Maps every expression span (and decl span) to its fully-resolved type.
-    pub type_map: HashMap<Span, MonoType>,
+    /// Maps every expression's [`NodeId`] to its fully-resolved type.
+    /// Used by the IR lowerer to look up types without retraversing the AST.
+    pub type_map: HashMap<NodeId, MonoType>,
     /// Maps tag type names (e.g. "Option", "Result") to their variant info.
     /// Populated from the prelude and user-defined type declarations.
     pub tag_variants: TagVariants,
 }
 
 /// Typechecks a parsed program, returning a [`TypedProgram`] with a complete
-/// span→type map for the IR lowerer and LSP hover.
+/// `NodeId`→type map for the IR lowerer and LSP hover.
 ///
 /// # Errors
 ///

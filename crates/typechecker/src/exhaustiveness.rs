@@ -36,7 +36,7 @@ pub fn check_exhaustive(
 
         let has_wildcard = arms
             .iter()
-            .any(|arm| matches!(arm.pattern, Pattern::Wildcard(_) | Pattern::Binding(_, _)));
+            .any(|arm| matches!(arm.pattern, Pattern::Wildcard(..) | Pattern::Binding(..)));
         if has_wildcard {
             return Ok(());
         }
@@ -106,6 +106,7 @@ mod tests {
         let arms = vec![
             MatchArm {
                 pattern: bump.alloc(Pattern::Constructor {
+                    id: ast::ast::NodeId(0),
                     name: "None",
                     fields: bumpalo::collections::Vec::new_in(&bump),
                     span: sp(),
@@ -114,9 +115,10 @@ mod tests {
             },
             MatchArm {
                 pattern: bump.alloc(Pattern::Constructor {
+                    id: ast::ast::NodeId(0),
                     name: "Some",
                     fields: bumpalo::collections::Vec::from_iter_in(
-                        [Pattern::Wildcard(sp())],
+                        [Pattern::Wildcard(ast::ast::NodeId(0), sp())],
                         &bump,
                     ),
                     span: sp(),
@@ -142,8 +144,12 @@ mod tests {
         let body = bump.alloc(Expr::int("0", sp(), &bump));
         let arms = vec![MatchArm {
             pattern: bump.alloc(Pattern::Constructor {
+                id: ast::ast::NodeId(0),
                 name: "Some",
-                fields: bumpalo::collections::Vec::from_iter_in([Pattern::Wildcard(sp())], &bump),
+                fields: bumpalo::collections::Vec::from_iter_in(
+                    [Pattern::Wildcard(ast::ast::NodeId(0), sp())],
+                    &bump,
+                ),
                 span: sp(),
             }),
             body,
@@ -165,7 +171,7 @@ mod tests {
         let bump = Bump::new();
         let body = bump.alloc(Expr::int("0", sp(), &bump));
         let arms = vec![MatchArm {
-            pattern: bump.alloc(Pattern::Wildcard(sp())),
+            pattern: bump.alloc(Pattern::Wildcard(ast::ast::NodeId(0), sp())),
             body,
         }];
         let result = check_exhaustive(
@@ -185,7 +191,7 @@ mod tests {
         let bump = Bump::new();
         let body = bump.alloc(Expr::int("0", sp(), &bump));
         let arms = vec![MatchArm {
-            pattern: bump.alloc(Pattern::Binding("x", sp())),
+            pattern: bump.alloc(Pattern::Binding(ast::ast::NodeId(0), "x", sp())),
             body,
         }];
         let result = check_exhaustive(
@@ -205,7 +211,7 @@ mod tests {
         let bump = Bump::new();
         let body = bump.alloc(Expr::int("0", sp(), &bump));
         let arms = vec![MatchArm {
-            pattern: bump.alloc(Pattern::Wildcard(sp())),
+            pattern: bump.alloc(Pattern::Wildcard(ast::ast::NodeId(0), sp())),
             body,
         }];
         let result = check_exhaustive(&option_variants(), &MonoType::I32, &arms, sp());
@@ -219,9 +225,10 @@ mod tests {
         let arms = vec![
             MatchArm {
                 pattern: bump.alloc(Pattern::Constructor {
+                    id: ast::ast::NodeId(0),
                     name: "Ok",
                     fields: bumpalo::collections::Vec::from_iter_in(
-                        [Pattern::Wildcard(sp())],
+                        [Pattern::Wildcard(ast::ast::NodeId(0), sp())],
                         &bump,
                     ),
                     span: sp(),
@@ -230,9 +237,10 @@ mod tests {
             },
             MatchArm {
                 pattern: bump.alloc(Pattern::Constructor {
+                    id: ast::ast::NodeId(0),
                     name: "Err",
                     fields: bumpalo::collections::Vec::from_iter_in(
-                        [Pattern::Wildcard(sp())],
+                        [Pattern::Wildcard(ast::ast::NodeId(0), sp())],
                         &bump,
                     ),
                     span: sp(),

@@ -91,6 +91,16 @@ impl Substitution {
                 Some(resolved) => self.apply(&resolved.clone()),
                 None => ty.clone(),
             },
+            // Constrained integer variable: defaults to i32 if still unresolved after inference.
+            MonoType::IntVar(id) => match self.lookup(*id) {
+                Some(resolved) => self.apply(&resolved.clone()),
+                None => MonoType::I32,
+            },
+            // Constrained float variable: defaults to f64 if still unresolved after inference.
+            MonoType::FloatVar(id) => match self.lookup(*id) {
+                Some(resolved) => self.apply(&resolved.clone()),
+                None => MonoType::F64,
+            },
             MonoType::Array(inner) => MonoType::Array(Rc::new(self.apply(inner))),
             MonoType::Func { params, ret } => {
                 let params: Vec<_> = params.iter().map(|p| self.apply(p)).collect();
@@ -126,7 +136,7 @@ impl Substitution {
 
 fn occurs_in(sub: &mut Substitution, var: TypeId, ty: &MonoType) -> bool {
     match ty {
-        MonoType::Var(id) => {
+        MonoType::Var(id) | MonoType::IntVar(id) | MonoType::FloatVar(id) => {
             sub.ensure_key(*id);
             match sub.table.probe_value(*id).0 {
                 Some(resolved) => {
@@ -168,6 +178,28 @@ pub fn unify(sub: &mut Substitution, a: &MonoType, b: &MonoType) -> Result<(), T
 
     match (&a, &b) {
         _ if a == b => Ok(()),
+
+        // Constrained integer variable: unifies only with concrete integers, Var, or another IntVar.
+        (MonoType::IntVar(id), ty) | (ty, MonoType::IntVar(id)) => match ty {
+            MonoType::I8
+            | MonoType::I16
+            | MonoType::I32
+            | MonoType::I64
+            | MonoType::U8
+            | MonoType::U16
+            | MonoType::U32
+            | MonoType::U64
+            | MonoType::Usize => bind(sub, *id, ty),
+            MonoType::IntVar(_) | MonoType::Var(_) => bind(sub, *id, ty),
+            _ => Err(mismatch(&a, &b)),
+        },
+
+        // Constrained float variable: unifies only with concrete floats, Var, or another FloatVar.
+        (MonoType::FloatVar(id), ty) | (ty, MonoType::FloatVar(id)) => match ty {
+            MonoType::F32 | MonoType::F64 => bind(sub, *id, ty),
+            MonoType::FloatVar(_) | MonoType::Var(_) => bind(sub, *id, ty),
+            _ => Err(mismatch(&a, &b)),
+        },
 
         (MonoType::Var(id), _) => bind(sub, *id, &b),
         (_, MonoType::Var(id)) => bind(sub, *id, &a),
@@ -212,7 +244,7 @@ pub fn unify(sub: &mut Substitution, a: &MonoType, b: &MonoType) -> Result<(), T
         }
 
         (MonoType::Record(af), MonoType::Record(bf)) => {
-            if af.len() != bf.len() { 
+            if af.len() != bf.len() {
                 return Err(mismatch(&a, &b));
             }
             for (name, a_ty) in af.iter() {
