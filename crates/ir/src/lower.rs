@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use ast::SmolStr;
 use ast::ast::NodeId;
 use ast::ast::{BinOp, Decl, Expr, Pattern, Stmt, TemplatePart, UnaryOp};
-use typechecker::{MonoType, TagVariants, TypedProgram};
+use typechecker::{MonoType, PolyType, TagVariants, TypedProgram};
 
 use crate::{
     BasicBlock, BlockId, FuncType, Instruction, IrDecl, IrFunction, IrModule, IrType,
@@ -28,11 +28,13 @@ pub enum LowerError {
 // MonoType → IrType
 // ---------------------------------------------------------------------------
 
-pub(crate) fn mono_to_ir(ty: &MonoType) -> IrType {
-    mono_to_ir_inner(ty, None)
-}
 
-fn mono_to_ir_inner(ty: &MonoType, tag_variants: Option<&TagVariants>) -> IrType {
+
+fn mono_to_ir_inner(
+    ty: &MonoType,
+    tag_variants: Option<&TagVariants>,
+    type_args: &HashMap<typechecker::TypeId, IrType>,
+) -> IrType {
     match ty {
         MonoType::I8 => IrType::I8,
         MonoType::I16 => IrType::I16,
@@ -48,22 +50,22 @@ fn mono_to_ir_inner(ty: &MonoType, tag_variants: Option<&TagVariants>) -> IrType
         MonoType::Bool => IrType::Bool,
         MonoType::Str => IrType::Str,
         MonoType::Unit => IrType::Unit,
-        MonoType::Array(inner) => IrType::Array(Box::new(mono_to_ir_inner(inner, tag_variants))),
+        MonoType::Array(inner) => IrType::Array(Box::new(mono_to_ir_inner(inner, tag_variants, type_args))),
         MonoType::Func { params, ret } => IrType::Closure(Box::new(FuncType {
             params: params
                 .iter()
-                .map(|p| mono_to_ir_inner(p, tag_variants))
+                .map(|p| mono_to_ir_inner(p, tag_variants, type_args))
                 .collect(),
-            ret: Box::new(mono_to_ir_inner(ret, tag_variants)),
+            ret: Box::new(mono_to_ir_inner(ret, tag_variants, type_args)),
         })),
         MonoType::Record(fields) => IrType::Record(crate::RecordType {
             name: "anon".into(),
             fields: fields
                 .iter()
-                .map(|(k, v)| (k.clone(), mono_to_ir_inner(v, tag_variants)))
+                .map(|(k, v)| (k.clone(), mono_to_ir_inner(v, tag_variants, type_args)))
                 .collect(),
         }),
-        MonoType::Effect(inner) => IrType::Effect(Box::new(mono_to_ir_inner(inner, tag_variants))),
+        MonoType::Effect(inner) => IrType::Effect(Box::new(mono_to_ir_inner(inner, tag_variants, type_args))),
         MonoType::Tag { name, payload } => {
             if let Some(variants) = tag_variants.and_then(|tv| tv.get(name.as_str())) {
                 // Use the combined payload from tag_variants (which has all
@@ -81,7 +83,7 @@ fn mono_to_ir_inner(ty: &MonoType, tag_variants: Option<&TagVariants>) -> IrType
                         let count = vtemplate.len();
                         let vpayload: Vec<IrType> = combined[offset..offset + count]
                             .iter()
-                            .map(|t| mono_to_ir_inner(t, tag_variants))
+                            .map(|t| mono_to_ir_inner(t, tag_variants, type_args))
                             .collect();
                         offset += count;
                         TagVariant {
@@ -103,16 +105,22 @@ fn mono_to_ir_inner(ty: &MonoType, tag_variants: Option<&TagVariants>) -> IrType
                         discriminant: 0,
                         payload: payload
                             .iter()
-                            .map(|t| mono_to_ir_inner(t, tag_variants))
+                            .map(|t| mono_to_ir_inner(t, tag_variants, type_args))
                             .collect(),
                     }],
                 })
             }
         }
-        MonoType::Var(_) => IrType::I32,
-        // Constrained numeric vars default to their resolved types.
-        MonoType::IntVar(_) => IrType::I32,
-        MonoType::FloatVar(_) => IrType::F64,
+        MonoType::Var(id) | MonoType::IntVar(id) | MonoType::FloatVar(id) => {
+            if let Some(concrete) = type_args.get(id) {
+                concrete.clone()
+            } else {
+                match ty {
+                    MonoType::FloatVar(_) => IrType::F64,
+                    _ => IrType::I32,
+                }
+            }
+        }
     }
 }
 
@@ -121,10 +129,11 @@ fn expr_ir_type(
     id: NodeId,
     type_map: &HashMap<NodeId, MonoType>,
     tag_variants: Option<&TagVariants>,
+    type_args: &HashMap<typechecker::TypeId, IrType>,
 ) -> IrType {
     type_map
         .get(&id)
-        .map(|m| mono_to_ir_inner(m, tag_variants))
+        .map(|m| mono_to_ir_inner(m, tag_variants, type_args))
         .unwrap_or(IrType::I32)
 }
 
@@ -243,6 +252,7 @@ struct FunctionBuilder<'a> {
     value_globals: &'a HashSet<SmolStr>,
     type_map: &'a HashMap<NodeId, MonoType>,
     tag_variants: &'a TagVariants,
+    type_args: HashMap<typechecker::TypeId, IrType>,
 }
 
 impl<'a> FunctionBuilder<'a> {
@@ -253,6 +263,7 @@ impl<'a> FunctionBuilder<'a> {
         value_globals: &'a HashSet<SmolStr>,
         type_map: &'a HashMap<NodeId, MonoType>,
         tag_variants: &'a TagVariants,
+        type_args: HashMap<typechecker::TypeId, IrType>,
     ) -> Self {
         let mut func = IrFunction::new(name, ret);
         let entry_id = func.alloc_block();
@@ -266,6 +277,7 @@ impl<'a> FunctionBuilder<'a> {
             value_globals,
             type_map,
             tag_variants,
+            type_args,
         }
     }
 
@@ -315,23 +327,164 @@ impl<'a> FunctionBuilder<'a> {
 
     /// Returns the `IrType` for an expression by its [`NodeId`] using the type map.
     fn expr_type(&self, id: NodeId) -> IrType {
-        expr_ir_type(id, self.type_map, Some(self.tag_variants))
+        expr_ir_type(id, self.type_map, Some(self.tag_variants), &self.type_args)
     }
 
     /// Converts a `MonoType` to `IrType` using this builder's tag_variants.
     fn mono_to_ir(&self, ty: &MonoType) -> IrType {
-        mono_to_ir_inner(ty, Some(self.tag_variants))
+        mono_to_ir_inner(ty, Some(self.tag_variants), &self.type_args)
     }
 }
 
 // ---------------------------------------------------------------------------
-// Expression lowering
+// Monomorphization Helpers
 // ---------------------------------------------------------------------------
 
-fn lower_expr<'src>(
+struct MonoCtx<'a, 'src> {
+    queue: &'a mut Vec<(String, &'src Decl<'src>, HashMap<typechecker::TypeId, IrType>)>,
+    generated: &'a mut HashSet<String>,
+    global_decls: &'a HashMap<&'src str, &'src Decl<'src>>,
+    env: &'a typechecker::TypeEnv,
+}
+
+fn extract_type_args(
+    poly: &MonoType,
+    concrete: &MonoType,
+    type_args: &mut HashMap<typechecker::TypeId, IrType>,
+    tag_variants: &TagVariants,
+) {
+    match (poly, concrete) {
+        (MonoType::Var(id) | MonoType::IntVar(id) | MonoType::FloatVar(id), _) => {
+            let ir_ty = mono_to_ir_inner(concrete, Some(tag_variants), type_args);
+            type_args.insert(*id, ir_ty);
+        }
+        (MonoType::Array(inner_poly), MonoType::Array(inner_concrete)) => {
+            extract_type_args(inner_poly, inner_concrete, type_args, tag_variants);
+        }
+        (MonoType::Func { params: p_poly, ret: r_poly }, MonoType::Func { params: p_concrete, ret: r_concrete }) => {
+            for (p_p, p_c) in p_poly.iter().zip(p_concrete.iter()) {
+                extract_type_args(p_p, p_c, type_args, tag_variants);
+            }
+            extract_type_args(r_poly, r_concrete, type_args, tag_variants);
+        }
+        (MonoType::Record(fields_poly), MonoType::Record(fields_concrete)) => {
+            for (k, v_poly) in fields_poly.iter() {
+                if let Some(v_concrete) = fields_concrete.get(k) {
+                    extract_type_args(v_poly, v_concrete, type_args, tag_variants);
+                }
+            }
+        }
+        (MonoType::Tag { name: name_poly, payload: payload_poly }, MonoType::Tag { name: name_concrete, payload: payload_concrete }) => {
+            if name_poly == name_concrete {
+                for (p_poly, p_concrete) in payload_poly.iter().zip(payload_concrete.iter()) {
+                    extract_type_args(p_poly, p_concrete, type_args, tag_variants);
+                }
+            }
+        }
+        (MonoType::Effect(inner_poly), MonoType::Effect(inner_concrete)) => {
+            extract_type_args(inner_poly, inner_concrete, type_args, tag_variants);
+        }
+        _ => {}
+    }
+}
+
+fn format_ir_type_mangled(ty: &IrType) -> String {
+    let mangled = match ty {
+        IrType::I8 => "I8".to_string(),
+        IrType::I16 => "I16".to_string(),
+        IrType::I32 => "I32".to_string(),
+        IrType::I64 => "I64".to_string(),
+        IrType::U8 => "U8".to_string(),
+        IrType::U16 => "U16".to_string(),
+        IrType::U32 => "U32".to_string(),
+        IrType::U64 => "U64".to_string(),
+        IrType::Usize => "Usize".to_string(),
+        IrType::F32 => "F32".to_string(),
+        IrType::F64 => "F64".to_string(),
+        IrType::Bool => "Bool".to_string(),
+        IrType::Str => "Str".to_string(),
+        IrType::Unit => "Unit".to_string(),
+        IrType::Array(inner) => format!("Arr{}", format_ir_type_mangled(inner)),
+        IrType::Record(rt) => {
+            let mut s = format!("Rec_{}", rt.name);
+            for (name, f_ty) in &rt.fields {
+                s.push_str(&format!("_{}_{}", name, format_ir_type_mangled(f_ty)));
+            }
+            s
+        }
+        IrType::Func(ft) => {
+            let mut s = "Func".to_string();
+            for p in &ft.params {
+                s.push_str(&format!("_{}", format_ir_type_mangled(p)));
+            }
+            s.push_str(&format!("_Ret_{}", format_ir_type_mangled(&ft.ret)));
+            s
+        }
+        IrType::Closure(ft) => {
+            let mut s = "Closure".to_string();
+            for p in &ft.params {
+                s.push_str(&format!("_{}", format_ir_type_mangled(p)));
+            }
+            s.push_str(&format!("_Ret_{}", format_ir_type_mangled(&ft.ret)));
+            s
+        }
+        IrType::Tag(tt) => {
+            format!("Tag_{}", tt.name)
+        }
+        IrType::Effect(inner) => format!("Eff{}", format_ir_type_mangled(inner)),
+    };
+    mangled.chars().filter(|c| c.is_alphanumeric() || *c == '_').collect()
+}
+
+fn mangle_name(
+    base_name: &str,
+    quantified: &[typechecker::TypeId],
+    type_args: &HashMap<typechecker::TypeId, IrType>,
+) -> String {
+    if quantified.is_empty() {
+        return base_name.to_string();
+    }
+    let mut name = base_name.to_string();
+    for q in quantified {
+        let ir_ty = type_args.get(q).cloned().unwrap_or(IrType::Unit);
+        name.push('_');
+        name.push_str(&format_ir_type_mangled(&ir_ty));
+    }
+    name
+}
+
+fn resolve_and_queue_global<'src>(
+    name: &str,
+    expr_id: NodeId,
+    fb: &FunctionBuilder<'_>,
+    ctx: &mut MonoCtx<'_, 'src>,
+) -> String {
+    if let Some(decl) = ctx.global_decls.get(name) {
+        let concrete_ty = fb.type_map.get(&expr_id).cloned().unwrap_or(MonoType::Unit);
+        let poly = ctx
+            .env
+            .lookup(name)
+            .cloned()
+            .unwrap_or_else(|| PolyType::mono(concrete_ty.clone()));
+
+        let mut type_args = HashMap::new();
+        type_args.extend(fb.type_args.clone());
+        extract_type_args(&poly.body, &concrete_ty, &mut type_args, fb.tag_variants);
+
+        let mangled = mangle_name(name, &poly.quantified, &type_args);
+        if !ctx.generated.contains(&mangled) {
+            ctx.generated.insert(mangled.clone());
+            ctx.queue.push((mangled.clone(), decl, type_args));
+        }
+        mangled
+    } else {
+        name.to_string()
+    }
+}fn lower_expr<'src>(
     fb: &mut FunctionBuilder<'_>,
     expr: &Expr<'src>,
     hoisted: &mut Vec<IrFunction>,
+    ctx: &mut MonoCtx<'_, 'src>,
 ) -> Result<ValueId, LowerError> {
     match expr {
         Expr::IntLiteral(_, text, _) => Ok(fb.emit(parse_int_literal(text))),
@@ -360,19 +513,21 @@ fn lower_expr<'src>(
                     .map(|t| matches!(t, MonoType::Func { .. }))
                     .unwrap_or(false);
                 if is_func && !fb.value_globals.contains::<str>(name) {
+                    let mangled = resolve_and_queue_global(name, expr.id(), fb, ctx);
                     Ok(fb.emit(Instruction::MakeClosure(Box::new(MakeClosureData {
-                        func_name: (*name).into(),
+                        func_name: mangled.into(),
                         captures: vec![],
                     }))))
                 } else {
                     let return_type = fb
                         .type_map
                         .get(&expr.id())
-                        .map(mono_to_ir)
+                        .map(|m| fb.mono_to_ir(m))
                         .unwrap_or(IrType::Unit);
+                    let mangled = resolve_and_queue_global(name, expr.id(), fb, ctx);
                     Ok(
                         fb.emit(Instruction::CallNamed(Box::new(crate::CallNamedData {
-                            name: (*name).into(),
+                            name: mangled.into(),
                             args: vec![],
                             return_type,
                         }))),
@@ -386,8 +541,8 @@ fn lower_expr<'src>(
         Expr::Binary {
             op, left, right, ..
         } => {
-            let lv = lower_expr(fb, left, hoisted)?;
-            let rv = lower_expr(fb, right, hoisted)?;
+            let lv = lower_expr(fb, left, hoisted, ctx)?;
+            let rv = lower_expr(fb, right, hoisted, ctx)?;
             let inst = match op {
                 BinOp::Add => Instruction::Add(lv, rv),
                 BinOp::Sub => Instruction::Sub(lv, rv),
@@ -407,7 +562,7 @@ fn lower_expr<'src>(
         }
 
         Expr::Unary { op, operand, .. } => {
-            let v = lower_expr(fb, operand, hoisted)?;
+            let v = lower_expr(fb, operand, hoisted, ctx)?;
             Ok(fb.emit(match op {
                 UnaryOp::Neg => Instruction::Neg(v),
                 UnaryOp::Not => Instruction::Not(v),
@@ -420,7 +575,7 @@ fn lower_expr<'src>(
             else_branch,
             ..
         } => {
-            let cond_v = lower_expr(fb, condition, hoisted)?;
+            let cond_v = lower_expr(fb, condition, hoisted, ctx)?;
             let then_id = fb.alloc_block();
             let else_id = fb.alloc_block();
             let merge_id = fb.alloc_block();
@@ -434,14 +589,14 @@ fn lower_expr<'src>(
             });
 
             fb.set_current(then_id);
-            let then_v = lower_expr(fb, then_branch, hoisted)?;
+            let then_v = lower_expr(fb, then_branch, hoisted, ctx)?;
             fb.set_terminator(Terminator::Jump {
                 target: merge_id,
                 args: vec![then_v],
             });
 
             fb.set_current(else_id);
-            let else_v = lower_expr(fb, else_branch, hoisted)?;
+            let else_v = lower_expr(fb, else_branch, hoisted, ctx)?;
             fb.set_terminator(Terminator::Jump {
                 target: merge_id,
                 args: vec![else_v],
@@ -464,15 +619,15 @@ fn lower_expr<'src>(
         Expr::Block { stmts, result, .. } => {
             let saved = fb.locals.clone();
             for stmt in stmts {
-                lower_stmt(fb, stmt, hoisted)?;
+                lower_stmt(fb, stmt, hoisted, ctx)?;
             }
-            let v = lower_expr(fb, result, hoisted)?;
+            let v = lower_expr(fb, result, hoisted, ctx)?;
             fb.locals = saved;
             Ok(v)
         }
 
         Expr::Match { subject, arms, .. } => {
-            let subj_v = lower_expr(fb, subject, hoisted)?;
+            let subj_v = lower_expr(fb, subject, hoisted, ctx)?;
             let subj_ty = fb.expr_type(subject.id());
             let merge_id = fb.alloc_block();
             let result_ty = fb.expr_type(expr.id());
@@ -497,7 +652,7 @@ fn lower_expr<'src>(
                 let saved = fb.locals.clone();
                 fb.set_current(arm_id);
                 lower_pattern(fb, arm.pattern, subj_v)?;
-                let arm_v = lower_expr(fb, arm.body, hoisted)?;
+                let arm_v = lower_expr(fb, arm.body, hoisted, ctx)?;
                 fb.set_terminator(Terminator::Jump {
                     target: merge_id,
                     args: vec![arm_v],
@@ -608,12 +763,12 @@ fn lower_expr<'src>(
         Expr::Array { elems, .. } => {
             let elem_vals: Vec<ValueId> = elems
                 .iter()
-                .map(|e| lower_expr(fb, e, hoisted))
+                .map(|e| lower_expr(fb, e, hoisted, ctx))
                 .collect::<Result<_, _>>()?;
             let return_type = fb
                 .type_map
                 .get(&expr.id())
-                .map(mono_to_ir)
+                .map(|m| fb.mono_to_ir(m))
                 .unwrap_or(IrType::Unit);
             Ok(
                 fb.emit(Instruction::CallNamed(Box::new(crate::CallNamedData {
@@ -627,7 +782,7 @@ fn lower_expr<'src>(
         Expr::Tuple { elems, .. } => {
             let elem_vals: Vec<ValueId> = elems
                 .iter()
-                .map(|e| lower_expr(fb, e, hoisted))
+                .map(|e| lower_expr(fb, e, hoisted, ctx))
                 .collect::<Result<_, _>>()?;
             Ok(
                 fb.emit(Instruction::TagConstruct(Box::new(TagConstructData {
@@ -642,7 +797,7 @@ fn lower_expr<'src>(
         Expr::Record { fields, .. } => {
             let mut sorted: Vec<_> = fields
                 .iter()
-                .map(|f| lower_expr(fb, f.value, hoisted).map(|v| (f, v)))
+                .map(|f| lower_expr(fb, f.value, hoisted, ctx).map(|v| (f, v)))
                 .collect::<Result<Vec<_>, _>>()?;
             // Sort by field name so field indices match the
             // alphabetical ordering that field_index_of returns
@@ -656,7 +811,7 @@ fn lower_expr<'src>(
         }
 
         Expr::FieldAccess { object, field, .. } => {
-            let obj_v = lower_expr(fb, object, hoisted)?;
+            let obj_v = lower_expr(fb, object, hoisted, ctx)?;
             // Compute the field index from the object's inferred record type.
             let field_index = field_index_of(fb, object, field);
             Ok(fb.emit(Instruction::RecordGet {
@@ -667,8 +822,8 @@ fn lower_expr<'src>(
         }
 
         Expr::Index { array, index, .. } => {
-            let arr_v = lower_expr(fb, array, hoisted)?;
-            let idx_v = lower_expr(fb, index, hoisted)?;
+            let arr_v = lower_expr(fb, array, hoisted, ctx)?;
+            let idx_v = lower_expr(fb, index, hoisted, ctx)?;
             Ok(fb.emit(Instruction::ArrayGet {
                 array: arr_v,
                 index: idx_v,
@@ -683,7 +838,7 @@ fn lower_expr<'src>(
                         part_vals.push(fb.emit(Instruction::ConstStr((*s).into())));
                     }
                     TemplatePart::Expr(e) => {
-                        part_vals.push(lower_expr(fb, e, hoisted)?);
+                        part_vals.push(lower_expr(fb, e, hoisted, ctx)?);
                     }
                 }
             }
@@ -712,6 +867,7 @@ fn lower_expr<'src>(
                 fb.value_globals,
                 fb.type_map,
                 fb.tag_variants,
+                fb.type_args.clone(),
             );
 
             // Capture params — type from outer scope value_types or func params.
@@ -760,7 +916,7 @@ fn lower_expr<'src>(
                 inner_fb.bind(p.name.into(), v);
             }
 
-            let body_v = lower_expr(&mut inner_fb, body, hoisted)?;
+            let body_v = lower_expr(&mut inner_fb, body, hoisted, ctx)?;
             inner_fb.set_terminator(Terminator::Return(body_v));
             hoisted.push(inner_fb.func);
 
@@ -777,12 +933,12 @@ fn lower_expr<'src>(
         Expr::Application { func, args, .. } => {
             let arg_vals: Vec<ValueId> = args
                 .iter()
-                .map(|a| lower_expr(fb, a, hoisted))
+                .map(|a| lower_expr(fb, a, hoisted, ctx))
                 .collect::<Result<_, _>>()?;
             let return_type = fb
                 .type_map
                 .get(&expr.id())
-                .map(mono_to_ir)
+                .map(|m| fb.mono_to_ir(m))
                 .unwrap_or(IrType::Unit);
             match func {
                 Expr::Ident(_, name, _) => {
@@ -798,7 +954,7 @@ fn lower_expr<'src>(
                     } else if fb.value_globals.contains::<str>(name) {
                         // Value-defined global (e.g. `let t = mk(5)`): evaluate it
                         // to get the closure value, then call it with args.
-                        let callee = lower_expr(fb, func, hoisted)?;
+                        let callee = lower_expr(fb, func, hoisted, ctx)?;
                         Ok(fb.emit(Instruction::CallIndirect(Box::new(
                             crate::CallIndirectData {
                                 callee,
@@ -809,7 +965,7 @@ fn lower_expr<'src>(
                     } else if fb.lookup(name).is_some() {
                         // Local variable or parameter used in call position.
                         // Evaluate it to get the closure value, then call via CallIndirect.
-                        let callee = lower_expr(fb, func, hoisted)?;
+                        let callee = lower_expr(fb, func, hoisted, ctx)?;
                         Ok(fb.emit(Instruction::CallIndirect(Box::new(
                             crate::CallIndirectData {
                                 callee,
@@ -818,9 +974,10 @@ fn lower_expr<'src>(
                             },
                         ))))
                     } else {
+                        let mangled = resolve_and_queue_global(name, func.id(), fb, ctx);
                         Ok(
                             fb.emit(Instruction::CallNamed(Box::new(crate::CallNamedData {
-                                name: (*name).into(),
+                                name: mangled.into(),
                                 args: arg_vals,
                                 return_type,
                             }))),
@@ -828,7 +985,7 @@ fn lower_expr<'src>(
                     }
                 }
                 _ => {
-                    let callee = lower_expr(fb, func, hoisted)?;
+                    let callee = lower_expr(fb, func, hoisted, ctx)?;
                     Ok(fb.emit(Instruction::CallIndirect(Box::new(
                         crate::CallIndirectData {
                             callee,
@@ -985,14 +1142,15 @@ fn lower_stmt<'src>(
     fb: &mut FunctionBuilder<'_>,
     stmt: &Stmt<'src>,
     hoisted: &mut Vec<IrFunction>,
+    ctx: &mut MonoCtx<'_, 'src>,
 ) -> Result<(), LowerError> {
     match stmt {
         Stmt::Let { pattern, value } => {
-            let v = lower_expr(fb, value, hoisted)?;
+            let v = lower_expr(fb, value, hoisted, ctx)?;
             bind_pattern_local(fb, pattern, v);
         }
         Stmt::Expr(e) => {
-            lower_expr(fb, e, hoisted)?;
+            lower_expr(fb, e, hoisted, ctx)?;
         }
     }
     Ok(())
@@ -1131,72 +1289,54 @@ fn parse_float_literal(text: &str) -> Instruction {
 // Top-level lowering
 // ---------------------------------------------------------------------------
 
-/// Derives the function's return type from the type map.
-fn decl_return_type(
-    decl_id: NodeId,
-    value: &Expr<'_>,
-    type_map: &HashMap<NodeId, MonoType>,
-) -> IrType {
-    let Some(mono) = type_map.get(&decl_id) else {
-        return IrType::I32;
-    };
-    match (value, mono) {
-        (Expr::Lambda { .. }, MonoType::Func { ret, .. }) => mono_to_ir(ret),
-        (_, other) => mono_to_ir(other),
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
-fn lower_decl<'src>(
+fn lower_decl_monomorphized<'src>(
+    mangled_name: String,
     decl: &Decl<'src>,
     globals: &HashSet<SmolStr>,
     value_globals: &HashSet<SmolStr>,
     type_map: &HashMap<NodeId, MonoType>,
     tag_variants: &TagVariants,
+    type_args: HashMap<typechecker::TypeId, IrType>,
     module: &mut IrModule,
-    resolved_param_types: &HashMap<String, Vec<IrType>>,
-    resolved_return_types: &HashMap<String, IrType>,
+    ctx: &mut MonoCtx<'_, 'src>,
 ) -> Result<(), LowerError> {
     match decl {
         Decl::Bind {
-            name,
             value,
             id: decl_id,
             ..
         } => {
-            let ret_ty = resolved_return_types
-                .get(*name)
-                .cloned()
-                .unwrap_or_else(|| decl_return_type(*decl_id, value, type_map));
+            let ret_ty = type_map
+                .get(decl_id)
+                .map(|t| match (value, t) {
+                    (Expr::Lambda { .. }, MonoType::Func { ret, .. }) => {
+                        mono_to_ir_inner(ret, Some(tag_variants), &type_args)
+                    }
+                    (_, other) => mono_to_ir_inner(other, Some(tag_variants), &type_args),
+                })
+                .unwrap_or(IrType::I32);
             let mut hoisted = Vec::new();
 
             match value {
                 Expr::Lambda { params, body, .. } => {
                     let mut fb = FunctionBuilder::new(
-                        (*name).into(),
+                        mangled_name.into(),
                         ret_ty,
                         globals,
                         value_globals,
                         type_map,
                         tag_variants,
+                        type_args,
                     );
-                    // Check if we have monomorphized param types for this function.
-                    let mono_param_tys = resolved_param_types.get(*name);
-                    for (param_idx, p) in params.iter().enumerate() {
+                    for p in params.iter() {
                         let v = fb.alloc_value();
-                        // Resolve param type from annotation, monomorphized types,
-                        // or from the Func type in type_map.
                         let param_ty = p
                             .ty
                             .and_then(|ann| typechecker::infer::type_expr_to_mono(ann).ok())
                             .as_ref()
                             .map(|t| fb.mono_to_ir(t))
                             .or_else(|| {
-                                // Use monomorphized param type if available.
-                                if let Some(tys) = mono_param_tys {
-                                    return tys.get(param_idx).cloned();
-                                }
-                                // Extract from the function's MonoType in the map.
                                 type_map.get(decl_id).and_then(|mono| match mono {
                                     MonoType::Func { params: ptys, .. } => {
                                         let idx = params.iter().position(|q| q.name == p.name)?;
@@ -1210,20 +1350,21 @@ fn lower_decl<'src>(
                         fb.value_types.insert(v, param_ty);
                         fb.bind(p.name.into(), v);
                     }
-                    let body_v = lower_expr(&mut fb, body, &mut hoisted)?;
+                    let body_v = lower_expr(&mut fb, body, &mut hoisted, ctx)?;
                     fb.set_terminator(Terminator::Return(body_v));
                     module.decls.push(IrDecl::Function(fb.func));
                 }
                 other => {
                     let mut fb = FunctionBuilder::new(
-                        (*name).into(),
+                        mangled_name.into(),
                         ret_ty,
                         globals,
                         value_globals,
                         type_map,
                         tag_variants,
+                        type_args,
                     );
-                    let v = lower_expr(&mut fb, other, &mut hoisted)?;
+                    let v = lower_expr(&mut fb, other, &mut hoisted, ctx)?;
                     fb.set_terminator(Terminator::Return(v));
                     module.decls.push(IrDecl::Function(fb.func));
                 }
@@ -1234,542 +1375,8 @@ fn lower_decl<'src>(
             }
             Ok(())
         }
-
-        Decl::Use { path, .. } => {
-            module.imports.push(path.join("::").into());
-            Ok(())
-        }
-
-        Decl::TypeAlias {
-            name,
-            rhs: _,
-            id: decl_id,
-            ..
-        } => {
-            // Use the type_map to get the resolved canonical type.
-            if let Some(mono) = type_map.get(decl_id) {
-                module.decls.push(IrDecl::TypeAlias {
-                    name: (*name).into(),
-                    ty: mono_to_ir(mono),
-                });
-            }
-            Ok(())
-        }
+        _ => Ok(()),
     }
-}
-
-// ---------------------------------------------------------------------------
-// Monomorphization pre-pass
-// ---------------------------------------------------------------------------
-
-/// Resolves polymorphic parameter and return types by examining call sites.
-///
-/// When a function parameter or return type has an unresolved type variable
-/// (`MonoType::Var`), the default IR type (`I32`) is incorrect. This pass
-/// walks the AST to find all call sites of each function, extracts concrete
-/// argument types and return types from the type map, and uses them to
-/// resolve polymorphic parameter and return types.
-///
-/// Uses iterative resolution: outer functions are resolved first, then their
-/// resolved types are used to resolve inner functions that they call.
-fn monomorphize_param_types(
-    typed: &TypedProgram<'_>,
-    tag_variants: &TagVariants,
-) -> (HashMap<String, Vec<IrType>>, HashMap<String, IrType>) {
-    let mut resolved: HashMap<String, Vec<IrType>> = HashMap::new();
-    let mut resolved_returns: HashMap<String, IrType> = HashMap::new();
-
-    // Build a map from function name to its param names for scope tracking.
-    let mut func_param_names: HashMap<String, Vec<String>> = HashMap::new();
-    for decl in &typed.ast.decls {
-        if let Decl::Bind {
-            name,
-            value: Expr::Lambda { params, .. },
-            ..
-        } = decl
-        {
-            func_param_names.insert(
-                (*name).into(),
-                params.iter().map(|p| (*p.name).into()).collect(),
-            );
-        }
-    }
-
-    // Iterate until convergence (max 10 passes for safety).
-    for _ in 0..10 {
-        let mut changed = false;
-
-        // Collect call sites using currently-resolved types.
-        let mut call_sites: HashMap<String, Vec<Vec<IrType>>> = HashMap::new();
-        let mut call_return_sites: HashMap<String, Vec<IrType>> = HashMap::new();
-        for decl in &typed.ast.decls {
-            if let Decl::Bind { name, value, .. } = decl {
-                collect_call_sites(
-                    value,
-                    &typed.type_map,
-                    &resolved,
-                    &func_param_names,
-                    name,
-                    &mut call_sites,
-                    &mut call_return_sites,
-                );
-            }
-        }
-
-        // Resolve each function's params and return type from call sites.
-        for decl in &typed.ast.decls {
-            if let Decl::Bind {
-                name,
-                span: _,
-                id: decl_id,
-                value,
-                ..
-            } = decl
-            {
-                let Expr::Lambda { .. } = value else {
-                    continue;
-                };
-                let Some(MonoType::Func {
-                    params: ptys, ret, ..
-                }) = typed.type_map.get(decl_id)
-                else {
-                    continue;
-                };
-
-                // Resolve parameter types from call sites.
-                let site_arg_lists = call_sites.get(*name).map(|v| v.as_slice()).unwrap_or(&[]);
-                let mut resolved_params = Vec::with_capacity(ptys.len());
-                for (i, pty) in ptys.iter().enumerate() {
-                    if mono_type_has_vars(pty) {
-                        if site_arg_lists.is_empty() {
-                            resolved_params.push(mono_to_ir_inner(pty, Some(tag_variants)));
-                        } else {
-                            let concrete = resolve_var_from_call_sites(i, site_arg_lists);
-                            resolved_params.push(concrete);
-                        }
-                    } else {
-                        resolved_params.push(mono_to_ir_inner(pty, Some(tag_variants)));
-                    }
-                }
-                let prev = resolved.insert((*name).into(), resolved_params);
-                if let Some(ref prev_val) = prev
-                    && let Some(new) = resolved.get(*name)
-                    && prev_val != new
-                {
-                    changed = true;
-                } else if prev.is_none() {
-                    changed = true;
-                }
-
-                // Resolve return type from call site return types.
-                if mono_type_has_vars(ret)
-                    && let Some(ret_tys) = call_return_sites.get(*name)
-                    && let Some(concrete_ret) = ret_tys.first()
-                {
-                    let prev_ret = resolved_returns.insert((*name).into(), concrete_ret.clone());
-                    if prev_ret.as_ref() != Some(concrete_ret) {
-                        changed = true;
-                    }
-                } else if !resolved_returns.contains_key(*name) {
-                    resolved_returns
-                        .insert((*name).into(), mono_to_ir_inner(ret, Some(tag_variants)));
-                    changed = true;
-                }
-            }
-        }
-
-        if !changed {
-            break;
-        }
-    }
-
-    (resolved, resolved_returns)
-}
-
-/// Walks an expression tree collecting call-site argument types.
-///
-/// When an argument is an identifier that matches a known function parameter,
-/// the `resolved` map is consulted for the actual concrete type (from previous
-/// monomorphization iterations), falling back to the type map.
-fn collect_call_sites(
-    expr: &Expr<'_>,
-    type_map: &HashMap<NodeId, MonoType>,
-    resolved: &HashMap<String, Vec<IrType>>,
-    func_param_names: &HashMap<String, Vec<String>>,
-    enclosing_fn: &str,
-    call_sites: &mut HashMap<String, Vec<Vec<IrType>>>,
-    call_return_sites: &mut HashMap<String, Vec<IrType>>,
-) {
-    match expr {
-        Expr::Application { func, args, .. } => {
-            // If the callee is a simple identifier, record its call-site types.
-            if let Expr::Ident(_, name, _) = func {
-                let arg_types: Vec<IrType> = args
-                    .iter()
-                    .map(|a| {
-                        resolve_arg_type(a, type_map, resolved, func_param_names, enclosing_fn)
-                    })
-                    .collect();
-                call_sites
-                    .entry((*name).into())
-                    .or_default()
-                    .push(arg_types);
-
-                // Also record the return type of this call from the type_map.
-                if let Some(ret_mono) = type_map.get(&expr.id()) {
-                    let ret_ir = mono_to_ir(ret_mono);
-                    if !matches!(ret_ir, IrType::Unit) {
-                        call_return_sites
-                            .entry((*name).into())
-                            .or_default()
-                            .push(ret_ir);
-                    }
-                }
-            }
-            // Recurse into callee and arguments.
-            collect_call_sites(
-                func,
-                type_map,
-                resolved,
-                func_param_names,
-                enclosing_fn,
-                call_sites,
-                call_return_sites,
-            );
-            for arg in args {
-                collect_call_sites(
-                    arg,
-                    type_map,
-                    resolved,
-                    func_param_names,
-                    enclosing_fn,
-                    call_sites,
-                    call_return_sites,
-                );
-            }
-        }
-        Expr::Lambda { body, .. } => {
-            collect_call_sites(
-                body,
-                type_map,
-                resolved,
-                func_param_names,
-                enclosing_fn,
-                call_sites,
-                call_return_sites,
-            );
-        }
-        Expr::Block { stmts, result, .. } => {
-            for stmt in stmts {
-                collect_call_sites_stmt(
-                    stmt,
-                    type_map,
-                    resolved,
-                    func_param_names,
-                    enclosing_fn,
-                    call_sites,
-                    call_return_sites,
-                );
-            }
-            collect_call_sites(
-                result,
-                type_map,
-                resolved,
-                func_param_names,
-                enclosing_fn,
-                call_sites,
-                call_return_sites,
-            );
-        }
-        Expr::Binary { left, right, .. } => {
-            collect_call_sites(
-                left,
-                type_map,
-                resolved,
-                func_param_names,
-                enclosing_fn,
-                call_sites,
-                call_return_sites,
-            );
-            collect_call_sites(
-                right,
-                type_map,
-                resolved,
-                func_param_names,
-                enclosing_fn,
-                call_sites,
-                call_return_sites,
-            );
-        }
-        Expr::Unary { operand, .. } => {
-            collect_call_sites(
-                operand,
-                type_map,
-                resolved,
-                func_param_names,
-                enclosing_fn,
-                call_sites,
-                call_return_sites,
-            );
-        }
-        Expr::Match { subject, arms, .. } => {
-            collect_call_sites(
-                subject,
-                type_map,
-                resolved,
-                func_param_names,
-                enclosing_fn,
-                call_sites,
-                call_return_sites,
-            );
-            for arm in arms {
-                collect_call_sites(
-                    arm.body,
-                    type_map,
-                    resolved,
-                    func_param_names,
-                    enclosing_fn,
-                    call_sites,
-                    call_return_sites,
-                );
-            }
-        }
-        Expr::If {
-            condition,
-            then_branch,
-            else_branch,
-            ..
-        } => {
-            collect_call_sites(
-                condition,
-                type_map,
-                resolved,
-                func_param_names,
-                enclosing_fn,
-                call_sites,
-                call_return_sites,
-            );
-            collect_call_sites(
-                then_branch,
-                type_map,
-                resolved,
-                func_param_names,
-                enclosing_fn,
-                call_sites,
-                call_return_sites,
-            );
-            collect_call_sites(
-                else_branch,
-                type_map,
-                resolved,
-                func_param_names,
-                enclosing_fn,
-                call_sites,
-                call_return_sites,
-            );
-        }
-        Expr::Template { parts, .. } => {
-            for part in parts {
-                if let TemplatePart::Expr(e) = part {
-                    collect_call_sites(
-                        e,
-                        type_map,
-                        resolved,
-                        func_param_names,
-                        enclosing_fn,
-                        call_sites,
-                        call_return_sites,
-                    );
-                }
-            }
-        }
-        Expr::Index { array, index, .. } => {
-            collect_call_sites(
-                array,
-                type_map,
-                resolved,
-                func_param_names,
-                enclosing_fn,
-                call_sites,
-                call_return_sites,
-            );
-            collect_call_sites(
-                index,
-                type_map,
-                resolved,
-                func_param_names,
-                enclosing_fn,
-                call_sites,
-                call_return_sites,
-            );
-        }
-        Expr::Array { elems, .. } => {
-            for e in elems {
-                collect_call_sites(
-                    e,
-                    type_map,
-                    resolved,
-                    func_param_names,
-                    enclosing_fn,
-                    call_sites,
-                    call_return_sites,
-                );
-            }
-        }
-        Expr::Record { fields, .. } => {
-            for f in fields {
-                collect_call_sites(
-                    f.value,
-                    type_map,
-                    resolved,
-                    func_param_names,
-                    enclosing_fn,
-                    call_sites,
-                    call_return_sites,
-                );
-            }
-        }
-        Expr::FieldAccess { object, .. } => {
-            collect_call_sites(
-                object,
-                type_map,
-                resolved,
-                func_param_names,
-                enclosing_fn,
-                call_sites,
-                call_return_sites,
-            );
-        }
-        Expr::Tuple { elems, .. } => {
-            for e in elems {
-                collect_call_sites(
-                    e,
-                    type_map,
-                    resolved,
-                    func_param_names,
-                    enclosing_fn,
-                    call_sites,
-                    call_return_sites,
-                );
-            }
-        }
-        Expr::IntLiteral(_, _, _)
-        | Expr::FloatLiteral(_, _, _)
-        | Expr::Str(_, _, _)
-        | Expr::Bool(_, _, _)
-        | Expr::Ident(_, _, _) => {}
-    }
-}
-
-/// Resolve the type of an argument expression at a call site.
-///
-/// For identifiers that are function parameters of the enclosing function,
-/// we use the resolved type from a previous monomorphization iteration.
-/// Otherwise we fall back to the type map.
-fn resolve_arg_type(
-    expr: &Expr<'_>,
-    type_map: &HashMap<NodeId, MonoType>,
-    resolved: &HashMap<String, Vec<IrType>>,
-    func_param_names: &HashMap<String, Vec<String>>,
-    enclosing_fn: &str,
-) -> IrType {
-    // If the type_map has a concrete (non-Var) type, use it directly.
-    if let Some(mono) = type_map.get(&expr.id())
-        && !matches!(
-            mono,
-            MonoType::Var(_) | MonoType::IntVar(_) | MonoType::FloatVar(_)
-        )
-    {
-        return mono_to_ir(mono);
-    }
-
-    // For identifiers, check if this is a parameter of the enclosing function
-    // and use the resolved param type if available.
-    if let Expr::Ident(_, name, _) = expr
-        && let Some(param_names) = func_param_names.get(enclosing_fn)
-        && let Some(param_idx) = param_names.iter().position(|p| p == *name)
-        && let Some(param_tys) = resolved.get(enclosing_fn)
-        && let Some(ty) = param_tys.get(param_idx)
-    {
-        return ty.clone();
-    }
-
-    // Fall back to the type map.
-    type_map
-        .get(&expr.id())
-        .map(mono_to_ir)
-        .unwrap_or(IrType::Str)
-}
-
-fn collect_call_sites_stmt(
-    stmt: &ast::ast::Stmt<'_>,
-    type_map: &HashMap<NodeId, MonoType>,
-    resolved: &HashMap<String, Vec<IrType>>,
-    func_param_names: &HashMap<String, Vec<String>>,
-    enclosing_fn: &str,
-    call_sites: &mut HashMap<String, Vec<Vec<IrType>>>,
-    call_return_sites: &mut HashMap<String, Vec<IrType>>,
-) {
-    match stmt {
-        Stmt::Expr(e) => {
-            collect_call_sites(
-                e,
-                type_map,
-                resolved,
-                func_param_names,
-                enclosing_fn,
-                call_sites,
-                call_return_sites,
-            );
-        }
-        Stmt::Let { value: e, .. } => {
-            collect_call_sites(
-                e,
-                type_map,
-                resolved,
-                func_param_names,
-                enclosing_fn,
-                call_sites,
-                call_return_sites,
-            );
-        }
-    }
-}
-
-/// For a given parameter index, find the concrete type across all call sites.
-/// Returns `Str` as a safe fallback if call sites disagree or are absent.
-fn mono_type_has_vars(ty: &MonoType) -> bool {
-    match ty {
-        // Treat IntVar/FloatVar as "has vars" so monomorphisation can resolve them.
-        MonoType::Var(_) | MonoType::IntVar(_) | MonoType::FloatVar(_) => true,
-        MonoType::Array(inner) => mono_type_has_vars(inner),
-        MonoType::Func { params, ret } => {
-            params.iter().any(mono_type_has_vars) || mono_type_has_vars(ret)
-        }
-        MonoType::Record(fields) => fields.values().any(mono_type_has_vars),
-        MonoType::Tag { payload, .. } => payload.iter().any(mono_type_has_vars),
-        MonoType::Effect(inner) => mono_type_has_vars(inner),
-        _ => false,
-    }
-}
-
-fn resolve_var_from_call_sites(param_idx: usize, call_site_arg_lists: &[Vec<IrType>]) -> IrType {
-    let mut candidate: Option<IrType> = None;
-    for arg_list in call_site_arg_lists {
-        if let Some(ty) = arg_list.get(param_idx) {
-            match &candidate {
-                None => candidate = Some(ty.clone()),
-                Some(prev) => {
-                    if prev != ty {
-                        // Call sites disagree — fall back to Str as the
-                        // most common unannotated param type (template strings).
-                        return IrType::Str;
-                    }
-                }
-            }
-        }
-    }
-    candidate.unwrap_or(IrType::Str)
 }
 
 // ---------------------------------------------------------------------------
@@ -1856,23 +1463,61 @@ pub fn lower(typed: &TypedProgram<'_>) -> Result<IrModule, LowerError> {
         })
         .collect();
 
-    // Monomorphization pre-pass: resolve polymorphic parameter types from
-    // call sites. When a function parameter has an unresolved type variable,
-    // we look at how the function is actually called to determine the
-    // concrete type.
-    let (resolved_param_types, resolved_return_types) =
-        monomorphize_param_types(typed, &typed.tag_variants);
-
+    // First, scan and lower imports and type aliases.
     for decl in &typed.ast.decls {
-        lower_decl(
+        match decl {
+            Decl::Use { path, .. } => {
+                module.imports.push(path.join("::").into());
+            }
+            Decl::TypeAlias { name, id: decl_id, .. } => {
+                if let Some(mono) = typed.type_map.get(decl_id) {
+                    module.decls.push(IrDecl::TypeAlias {
+                        name: (*name).into(),
+                        ty: mono_to_ir_inner(mono, Some(&typed.tag_variants), &HashMap::new()),
+                    });
+                }
+            }
+            Decl::Bind { .. } => {}
+        }
+    }
+
+    // Build the map of global declarations for user-defined bindings.
+    let mut global_decls = HashMap::new();
+    for decl in &typed.ast.decls {
+        if let Decl::Bind { name, .. } = decl {
+            global_decls.insert(*name, decl);
+        }
+    }
+
+    let mut queue = Vec::new();
+    let mut generated = HashSet::new();
+
+    // Populate initial roots: queue all user-defined bindings under their original names.
+    for (&name, &decl) in &global_decls {
+        let mangled = name.to_string();
+        if !generated.contains(&mangled) {
+            generated.insert(mangled.clone());
+            queue.push((mangled, decl, HashMap::new()));
+        }
+    }
+
+    while !queue.is_empty() {
+        let (mangled_name, decl, type_args) = queue.remove(0);
+        lower_decl_monomorphized(
+            mangled_name,
             decl,
             &globals,
             &value_globals,
             &typed.type_map,
             &typed.tag_variants,
+            type_args,
             &mut module,
-            &resolved_param_types,
-            &resolved_return_types,
+            &mut MonoCtx {
+                queue: &mut queue,
+                generated: &mut generated,
+                global_decls: &global_decls,
+                env: &typed.env,
+            },
         )?;
     }
 

@@ -77,7 +77,7 @@ pub fn prelude_builtins() -> Vec<Arc<dyn BuiltinFunction>> {
         Arc::new(numeric::ToF64),
         Arc::new(numeric::ToStr),
         // Drop
-        Arc::new(Drop),
+        Arc::new(array::ArrayDrop),
         // Take
         Arc::new(Take),
         // Sqrt
@@ -321,26 +321,7 @@ impl BuiltinFunction for Apply {
     }
 }
 
-// -- Drop --
 
-/// `drop(x)` — ignores its argument and returns unit.
-#[derive(Clone, Copy, Debug, Default)]
-struct Drop;
-
-impl BuiltinFunction for Drop {
-    fn name(&self) -> &str {
-        "drop"
-    }
-
-    fn arity(&self) -> usize {
-        1
-    }
-
-    fn execute(&self, args: &[Value]) -> Result<Value, String> {
-        expect_arity(self.name(), args, self.arity())?;
-        Ok(Value::Unit)
-    }
-}
 
 // -- Take --
 
