@@ -1,28 +1,10 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::fmt;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::Arc;
 
 use ast::SmolStr;
 
 use crate::bridge::BuiltinFunction;
-
-/// Global registry mapping JIT function addresses to their parameter types.
-/// Populated by the JIT compiler, read by the stdlib when calling JIT closures.
-static JIT_FUNC_PARAM_TYPES: OnceLock<Mutex<HashMap<usize, Vec<JitArgType>>>> = OnceLock::new();
-
-/// Register parameter types for a JIT-compiled function.
-pub fn register_jit_param_types(address: usize, param_types: Vec<JitArgType>) {
-    let map = JIT_FUNC_PARAM_TYPES.get_or_init(|| Mutex::new(HashMap::new()));
-    map.lock().unwrap().insert(address, param_types);
-}
-
-/// Look up parameter types for a JIT-compiled function.
-pub fn lookup_jit_param_types(address: usize) -> Vec<JitArgType> {
-    JIT_FUNC_PARAM_TYPES
-        .get()
-        .and_then(|m| m.lock().unwrap().get(&address).cloned())
-        .unwrap_or_default()
-}
 
 /// A runtime value in pipe-lang.
 ///
@@ -397,9 +379,10 @@ pub struct ClosureData {
     pub captures: Arc<[Value]>,
     /// Number of arguments expected by the closure.
     pub arity: usize,
-    /// Parameter types for JIT closures (empty for builtins).
-    /// Used by the stdlib to serialize arguments when calling JIT closures.
-    pub call_arg_types: Arc<[JitArgType]>,
+    /// Serialized type descriptors for explicit call arguments.
+    pub param_descs: Arc<[Vec<u8>]>,
+    /// Serialized type descriptor for the return type.
+    pub ret_desc: Vec<u8>,
 }
 
 // ---------------------------------------------------------------------------
@@ -681,7 +664,8 @@ mod tests {
             func: FuncPtr::Builtin(Arc::new(Dummy)),
             captures: Arc::from([]),
             arity: 1,
-            call_arg_types: Arc::from([]),
+            param_descs: Arc::from([]),
+            ret_desc: vec![],
         };
         assert_eq!(
             format!("{:?}", Value::Closure(Arc::new(data))),

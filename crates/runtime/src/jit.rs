@@ -27,7 +27,6 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::value::JitArgType;
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::immediates::{Ieee32, Ieee64};
 use cranelift_codegen::ir::types::{self, I32};
@@ -429,24 +428,6 @@ pub fn compile_ir(ir_module: &IrModule) -> Result<CompiledModule, JitError> {
     }
 
     module.finalize_definitions().map_err(JitError::from)?;
-
-    // Register parameter types for all compiled functions so the stdlib
-    // can serialize arguments when calling JIT closures.
-    for (name, func_id, _) in &func_ids {
-        let code_ptr = module.get_finalized_function(*func_id);
-        let address = code_ptr as usize;
-        if let Some(param_tys) = fn_param_types.get(name) {
-            // Skip the first two params (args_buf, ret_buf) — those are the
-            // calling convention, not user-visible parameters.
-            // The actual user params are everything after captures in the
-            // function's IR params. For now, register all non-buffer params.
-            let jit_param_types: Vec<JitArgType> = param_tys
-                .iter()
-                .filter_map(|ty| ir_type_tag(ty).map(JitArgType::from_type_tag))
-                .collect();
-            crate::value::register_jit_param_types(address, jit_param_types);
-        }
-    }
 
     let (main_id, main_return_type) = func_ids
         .iter()
@@ -1487,15 +1468,7 @@ fn compile_call_named(
             }
         })?;
 
-        let total_size: u32 = data
-            .args
-            .iter()
-            .map(|arg_id| {
-                let ty = lookup_type(ctx.value_types, *arg_id, ctx.func_name)?;
-                storage_size(ty, ctx.func_name)
-            })
-            .sum::<Result<i32, _>>()?
-            .max(1) as u32;
+        let total_size: u32 = data.args.len().max(1) as u32 * 8;
 
         let arg_slot = builder.create_sized_stack_slot(StackSlotData::new(
             StackSlotKind::ExplicitSlot,
@@ -1513,7 +1486,7 @@ fn compile_call_named(
                     .ins()
                     .store(MemFlags::trusted(), arg_val, args_buf, offset);
             }
-            offset += storage_size(arg_type, ctx.func_name)?;
+            offset += 8;
         }
 
         let ret_size = storage_size(ret_type, ctx.func_name)?.max(1) as u32;
@@ -1827,7 +1800,8 @@ fn compile_make_closure(
     })?;
     let fn_ptr = builder.ins().func_addr(types::I64, *func_ref);
 
-    // Compute total byte size: 8 for func_ptr + captures.
+    // Compute total byte size: 16 for func_ptr + capture_count + captures.
+    let capture_count = data.captures.len() as i32;
     let capture_sizes: Vec<i32> = data
         .captures
         .iter()
@@ -1836,7 +1810,7 @@ fn compile_make_closure(
             storage_size(ty, ctx.func_name)
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let total_size: i32 = 8 + capture_sizes.iter().sum::<i32>();
+    let total_size: i32 = 16 + capture_sizes.iter().sum::<i32>();
 
     // Create a stack buffer for the closure content.
     let content_slot = builder.create_sized_stack_slot(StackSlotData::new(
@@ -1851,8 +1825,14 @@ fn compile_make_closure(
         .ins()
         .store(MemFlags::trusted(), fn_ptr, content_buf, 0);
 
-    // Store each capture after func_ptr.
-    let mut offset: i32 = 8;
+    // Store capture_count at offset 8.
+    let capture_count_val = builder.ins().iconst(types::I64, capture_count as i64);
+    builder
+        .ins()
+        .store(MemFlags::trusted(), capture_count_val, content_buf, 8);
+
+    // Store each capture at offset 16.
+    let mut offset: i32 = 16;
     for (capture_id, size) in data.captures.iter().zip(capture_sizes.iter()) {
         let capture_val = lookup_value(values, *capture_id, ctx.func_name)?;
         builder
@@ -1963,21 +1943,8 @@ fn compile_call_indirect(
         .ins()
         .load(types::I64, MemFlags::trusted(), closure_val, 0);
 
-    // Compute total args buffer size: captures (from closure) + call args.
-    let capture_total_size: i32 = capture_types
-        .iter()
-        .map(|ty| storage_size(ty, ctx.func_name))
-        .collect::<Result<Vec<_>, _>>()?
-        .iter()
-        .sum();
-    let call_args_total_size: i32 = call_arg_types
-        .iter()
-        .map(|ty| storage_size(ty, ctx.func_name))
-        .collect::<Result<Vec<_>, _>>()?
-        .iter()
-        .sum();
-
-    let args_buf_size = (capture_total_size + call_args_total_size).max(1) as u32;
+    // Compute total args buffer size aligned into 8-byte slots
+    let args_buf_size = ((capture_types.len() + call_arg_types.len()) * 8).max(1) as u32;
     let arg_slot = builder.create_sized_stack_slot(StackSlotData::new(
         StackSlotKind::ExplicitSlot,
         args_buf_size,
@@ -1985,9 +1952,9 @@ fn compile_call_indirect(
     ));
     let args_buf = builder.ins().stack_addr(types::I64, arg_slot, 0);
 
-    // Copy captures from closure (offset 8) into args buffer.
+    // Copy captures from closure (offset 16) into args buffer.
     let mut offset: i32 = 0;
-    let mut closure_offset: i32 = 8;
+    let mut closure_offset: i32 = 16;
     for capture_ty in &capture_types {
         let cap_val = builder.ins().load(
             storage_type(capture_ty, ctx.func_name)?,
@@ -1999,8 +1966,8 @@ fn compile_call_indirect(
             .ins()
             .store(MemFlags::trusted(), cap_val, args_buf, offset);
         let sz = storage_size(capture_ty, ctx.func_name)?;
-        offset += sz;
         closure_offset += sz;
+        offset += 8; // 8-byte aligned
     }
 
     // Store call arguments.
@@ -2012,7 +1979,7 @@ fn compile_call_indirect(
                 .ins()
                 .store(MemFlags::trusted(), arg_val, args_buf, offset);
         }
-        offset += storage_size(arg_type, ctx.func_name)?;
+        offset += 8; // 8-byte aligned
     }
 
     // Allocate return buffer.
@@ -2084,20 +2051,7 @@ fn compile_tail_call(
         )
         .collect();
 
-    let capture_total_size: i32 = capture_types
-        .iter()
-        .map(|ty| storage_size(ty, ctx.func_name))
-        .collect::<Result<Vec<_>, _>>()?
-        .iter()
-        .sum();
-    let call_args_total_size: i32 = call_arg_types
-        .iter()
-        .map(|ty| storage_size(ty, ctx.func_name))
-        .collect::<Result<Vec<_>, _>>()?
-        .iter()
-        .sum();
-
-    let args_buf_size = (capture_total_size + call_args_total_size).max(1) as u32;
+    let args_buf_size = ((capture_types.len() + call_arg_types.len()) * 8).max(1) as u32;
     let arg_slot = builder.create_sized_stack_slot(StackSlotData::new(
         StackSlotKind::ExplicitSlot,
         args_buf_size,
@@ -2106,7 +2060,7 @@ fn compile_tail_call(
     let args_buf = builder.ins().stack_addr(types::I64, arg_slot, 0);
 
     let mut offset: i32 = 0;
-    let mut closure_offset: i32 = 8;
+    let mut closure_offset: i32 = 16;
     for capture_ty in &capture_types {
         let cap_val = builder.ins().load(
             storage_type(capture_ty, ctx.func_name)?,
@@ -2118,8 +2072,8 @@ fn compile_tail_call(
             .ins()
             .store(MemFlags::trusted(), cap_val, args_buf, offset);
         let sz = storage_size(capture_ty, ctx.func_name)?;
-        offset += sz;
         closure_offset += sz;
+        offset += 8;
     }
 
     for arg_id in call_args {
@@ -2130,7 +2084,7 @@ fn compile_tail_call(
                 .ins()
                 .store(MemFlags::trusted(), arg_val, args_buf, offset);
         }
-        offset += storage_size(arg_type, ctx.func_name)?;
+        offset += 8;
     }
 
     let ret_size = storage_size(ctx.ret_type, ctx.func_name)?.max(1) as u32;
@@ -3054,7 +3008,7 @@ fn load_function_params(
     for (value_id, _, ty) in params {
         let value = load_primitive_value(builder, args_ptr, offset, ty, func_name)?;
         values.insert(*value_id, value);
-        offset += storage_size(ty, func_name)?;
+        offset += 8; // Force 8-byte alignment
     }
     Ok(())
 }
@@ -3788,6 +3742,9 @@ fn serialize_type_desc_to_bytes(ty: &IrType, func_name: &str) -> Result<Vec<u8>,
                 buf.extend_from_slice(&capture_type_desc);
             }
 
+            let ret_desc = serialize_type_desc_to_bytes(&func_ty.ret, func_name)?;
+            buf.extend_from_slice(&ret_desc);
+
             let total = buf.len() as u32;
             buf[4..8].copy_from_slice(&total.to_le_bytes());
             Ok(buf)
@@ -3973,167 +3930,187 @@ unsafe fn desc_read_u32(buf: *const u8, offset: &mut usize) -> u32 {
 /// `ptr` must point to valid JIT format data matching `desc`.
 /// `desc` must be valid for `desc_len` bytes.
 #[unsafe(no_mangle)]
-unsafe extern "C" fn pipe_rt_box_value_jit(ptr: u64, desc_ptr: u64, desc_len: u32) -> u64 {
+unsafe extern "C" fn pipe_rt_box_value_jit(ptr: u64, desc_ptr: u64, _desc_len: u32) -> u64 {
     use crate::value::Value as V;
 
     let ptr = ptr as *const u8;
     let desc = desc_ptr as *const u8;
-    let _desc_len = desc_len;
 
     #[allow(unsafe_op_in_unsafe_fn)]
     unsafe fn box_rec(ptr: *const u8, desc: *const u8, offset: &mut usize) -> V {
-        let tag = desc_read_u32(desc, offset);
-        let total_bytes = desc_read_u32(desc, offset) as usize;
+        if ptr.is_null() {
+            return V::Unit;
+        }
+        
+        let tag = unsafe { desc_read_u32(desc, offset) };
+        let total_bytes = unsafe { desc_read_u32(desc, offset) } as usize;
         let start = *offset;
 
         let result = match tag {
-            0 | 1 => V::I32(desc_read_u32(ptr, &mut 0usize) as i32),
-            2 => {
-                // I32 (4 bytes)
-                V::I32(unsafe { std::ptr::read_unaligned(ptr as *const i32) })
-            }
-            3 | 7 => {
-                // I64 / U64
-                V::I64(unsafe { std::ptr::read_unaligned(ptr as *const i64) })
-            }
-            4 => {
-                // U8
-                V::I32(i32::from(unsafe { std::ptr::read_unaligned(ptr) }))
-            }
-            5 => {
-                // U16
-                V::I32(i32::from(unsafe {
-                    std::ptr::read_unaligned(ptr as *const u16)
-                }))
-            }
-            6 => {
-                // U32
-                V::I32(unsafe { std::ptr::read_unaligned(ptr as *const u32) } as i32)
-            }
-            8 => {
-                // F32
-                V::F64(f64::from(f32::from_bits(unsafe {
-                    std::ptr::read_unaligned(ptr as *const u32)
-                })))
-            }
-            9 => {
-                // F64
-                V::F64(f64::from_bits(unsafe {
-                    std::ptr::read_unaligned(ptr as *const u64)
-                }))
-            }
-            10 => {
-                // Bool
-                V::Bool(unsafe { std::ptr::read_unaligned(ptr) } != 0)
-            }
+            0 | 1 => V::I32(unsafe { desc_read_u32(ptr, &mut 0usize) } as i32),
+            2 => V::I32(unsafe { std::ptr::read_unaligned(ptr as *const i32) }),
+            3 | 7 => V::I64(unsafe { std::ptr::read_unaligned(ptr as *const i64) }),
+            4 => V::I32(i32::from(unsafe { std::ptr::read_unaligned(ptr) })),
+            5 => V::I32(i32::from(unsafe { std::ptr::read_unaligned(ptr as *const u16) })),
+            6 => V::I32(unsafe { std::ptr::read_unaligned(ptr as *const u32) } as i32),
+            8 => V::F64(f64::from(f32::from_bits(unsafe { std::ptr::read_unaligned(ptr as *const u32) }))),
+            9 => V::F64(f64::from_bits(unsafe { std::ptr::read_unaligned(ptr as *const u64) })),
+            10 => V::Bool(unsafe { std::ptr::read_unaligned(ptr) } != 0),
             11 => {
-                // Str in JIT format: [len: u32][bytes]
                 let len = unsafe { std::ptr::read_unaligned(ptr as *const u32) } as usize;
                 let bytes = unsafe { std::slice::from_raw_parts(ptr.add(4), len) };
                 V::str(unsafe { std::str::from_utf8_unchecked(bytes) }.to_owned())
             }
             12 => V::Unit,
             13 => {
-                // Array: [len: u64][elements]
-                let elem_size = desc_read_u32(desc, offset) as usize;
+                let elem_size = unsafe { desc_read_u32(desc, offset) } as usize;
                 let arr_len = unsafe { std::ptr::read_unaligned(ptr as *const u64) } as usize;
                 let sub_desc_offset = *offset;
+                let elem_tag = unsafe { std::ptr::read_unaligned(desc.add(sub_desc_offset) as *const u32) };
+                
                 let mut elements = Vec::with_capacity(arr_len);
                 for i in 0..arr_len {
                     let elem_ptr = unsafe { ptr.add(8 + i * elem_size) };
-                    *offset = sub_desc_offset;
-                    elements.push(box_rec(elem_ptr, desc, offset));
-                }
-                if arr_len == 0 {
-                    // Advance past the sub-descriptor manually
-                    let saved = *offset;
-                    *offset = sub_desc_offset;
-                    // Parse dummy to advance
-                    let _dummy_tag = desc_read_u32(desc, offset);
-                    let dummy_total = desc_read_u32(desc, offset) as usize;
-                    *offset = sub_desc_offset + dummy_total;
-                    // Restore to after sub-descriptor
-                    *offset = saved.max(sub_desc_offset + dummy_total);
+                    let actual_ptr = if is_tag_heap_type(elem_tag) {
+                        let p = unsafe { std::ptr::read_unaligned(elem_ptr as *const u64) };
+                        if p == 0 { std::ptr::null() } else { p as *const u8 }
+                    } else {
+                        elem_ptr
+                    };
+                    let mut temp_offset = sub_desc_offset;
+                    elements.push(unsafe { box_rec(actual_ptr, desc, &mut temp_offset) });
                 }
                 V::Array(elements.into())
             }
             14 => {
-                // Record: [field1_jit][field2_jit]...
                 use ast::SmolStr;
                 use std::collections::BTreeMap;
-                let field_count = desc_read_u32(desc, offset) as usize;
+                let field_count = unsafe { desc_read_u32(desc, offset) } as usize;
                 let mut fields = BTreeMap::new();
                 let mut field_ptr = ptr;
+                
                 for _ in 0..field_count {
-                    let field_size = desc_read_u32(desc, offset) as usize;
-                    let field_name_len = desc_read_u32(desc, offset) as usize;
-                    // Read field name bytes (padded to 4)
+                    let field_size = unsafe { desc_read_u32(desc, offset) } as usize;
+                    let field_name_len = unsafe { desc_read_u32(desc, offset) } as usize;
                     let name_padded = field_name_len.div_ceil(4) * 4;
-                    let name_bytes =
-                        unsafe { std::slice::from_raw_parts(desc.add(*offset), field_name_len) };
+                    let name_bytes = unsafe { std::slice::from_raw_parts(desc.add(*offset), field_name_len) };
                     let name = unsafe { std::str::from_utf8_unchecked(name_bytes) };
                     *offset += name_padded;
-                    // Read the field value from JIT data
-                    let field_val = box_rec(field_ptr, desc, offset);
+                    
+                    let field_tag = unsafe { std::ptr::read_unaligned(desc.add(*offset) as *const u32) };
+                    let actual_ptr = if is_tag_heap_type(field_tag) {
+                        let p = unsafe { std::ptr::read_unaligned(field_ptr as *const u64) };
+                        if p == 0 { std::ptr::null() } else { p as *const u8 }
+                    } else {
+                        field_ptr
+                    };
+                    
+                    let field_val = unsafe { box_rec(actual_ptr, desc, offset) };
                     field_ptr = unsafe { field_ptr.add(field_size) };
                     fields.insert(SmolStr::new(name), field_val);
                 }
                 V::Record(std::sync::Arc::new(crate::value::RecordData { fields }))
             }
-            15 => V::Unit, // Effect — opaque
+            15 => V::Unit,
             16 => {
-                // Closure: [func_ptr: u64][captures]
-                let capture_count = desc_read_u32(desc, offset) as usize;
+                let total_param_count = unsafe { desc_read_u32(desc, offset) } as usize;
                 let func_addr = unsafe { std::ptr::read_unaligned(ptr as *const u64) } as usize;
+                let capture_count = unsafe { std::ptr::read_unaligned(ptr.add(8) as *const u64) } as usize;
+                let arity = total_param_count.saturating_sub(capture_count);
+                
                 let mut captures = Vec::with_capacity(capture_count);
-                let mut cap_ptr = unsafe { ptr.add(8) };
-                for _ in 0..capture_count {
-                    let cap_size = desc_read_u32(desc, offset) as usize;
-                    let cap_val = box_rec(cap_ptr, desc, offset);
-                    captures.push(cap_val);
-                    cap_ptr = unsafe { cap_ptr.add(cap_size) };
+                let mut call_param_descs = Vec::with_capacity(arity);
+                let mut cap_ptr = unsafe { ptr.add(16) };
+                
+                for i in 0..total_param_count {
+                    let p_desc_start = *offset;
+                    let cap_size = unsafe { desc_read_u32(desc, offset) } as usize;
+                    let p_tag = unsafe { desc_read_u32(desc, offset) };
+                    let p_total_bytes = unsafe { desc_read_u32(desc, offset) } as usize;
+                    *offset = p_desc_start + 4 + p_total_bytes;
+                    let p_desc = unsafe { std::slice::from_raw_parts(desc.add(p_desc_start + 4), p_total_bytes) }.to_vec();
+                    
+                    if i < capture_count {
+                        let actual_ptr = if is_tag_heap_type(p_tag) {
+                            let p = unsafe { std::ptr::read_unaligned(cap_ptr as *const u64) };
+                            if p == 0 { std::ptr::null() } else { p as *const u8 }
+                        } else {
+                            cap_ptr
+                        };
+                        
+                        let mut temp_offset = p_desc_start + 4;
+                        captures.push(unsafe { box_rec(actual_ptr, desc, &mut temp_offset) });
+                        cap_ptr = unsafe { cap_ptr.add(cap_size) };
+                    } else {
+                        call_param_descs.push(p_desc);
+                    }
                 }
-                // We need the arity — we don't have it in the JIT format,
-                // but the capture count is the closure's capture arity.
-                // The total arity isn't stored; use captures.len() as a
-                // best-effort. The builtin will fail if it needs the
-                // closure's total arity.
-                let func = crate::value::FuncPtr::Jit {
-                    address: func_addr,
-                    arity: capture_count,
-                };
+                
+                let ret_desc_start = *offset;
+                let _ret_tag = unsafe { desc_read_u32(desc, offset) };
+                let ret_total_bytes = unsafe { desc_read_u32(desc, offset) } as usize;
+                *offset = ret_desc_start + ret_total_bytes;
+                let ret_desc = unsafe { std::slice::from_raw_parts(desc.add(ret_desc_start), ret_total_bytes) }.to_vec();
+                
+                let func = crate::value::FuncPtr::Jit { address: func_addr, arity };
                 V::Closure(std::sync::Arc::new(crate::value::ClosureData {
                     func,
                     captures: captures.into(),
-                    arity: capture_count,
-                    call_arg_types: std::sync::Arc::from([]),
+                    arity,
+                    param_descs: call_param_descs.into(),
+                    ret_desc,
                 }))
             }
             17 => {
-                // Tag: [disc: i32][payload]
-                let variant_count = desc_read_u32(desc, offset) as usize;
+                let variant_count = unsafe { desc_read_u32(desc, offset) } as usize;
                 let disc = unsafe { std::ptr::read_unaligned(ptr as *const i32) } as u32;
-                let mut payload_val = V::Unit;
+                
+                let mut matched_variant = None;
+                let mut current_offset = *offset;
+                
                 for _ in 0..variant_count {
-                    let var_disc = desc_read_u32(desc, offset);
-                    let _payload_byte_len = desc_read_u32(desc, offset);
-                    let payload_count = desc_read_u32(desc, offset) as usize;
-                    let mut payload_fields = Vec::with_capacity(payload_count);
-                    let mut p_ptr = unsafe { ptr.add(4) };
-                    for _ in 0..payload_count {
-                        let field_size = desc_read_u32(desc, offset) as usize;
-                        let field_val = box_rec(p_ptr, desc, offset);
-                        payload_fields.push(field_val);
-                        p_ptr = unsafe { p_ptr.add(field_size) };
-                    }
+                    let var_disc = unsafe { desc_read_u32(desc, &mut current_offset) };
+                    let _payload_byte_len = unsafe { desc_read_u32(desc, &mut current_offset) };
+                    let payload_count = unsafe { desc_read_u32(desc, &mut current_offset) } as usize;
+                    
                     if var_disc == disc {
-                        payload_val = if payload_fields.len() == 1 {
-                            payload_fields.into_iter().next().unwrap()
-                        } else {
-                            V::Array(payload_fields.into())
-                        };
+                        matched_variant = Some((current_offset, payload_count));
+                    }
+                    
+                    // Advance past this variant's schema
+                    for _ in 0..payload_count {
+                        let _size = unsafe { desc_read_u32(desc, &mut current_offset) };
+                        let _tag = unsafe { desc_read_u32(desc, &mut current_offset) };
+                        let total_bytes = unsafe { desc_read_u32(desc, &mut current_offset) } as usize;
+                        current_offset += total_bytes - 8;
                     }
                 }
+                
+                *offset = current_offset; // Skip remainder of descriptor
+                
+                let mut payload_fields = Vec::new();
+                if let Some((mut p_offset, payload_count)) = matched_variant {
+                    let mut p_ptr = unsafe { ptr.add(4) }; // skip disc
+                    for _ in 0..payload_count {
+                        let field_size = unsafe { desc_read_u32(desc, &mut p_offset) } as usize;
+                        let field_tag = unsafe { std::ptr::read_unaligned(desc.add(p_offset) as *const u32) };
+                        let actual_ptr = if is_tag_heap_type(field_tag) {
+                            let p = unsafe { std::ptr::read_unaligned(p_ptr as *const u64) };
+                            if p == 0 { std::ptr::null() } else { p as *const u8 }
+                        } else {
+                            p_ptr
+                        };
+                        payload_fields.push(unsafe { box_rec(actual_ptr, desc, &mut p_offset) });
+                        p_ptr = unsafe { p_ptr.add(field_size) };
+                    }
+                }
+                
+                let payload_val = if payload_fields.len() == 1 {
+                    payload_fields.into_iter().next().unwrap()
+                } else {
+                    V::Array(payload_fields.into())
+                };
+                
                 V::Tag {
                     tag: disc,
                     payload: match payload_val {
@@ -4155,94 +4132,262 @@ unsafe extern "C" fn pipe_rt_box_value_jit(ptr: u64, desc_ptr: u64, desc_len: u3
     Box::into_raw(Box::new(boxed)) as u64
 }
 
-/// Convert a `Box<Value>` pointer (as produced by `value_to_ret_buf` for
-/// heap types) back to JIT heap format, using the type descriptor to
-/// determine field layout.
-///
-/// The returned pointer points to a newly allocated JIT-format buffer.
-///
-/// # Safety
-///
-/// `ptr` must be a valid `Box<Value>` pointer previously produced by
-/// `value_to_ret_buf` or `Box::into_raw(Box::new(Value::…))`.
-/// The descriptor must match the value's actual type.
-/// After this call the original Box is freed.
 #[unsafe(no_mangle)]
-unsafe extern "C" fn pipe_rt_unbox_value_jit(ptr: u64, _desc_ptr: u64, _desc_len: u32) -> u64 {
+pub unsafe extern "C" fn pipe_rt_release_ptr_exported(ptr: u64, type_desc: *const u8) {
+    unsafe { pipe_rt_release_ptr(ptr, type_desc) }
+}
+
+#[unsafe(no_mangle)]
+unsafe extern "C" fn pipe_rt_unbox_value_jit(ptr: u64, desc_ptr: u64, _desc_len: u32) -> u64 {
     use crate::value::Value as V;
-
     let box_val = unsafe { *Box::from_raw(ptr as *mut V) };
+    let desc = desc_ptr as *const u8;
+    let mut offset = 0usize;
+    unsafe { unbox_rec_heap(box_val, desc, &mut offset) }
+}
 
-    #[allow(unsafe_op_in_unsafe_fn)]
-    unsafe fn value_to_jit_bytes(val: V) -> Vec<u8> {
-        match val {
-            V::I32(n) => n.to_le_bytes().to_vec(),
-            V::I64(n) => n.to_le_bytes().to_vec(),
-            V::Usize(n) => (n as u64).to_le_bytes().to_vec(),
-            V::F64(f) => f.to_bits().to_le_bytes().to_vec(),
-            V::Bool(b) => vec![b as u8],
-            V::Unit => vec![],
-            V::Str(s) => {
-                let bytes = s.as_bytes();
-                let mut buf = Vec::with_capacity(4 + bytes.len());
-                buf.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
-                buf.extend_from_slice(bytes);
-                buf
-            }
-            V::Array(arr) => {
-                let mut buf = Vec::with_capacity(8);
-                buf.extend_from_slice(&(arr.len() as u64).to_le_bytes());
-                for elem in arr.iter() {
-                    buf.extend_from_slice(&value_to_jit_bytes(elem.clone()));
-                }
-                buf
-            }
-            V::Record(record) => {
-                // Iterate the type descriptor to get declaration order,
-                // then look up field values by name.
-                // For the unbox direction we iterate the BTreeMap directly
-                // (sorted by name). This may not match JIT declaration
-                // order, but without the descriptor we cannot do better;
-                // callers should pass the descriptor for correctness.
-                let mut buf = Vec::new();
-                for (_, val) in record.fields.iter() {
-                    buf.extend_from_slice(&value_to_jit_bytes(val.clone()));
-                }
-                buf
-            }
-            V::Tag { tag, payload } => {
-                let mut buf = Vec::with_capacity(4);
-                buf.extend_from_slice(&tag.to_le_bytes());
-                for elem in payload.iter() {
-                    buf.extend_from_slice(&value_to_jit_bytes(elem.clone()));
-                }
-                buf
-            }
-            V::Closure(closure) => {
-                let mut buf = Vec::with_capacity(8);
-                match &closure.func {
-                    crate::value::FuncPtr::Jit { address, arity: _ } => {
-                        buf.extend_from_slice(&(*address as u64).to_le_bytes());
-                    }
-                    crate::value::FuncPtr::Builtin(_) => {
-                        buf.extend_from_slice(&0u64.to_le_bytes());
-                    }
-                }
-                for capture in closure.captures.iter() {
-                    buf.extend_from_slice(&value_to_jit_bytes(capture.clone()));
-                }
-                buf
-            }
-            V::Effect(_) => vec![],
+unsafe fn unbox_rec_heap(val: crate::value::Value, desc: *const u8, offset: &mut usize) -> u64 {
+    let start = *offset;
+    let tag = unsafe { desc_read_u32(desc, offset) };
+    let total_bytes = unsafe { desc_read_u32(desc, offset) } as usize;
+    
+    let payload = match tag {
+        11 => { // Str
+            let s = match val {
+                crate::value::Value::Str(s) => s.to_string(),
+                _ => String::new(),
+            };
+            let bytes = s.as_bytes();
+            let mut buf = Vec::with_capacity(4 + bytes.len());
+            buf.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+            buf.extend_from_slice(bytes);
+            buf
         }
-    }
-
-    let jit_data = unsafe { value_to_jit_bytes(box_val) };
-    let mut final_data = Vec::with_capacity(8 + jit_data.len());
+        13 => { // Array
+            let elem_size = unsafe { desc_read_u32(desc, offset) } as usize;
+            let sub_desc_offset = *offset;
+            
+            let arr = match val {
+                crate::value::Value::Array(a) => a,
+                _ => std::sync::Arc::from([]),
+            };
+            
+            let mut buf = Vec::with_capacity(8 + arr.len() * elem_size);
+            buf.extend_from_slice(&(arr.len() as u64).to_le_bytes());
+            
+            for elem in arr.iter() {
+                let mut temp_offset = sub_desc_offset;
+                let elem_bytes = unsafe { unbox_rec_inline(elem.clone(), desc, &mut temp_offset) };
+                buf.extend_from_slice(&elem_bytes);
+            }
+            
+            // Advance offset past the element descriptor
+            let mut temp_offset = sub_desc_offset;
+            let _elem_tag = unsafe { desc_read_u32(desc, &mut temp_offset) };
+            let elem_total_bytes = unsafe { desc_read_u32(desc, &mut temp_offset) } as usize;
+            *offset = sub_desc_offset + elem_total_bytes;
+            
+            buf
+        }
+        14 => { // Record
+            let field_count = unsafe { desc_read_u32(desc, offset) } as usize;
+            let mut fields = match val {
+                crate::value::Value::Record(r) => r.fields.clone(),
+                _ => std::collections::BTreeMap::new(),
+            };
+            
+            let mut buf = Vec::new();
+            for _ in 0..field_count {
+                let _field_size = unsafe { desc_read_u32(desc, offset) } as usize;
+                let name_len = unsafe { desc_read_u32(desc, offset) } as usize;
+                let name_padded = name_len.div_ceil(4) * 4;
+                let name_bytes = unsafe { std::slice::from_raw_parts(desc.add(*offset), name_len) };
+                let name = unsafe { std::str::from_utf8_unchecked(name_bytes) };
+                *offset += name_padded;
+                
+                let field_val = fields.remove(name).unwrap_or(crate::value::Value::Unit);
+                let field_bytes = unsafe { unbox_rec_inline(field_val, desc, offset) };
+                buf.extend_from_slice(&field_bytes);
+            }
+            buf
+        }
+        16 => { // Closure
+            let total_param_count = unsafe { desc_read_u32(desc, offset) } as usize;
+            let (func_addr, captures) = match val {
+                crate::value::Value::Closure(c) => {
+                    let addr = match c.func {
+                        crate::value::FuncPtr::Jit { address, .. } => address,
+                        crate::value::FuncPtr::Builtin(_) => 0,
+                    };
+                    (addr, c.captures.to_vec())
+                }
+                _ => (0, Vec::new()),
+            };
+            
+            let capture_count = captures.len();
+            
+            let mut buf = Vec::with_capacity(16);
+            buf.extend_from_slice(&(func_addr as u64).to_le_bytes());
+            buf.extend_from_slice(&(capture_count as u64).to_le_bytes());
+            
+            for i in 0..total_param_count {
+                if i < capture_count {
+                    let cap_val = captures.get(i).cloned().unwrap_or(crate::value::Value::Unit);
+                    let cap_bytes = unsafe { unbox_rec_inline(cap_val, desc, offset) };
+                    buf.extend_from_slice(&cap_bytes);
+                } else {
+                    // Skip the type descriptor for explicit call arguments
+                    let _tag = unsafe { desc_read_u32(desc, offset) };
+                    let total_bytes = unsafe { desc_read_u32(desc, offset) } as usize;
+                    *offset += total_bytes.saturating_sub(8);
+                }
+            }
+            
+            // Skip ret_desc
+            let _ret_tag = unsafe { desc_read_u32(desc, offset) };
+            let ret_total_bytes = unsafe { desc_read_u32(desc, offset) } as usize;
+            *offset += ret_total_bytes.saturating_sub(8);
+            
+            buf
+        }
+        17 => { // Tag
+            let variant_count = unsafe { desc_read_u32(desc, offset) } as usize;
+            let (disc, payload_fields) = match val {
+                crate::value::Value::Tag { tag: disc, payload } => {
+                    (disc, payload.to_vec())
+                }
+                _ => (0, Vec::new()),
+            };
+            
+            let mut buf = Vec::new();
+            buf.extend_from_slice(&disc.to_le_bytes());
+            
+            for _ in 0..variant_count {
+                let var_disc = unsafe { desc_read_u32(desc, offset) };
+                let _payload_byte_len = unsafe { desc_read_u32(desc, offset) };
+                let payload_count = unsafe { desc_read_u32(desc, offset) } as usize;
+                
+                if var_disc == disc {
+                    let mut p_idx = 0;
+                    for _ in 0..payload_count {
+                        let field_val = payload_fields.get(p_idx).cloned().unwrap_or(crate::value::Value::Unit);
+                        p_idx += 1;
+                        let field_bytes = unsafe { unbox_rec_inline(field_val, desc, offset) };
+                        buf.extend_from_slice(&field_bytes);
+                    }
+                } else {
+                    // Skip this variant's schema
+                    for _ in 0..payload_count {
+                        let _size = unsafe { desc_read_u32(desc, offset) };
+                        let _tag = unsafe { desc_read_u32(desc, offset) };
+                        let total_bytes = unsafe { desc_read_u32(desc, offset) } as usize;
+                        *offset += total_bytes - 8;
+                    }
+                }
+            }
+            buf
+        }
+        _ => Vec::new(),
+    };
+    
+    *offset = start + total_bytes;
+    
+    let mut final_data = Vec::with_capacity(8 + payload.len());
     final_data.extend_from_slice(&1u64.to_ne_bytes());
-    final_data.extend_from_slice(&jit_data);
+    final_data.extend_from_slice(&payload);
     let ptr = Box::leak(final_data.into_boxed_slice()).as_ptr();
     unsafe { ptr.add(8) as u64 }
+}
+
+unsafe fn unbox_rec_inline(val: crate::value::Value, desc: *const u8, offset: &mut usize) -> Vec<u8> {
+    let start = *offset;
+    let tag = unsafe { desc_read_u32(desc, offset) };
+    let total_bytes = unsafe { desc_read_u32(desc, offset) } as usize;
+    
+    let bytes = if is_tag_heap_type(tag) {
+        *offset = start;
+        let ptr = unsafe { unbox_rec_heap(val, desc, offset) };
+        ptr.to_le_bytes().to_vec()
+    } else {
+        let res = match tag {
+            0 | 1 | 2 => { // I8, I16, I32
+                let n = match val {
+                    crate::value::Value::I32(n) => n,
+                    crate::value::Value::I64(n) => n as i32,
+                    crate::value::Value::Usize(n) => n as i32,
+                    _ => 0,
+                };
+                if tag == 0 {
+                    vec![n as u8]
+                } else if tag == 1 {
+                    (n as i16).to_le_bytes().to_vec()
+                } else {
+                    n.to_le_bytes().to_vec()
+                }
+            }
+            3 | 7 => { // I64, U64
+                let n = match val {
+                    crate::value::Value::I32(n) => n as i64,
+                    crate::value::Value::I64(n) => n,
+                    crate::value::Value::Usize(n) => n as i64,
+                    _ => 0,
+                };
+                n.to_le_bytes().to_vec()
+            }
+            4 => { // U8
+                let n = match val {
+                    crate::value::Value::I32(n) => n as u8,
+                    crate::value::Value::I64(n) => n as u8,
+                    _ => 0,
+                };
+                vec![n]
+            }
+            5 => { // U16
+                let n = match val {
+                    crate::value::Value::I32(n) => n as u16,
+                    crate::value::Value::I64(n) => n as u16,
+                    _ => 0,
+                };
+                n.to_le_bytes().to_vec()
+            }
+            6 => { // U32
+                let n = match val {
+                    crate::value::Value::I32(n) => n as u32,
+                    crate::value::Value::I64(n) => n as u32,
+                    _ => 0,
+                };
+                n.to_le_bytes().to_vec()
+            }
+            8 => { // F32
+                let f = match val {
+                    crate::value::Value::F64(f) => f as f32,
+                    _ => 0.0,
+                };
+                f.to_bits().to_le_bytes().to_vec()
+            }
+            9 => { // F64
+                let f = match val {
+                    crate::value::Value::F64(f) => f,
+                    _ => 0.0,
+                };
+                f.to_bits().to_le_bytes().to_vec()
+            }
+            10 => { // Bool
+                let b = match val {
+                    crate::value::Value::Bool(b) => b,
+                    _ => false,
+                };
+                vec![b as u8]
+            }
+            12 => { // Unit
+                vec![0, 0, 0, 0] // Unit takes 4 bytes of padding
+            }
+            _ => Vec::new(),
+        };
+        *offset = start + total_bytes;
+        res
+    };
+    bytes
 }
 
 fn is_tag_heap_type(tag: u32) -> bool {
@@ -4251,7 +4396,7 @@ fn is_tag_heap_type(tag: u32) -> bool {
 
 unsafe fn pipe_rt_release_ptr(ptr: u64, type_desc: *const u8) {
     unsafe {
-        if ptr == 0 || type_desc.is_null() {
+        if ptr < 0x1000 || type_desc.is_null() {
             return;
         }
         let rc_ptr = (ptr - 8) as *mut u64;
@@ -4281,7 +4426,7 @@ unsafe fn pipe_rt_release_ptr(ptr: u64, type_desc: *const u8) {
 
 unsafe fn pipe_rt_free_value(ptr: u64, type_desc: *const u8) {
     unsafe {
-        if ptr == 0 || type_desc.is_null() {
+        if ptr < 0x1000 || type_desc.is_null() {
             return;
         }
         let type_tag = std::ptr::read_unaligned(type_desc as *const u32);
@@ -4352,9 +4497,9 @@ unsafe fn pipe_rt_free_value(ptr: u64, type_desc: *const u8) {
             }
             16 => {
                 // Closure
-                let capture_count = std::ptr::read_unaligned(type_desc.add(8) as *const u32) as usize;
+                let capture_count = std::ptr::read_unaligned((ptr + 8) as *const u64) as usize;
                 let mut desc_offset = 12;
-                let mut capture_offset = 8; // skip func_ptr
+                let mut capture_offset = 16; // skip func_ptr + capture_count
 
                 for _ in 0..capture_count {
                     let capture_size = std::ptr::read_unaligned(type_desc.add(desc_offset) as *const u32) as usize;
@@ -4432,7 +4577,7 @@ unsafe fn pipe_rt_free_value(ptr: u64, type_desc: *const u8) {
 #[unsafe(no_mangle)]
 unsafe extern "C" fn pipe_rt_retain(args: *const u8, _ret: *mut u8) -> i32 {
     let ptr = unsafe { std::ptr::read_unaligned(args as *const u64) };
-    if ptr != 0 {
+    if ptr >= 0x1000 {
         let rc_ptr = (ptr - 8) as *mut u64;
         let rc_atomic = unsafe { &*(rc_ptr as *const std::sync::atomic::AtomicU64) };
         let mut current = rc_atomic.load(std::sync::atomic::Ordering::Acquire);

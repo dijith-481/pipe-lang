@@ -646,17 +646,8 @@ fn resolve_and_queue_global<'src>(
             let subj_v = lower_expr(fb, subject, hoisted, ctx)?;
             let subj_ty = fb.expr_type(subject.id());
             let merge_id = fb.alloc_block();
-            let result_ty = fb.expr_type(expr.id());
             let result_v = fb.alloc_value();
-            {
-                let merge_idx = fb
-                    .func
-                    .blocks
-                    .iter()
-                    .position(|b| b.id == merge_id)
-                    .expect("merge block");
-                fb.func.blocks[merge_idx].params.push((result_v, result_ty));
-            }
+            let mut resolved_result_ty: Option<IrType> = None;
 
             let is_tag = matches!(subj_ty, IrType::Tag(_));
             let mut switch_arms: Vec<(u32, BlockId, Vec<ValueId>)> = Vec::new();
@@ -669,6 +660,9 @@ fn resolve_and_queue_global<'src>(
                 fb.set_current(arm_id);
                 lower_pattern(fb, arm.pattern, subj_v)?;
                 let arm_v = lower_expr(fb, arm.body, hoisted, ctx)?;
+                if resolved_result_ty.is_none() {
+                    resolved_result_ty = fb.value_types.get(&arm_v).cloned();
+                }
                 let locals_to_release: Vec<ValueId> = fb.locals.iter()
                     .filter(|(name, val)| !saved.contains_key(name.as_str()) && **val != arm_v)
                     .map(|(_, val)| *val)
@@ -713,6 +707,21 @@ fn resolve_and_queue_global<'src>(
                         }
                     }
                 }
+            }
+
+            // Lock in the merge block parameter type from the first arm's
+            // actual emitted type to prevent I32/I64 Cranelift verifier
+            // mismatches when the AST type map contains an unresolved generic.
+            let final_ty = resolved_result_ty.unwrap_or_else(|| fb.expr_type(expr.id()));
+            fb.value_types.insert(result_v, final_ty.clone());
+            {
+                let merge_idx = fb
+                    .func
+                    .blocks
+                    .iter()
+                    .position(|b| b.id == merge_id)
+                    .expect("merge block");
+                fb.func.blocks[merge_idx].params.push((result_v, final_ty));
             }
 
             if is_tag {

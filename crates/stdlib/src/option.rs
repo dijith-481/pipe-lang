@@ -173,7 +173,8 @@ mod tests {
             func: FuncPtr::Builtin(builtin),
             captures: Arc::from([]),
             arity,
-            call_arg_types: Arc::from([]),
+            param_descs: Arc::from([]),
+            ret_desc: vec![],
         }))
     }
 

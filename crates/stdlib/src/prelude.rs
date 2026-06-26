@@ -98,8 +98,9 @@ fn closure_value(builtin: Arc<dyn BuiltinFunction>, arity: usize) -> Value {
     Value::Closure(Arc::new(ClosureData {
         func: FuncPtr::Builtin(builtin),
         captures: Arc::from([]),
-        arity,
-        call_arg_types: Arc::from([]),
+            arity,
+        param_descs: Arc::from([]),
+        ret_desc: vec![],
     }))
 }
 
@@ -434,7 +435,8 @@ impl BuiltinFunction for EffectMap {
             func: FuncPtr::Builtin(Arc::new(EffectMapInner(effect, func))),
             captures: Arc::from([]),
             arity: 0,
-            call_arg_types: Arc::from([]),
+            param_descs: Arc::from([]),
+            ret_desc: vec![],
         })))
     }
 }
@@ -487,7 +489,8 @@ impl BuiltinFunction for EffectFlatMap {
             func: FuncPtr::Builtin(Arc::new(EffectFlatMapInner(effect, func))),
             captures: Arc::from([]),
             arity: 0,
-            call_arg_types: Arc::from([]),
+            param_descs: Arc::from([]),
+            ret_desc: vec![],
         })))
     }
 }

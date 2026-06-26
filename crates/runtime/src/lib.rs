@@ -9,8 +9,7 @@ pub use crate::bridge::{
 pub use crate::error::RuntimeError;
 pub use crate::jit::{CompiledModule, JitError, compile_ir};
 pub use crate::value::{
-    ClosureData, FuncPtr, JitArgType, RecordData, Value, lookup_jit_param_types,
-    register_jit_param_types,
+    ClosureData, FuncPtr, JitArgType, RecordData, Value,
 };
 
 use std::sync::Mutex;
