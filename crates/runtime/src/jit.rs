@@ -107,7 +107,8 @@ impl CompiledModule {
     /// return type cannot be losslessly decoded as `i32`.
     pub fn call_main(&self) -> Result<i32, JitError> {
         let mut ret_buf = [0u8; 16];
-        let code = unsafe { (self.main_ptr)(std::ptr::null(), ret_buf.as_mut_ptr()) };
+        let args_buf = [0u8; 8]; // null closure_env pointer
+        let code = unsafe { (self.main_ptr)(args_buf.as_ptr(), ret_buf.as_mut_ptr()) };
         if code != 0 {
             return Err(JitError::Cranelift {
                 msg: format!("main returned error code {code}"),
@@ -1435,6 +1436,14 @@ fn compile_instruction(
             compile_release(builder, ctx, *val_id, values)?
         }
 
+        ir::Instruction::ClosureGet { env, offset, ty } => {
+            let env_val = lookup_value(values, *env, ctx.func_name)?;
+            let cl_type = storage_type(ty, ctx.func_name)?;
+            builder
+                .ins()
+                .load(cl_type, MemFlags::trusted(), env_val, *offset as i32)
+        }
+
         ir::Instruction::Panic { .. } => {
             builder.ins().trap(UNREACHABLE_TRAP);
             builder.ins().iconst(I32, 0)
@@ -1468,7 +1477,7 @@ fn compile_call_named(
             }
         })?;
 
-        let total_size: u32 = data.args.len().max(1) as u32 * 8;
+        let total_size: u32 = (data.args.len() as u32 + 1).max(1) * 8;
 
         let arg_slot = builder.create_sized_stack_slot(StackSlotData::new(
             StackSlotKind::ExplicitSlot,
@@ -1477,7 +1486,13 @@ fn compile_call_named(
         ));
         let args_buf = builder.ins().stack_addr(types::I64, arg_slot, 0);
 
-        let mut offset: i32 = 0;
+        // Arg 0: Null closure env for local named functions
+        let zero = builder.ins().iconst(types::I64, 0);
+        builder
+            .ins()
+            .store(MemFlags::trusted(), zero, args_buf, 0);
+
+        let mut offset: i32 = 8;
         for arg_id in &data.args {
             let arg_type = lookup_type(ctx.value_types, *arg_id, ctx.func_name)?;
             if !matches!(arg_type, IrType::Unit) {
@@ -1802,15 +1817,7 @@ fn compile_make_closure(
 
     // Compute total byte size: 16 for func_ptr + capture_count + captures.
     let capture_count = data.captures.len() as i32;
-    let capture_sizes: Vec<i32> = data
-        .captures
-        .iter()
-        .map(|capture_id| {
-            let ty = lookup_type(ctx.value_types, *capture_id, ctx.func_name)?;
-            storage_size(ty, ctx.func_name)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let total_size: i32 = 16 + capture_sizes.iter().sum::<i32>();
+    let total_size: i32 = 16 + capture_count * 8;
 
     // Create a stack buffer for the closure content.
     let content_slot = builder.create_sized_stack_slot(StackSlotData::new(
@@ -1831,14 +1838,14 @@ fn compile_make_closure(
         .ins()
         .store(MemFlags::trusted(), capture_count_val, content_buf, 8);
 
-    // Store each capture at offset 16.
+    // Store each capture at offset 16, each in an 8-byte slot.
     let mut offset: i32 = 16;
-    for (capture_id, size) in data.captures.iter().zip(capture_sizes.iter()) {
+    for capture_id in data.captures.iter() {
         let capture_val = lookup_value(values, *capture_id, ctx.func_name)?;
         builder
             .ins()
             .store(MemFlags::trusted(), capture_val, content_buf, offset);
-        offset += size;
+        offset += 8;
     }
 
     // Build args buffer for pipe_rt_alloc_closure: [data_ptr: u64, byte_size: u32].
@@ -1913,8 +1920,6 @@ fn compile_call_indirect(
             function: ctx.func_name.to_string(),
         });
     }
-    let capture_param_count = total_param_count - call_arg_count;
-    let capture_types: Vec<&IrType> = func_type.params[..capture_param_count].iter().collect();
     let call_arg_types: Vec<&IrType> = data
         .args
         .iter()
@@ -1926,7 +1931,7 @@ fn compile_call_indirect(
         )
         .collect();
     // Double-check consistency with FuncType params.
-    let expected_arg_types: Vec<&IrType> = func_type.params[capture_param_count..].iter().collect();
+    let expected_arg_types: Vec<&IrType> = func_type.params[total_param_count - call_arg_count..].iter().collect();
     if call_arg_types.len() != expected_arg_types.len() {
         return Err(JitError::UnimplementedInstruction {
             instruction: format!(
@@ -1943,8 +1948,8 @@ fn compile_call_indirect(
         .ins()
         .load(types::I64, MemFlags::trusted(), closure_val, 0);
 
-    // Compute total args buffer size aligned into 8-byte slots
-    let args_buf_size = ((capture_types.len() + call_arg_types.len()) * 8).max(1) as u32;
+    // Compute total args buffer size: closure_env (1 slot) + call args.
+    let args_buf_size = ((1 + call_arg_types.len()) * 8).max(1) as u32;
     let arg_slot = builder.create_sized_stack_slot(StackSlotData::new(
         StackSlotKind::ExplicitSlot,
         args_buf_size,
@@ -1952,25 +1957,13 @@ fn compile_call_indirect(
     ));
     let args_buf = builder.ins().stack_addr(types::I64, arg_slot, 0);
 
-    // Copy captures from closure (offset 16) into args buffer.
-    let mut offset: i32 = 0;
-    let mut closure_offset: i32 = 16;
-    for capture_ty in &capture_types {
-        let cap_val = builder.ins().load(
-            storage_type(capture_ty, ctx.func_name)?,
-            MemFlags::trusted(),
-            closure_val,
-            closure_offset,
-        );
-        builder
-            .ins()
-            .store(MemFlags::trusted(), cap_val, args_buf, offset);
-        let sz = storage_size(capture_ty, ctx.func_name)?;
-        closure_offset += sz;
-        offset += 8; // 8-byte aligned
-    }
+    // Arg 0: closure_env pointer.
+    builder
+        .ins()
+        .store(MemFlags::trusted(), closure_val, args_buf, 0);
 
     // Store call arguments.
+    let mut offset: i32 = 8;
     for arg_id in &data.args {
         let arg_type = lookup_type(ctx.value_types, *arg_id, ctx.func_name)?;
         if !matches!(arg_type, IrType::Unit) {
@@ -1979,7 +1972,7 @@ fn compile_call_indirect(
                 .ins()
                 .store(MemFlags::trusted(), arg_val, args_buf, offset);
         }
-        offset += 8; // 8-byte aligned
+        offset += 8;
     }
 
     // Allocate return buffer.
@@ -2013,45 +2006,13 @@ fn compile_tail_call(
     values: &HashMap<ValueId, Value>,
 ) -> Result<(), JitError> {
     let closure_val = lookup_value(values, callee, ctx.func_name)?;
-    let closure_type = lookup_type(ctx.value_types, callee, ctx.func_name)?;
-
-    let func_type = match closure_type {
-        IrType::Closure(ft) => ft.as_ref().clone(),
-        _ => {
-            return Err(JitError::UnimplementedInstruction {
-                instruction: format!("TailCall: callee is not a closure, got {closure_type}"),
-                function: ctx.func_name.to_string(),
-            });
-        }
-    };
+    let _closure_type = lookup_type(ctx.value_types, callee, ctx.func_name)?;
 
     let fn_ptr = builder
         .ins()
         .load(types::I64, MemFlags::trusted(), closure_val, 0);
 
-    let call_arg_count = call_args.len();
-    let total_param_count = func_type.params.len();
-    if call_arg_count > total_param_count {
-        return Err(JitError::UnimplementedInstruction {
-            instruction: format!(
-                "TailCall: expected at most {total_param_count} arguments, got {call_arg_count}"
-            ),
-            function: ctx.func_name.to_string(),
-        });
-    }
-    let capture_param_count = total_param_count - call_arg_count;
-    let capture_types: Vec<&IrType> = func_type.params[..capture_param_count].iter().collect();
-    let call_arg_types: Vec<&IrType> = call_args
-        .iter()
-        .map(
-            |id| match lookup_type(ctx.value_types, *id, ctx.func_name) {
-                Ok(t) => t,
-                Err(e) => panic!("{e}"),
-            },
-        )
-        .collect();
-
-    let args_buf_size = ((capture_types.len() + call_arg_types.len()) * 8).max(1) as u32;
+    let args_buf_size = ((1 + call_args.len()) * 8).max(1) as u32;
     let arg_slot = builder.create_sized_stack_slot(StackSlotData::new(
         StackSlotKind::ExplicitSlot,
         args_buf_size,
@@ -2059,23 +2020,12 @@ fn compile_tail_call(
     ));
     let args_buf = builder.ins().stack_addr(types::I64, arg_slot, 0);
 
-    let mut offset: i32 = 0;
-    let mut closure_offset: i32 = 16;
-    for capture_ty in &capture_types {
-        let cap_val = builder.ins().load(
-            storage_type(capture_ty, ctx.func_name)?,
-            MemFlags::trusted(),
-            closure_val,
-            closure_offset,
-        );
-        builder
-            .ins()
-            .store(MemFlags::trusted(), cap_val, args_buf, offset);
-        let sz = storage_size(capture_ty, ctx.func_name)?;
-        closure_offset += sz;
-        offset += 8;
-    }
+    // Arg 0: closure_env pointer.
+    builder
+        .ins()
+        .store(MemFlags::trusted(), closure_val, args_buf, 0);
 
+    let mut offset: i32 = 8;
     for arg_id in call_args {
         let arg_type = lookup_type(ctx.value_types, *arg_id, ctx.func_name)?;
         if !matches!(arg_type, IrType::Unit) {
@@ -3316,9 +3266,7 @@ unsafe extern "C" fn __pipe_println(args: *const u8, ret: *mut u8) -> i32 {
         _ => String::new(),
     };
     let output = if s.is_empty() { s } else { s + "\n" };
-    unsafe {
-        libc::write(1, output.as_ptr() as *const libc::c_void, output.len());
-    }
+    crate::write_stdout(&output);
     unsafe {
         *(ret as *mut i32) = 0;
     }
@@ -3839,8 +3787,7 @@ unsafe extern "C" fn pipe_rt_call_builtin(args: *const u8, ret: *mut u8) -> i32 
                 if raw == 0 || (raw as u64) < 0x1000 {
                     RuntimeValue::Unit
                 } else {
-                    let box_val = unsafe { Box::from_raw(raw as *mut RuntimeValue) };
-                    (*box_val).clone()
+                    unsafe { (&*(raw as *const RuntimeValue)).clone() }
                 }
             }
             _ => RuntimeValue::Unit,
@@ -3848,7 +3795,7 @@ unsafe extern "C" fn pipe_rt_call_builtin(args: *const u8, ret: *mut u8) -> i32 
         vals.push(value);
     }
 
-    let result = crate::bridge::global_registry().execute(name, &vals);
+    let result = crate::bridge::execute_builtin(name, &vals);
     match result {
         Ok(value) => {
             value_to_ret_buf(value, ret);
@@ -4016,42 +3963,49 @@ unsafe extern "C" fn pipe_rt_box_value_jit(ptr: u64, desc_ptr: u64, _desc_len: u
                 let total_param_count = unsafe { desc_read_u32(desc, offset) } as usize;
                 let func_addr = unsafe { std::ptr::read_unaligned(ptr as *const u64) } as usize;
                 let capture_count = unsafe { std::ptr::read_unaligned(ptr.add(8) as *const u64) } as usize;
-                let arity = total_param_count.saturating_sub(capture_count);
-                
+                // total_param_count = 1 (closure_env) + capture_count + call_param_count
+                let arity = total_param_count.saturating_sub(1 + capture_count);
+
                 let mut captures = Vec::with_capacity(capture_count);
                 let mut call_param_descs = Vec::with_capacity(arity);
                 let mut cap_ptr = unsafe { ptr.add(16) };
-                
-                for i in 0..total_param_count {
+
+                // Skip param[0] (closure_env)
+                let _p0_size = unsafe { desc_read_u32(desc, offset) };
+                let _p0_tag = unsafe { desc_read_u32(desc, offset) };
+                let p0_total = unsafe { desc_read_u32(desc, offset) } as usize;
+                *offset += p0_total.saturating_sub(8);
+
+                for i in 1..total_param_count {
                     let p_desc_start = *offset;
-                    let cap_size = unsafe { desc_read_u32(desc, offset) } as usize;
+                    let _cap_size = unsafe { desc_read_u32(desc, offset) } as usize;
                     let p_tag = unsafe { desc_read_u32(desc, offset) };
                     let p_total_bytes = unsafe { desc_read_u32(desc, offset) } as usize;
                     *offset = p_desc_start + 4 + p_total_bytes;
                     let p_desc = unsafe { std::slice::from_raw_parts(desc.add(p_desc_start + 4), p_total_bytes) }.to_vec();
-                    
-                    if i < capture_count {
+
+                    if i - 1 < capture_count {
                         let actual_ptr = if is_tag_heap_type(p_tag) {
                             let p = unsafe { std::ptr::read_unaligned(cap_ptr as *const u64) };
                             if p == 0 { std::ptr::null() } else { p as *const u8 }
                         } else {
                             cap_ptr
                         };
-                        
+
                         let mut temp_offset = p_desc_start + 4;
                         captures.push(unsafe { box_rec(actual_ptr, desc, &mut temp_offset) });
-                        cap_ptr = unsafe { cap_ptr.add(cap_size) };
+                        cap_ptr = unsafe { cap_ptr.add(8) }; // Each capture uses an 8-byte slot
                     } else {
                         call_param_descs.push(p_desc);
                     }
                 }
-                
+
                 let ret_desc_start = *offset;
                 let _ret_tag = unsafe { desc_read_u32(desc, offset) };
                 let ret_total_bytes = unsafe { desc_read_u32(desc, offset) } as usize;
                 *offset = ret_desc_start + ret_total_bytes;
                 let ret_desc = unsafe { std::slice::from_raw_parts(desc.add(ret_desc_start), ret_total_bytes) }.to_vec();
-                
+
                 let func = crate::value::FuncPtr::Jit { address: func_addr, arity };
                 V::Closure(std::sync::Arc::new(crate::value::ClosureData {
                     func,
@@ -4501,8 +4455,12 @@ unsafe fn pipe_rt_free_value(ptr: u64, type_desc: *const u8) {
                 let mut desc_offset = 12;
                 let mut capture_offset = 16; // skip func_ptr + capture_count
 
+                // Skip param[0] (closure_env, I64) in the type descriptor
+                let p0_total = std::ptr::read_unaligned(type_desc.add(desc_offset + 8) as *const u32) as usize;
+                desc_offset += 4 + p0_total;
+
                 for _ in 0..capture_count {
-                    let capture_size = std::ptr::read_unaligned(type_desc.add(desc_offset) as *const u32) as usize;
+                    let _capture_size = std::ptr::read_unaligned(type_desc.add(desc_offset) as *const u32) as usize;
                     let capture_type_desc = type_desc.add(desc_offset + 4);
                     let capture_tag = std::ptr::read_unaligned(capture_type_desc as *const u32);
                     if is_tag_heap_type(capture_tag) {
@@ -4512,7 +4470,7 @@ unsafe fn pipe_rt_free_value(ptr: u64, type_desc: *const u8) {
                         }
                     }
 
-                    capture_offset += capture_size;
+                    capture_offset += 8; // Each capture uses an 8-byte slot in the closure data
                     let capture_desc_total_bytes = std::ptr::read_unaligned(capture_type_desc.add(4) as *const u32) as usize;
                     desc_offset += 4 + capture_desc_total_bytes;
                 }
@@ -4648,7 +4606,8 @@ mod tests {
 
     fn call_main_raw(compiled: &CompiledModule) -> [u8; 16] {
         let mut ret_buf = [0u8; 16];
-        let code = unsafe { (compiled.main_ptr)(std::ptr::null(), ret_buf.as_mut_ptr()) };
+        let args_buf = [0u8; 8]; // null closure_env pointer
+        let code = unsafe { (compiled.main_ptr)(args_buf.as_ptr(), ret_buf.as_mut_ptr()) };
         assert_eq!(code, 0);
         ret_buf
     }

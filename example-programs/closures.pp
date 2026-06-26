@@ -33,6 +33,7 @@ let main = () => {
     // Function composition (defined inline to work around top-level
     // compose + thunk interaction).
     let compose = (f, g) => (x) => f(g(x))
+    println(`compose(increment, double)(5) = ${compose(increment, double)(5)}`)
     let dbl_then_inc = compose(increment, double)
     println(`doubleThenIncrement(5) = ${dbl_then_inc(5)}`)
 }

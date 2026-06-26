@@ -85,7 +85,7 @@ fn lower_identity_lambda() {
 fn lower_add_lambda() {
     let m = lower_src("let add = (a, b) => a + b");
     let f = m.function("add").unwrap();
-    assert_eq!(f.params.len(), 2);
+    assert_eq!(f.params.len(), 3); // env + a + b
     assert_eq!(f.return_type, IrType::I32);
 }
 
@@ -210,8 +210,9 @@ fn fix_merge_block_param_type_match() {
 fn fix_lambda_param_types_from_annotation() {
     let m = lower_src("let neg: (f64) -> f64 = (x) => x");
     let f = m.function("neg").unwrap();
-    // First param must be f64, not i32.
-    assert_eq!(f.params[0].2, IrType::F64, "annotated param should be F64");
+    // Second param (after closure_env) must be f64, not i32.
+    assert_eq!(f.params[0].2, IrType::I64, "env param should be I64");
+    assert_eq!(f.params[1].2, IrType::F64, "annotated param should be F64");
 }
 
 /// Lambda params from the inferred Func type must not all be i32.
@@ -220,8 +221,9 @@ fn fix_lambda_param_types_from_type_map() {
     // add(a,b) where both are i32 — the type map gives Func{[i32,i32]->i32}.
     let m = lower_src("let add = (a: i32, b: i32) => a + b");
     let f = m.function("add").unwrap();
-    assert_eq!(f.params[0].2, IrType::I32);
+    assert_eq!(f.params[0].2, IrType::I64); // env
     assert_eq!(f.params[1].2, IrType::I32);
+    assert_eq!(f.params[2].2, IrType::I32);
 }
 
 /// RecordGet field_index must be the sorted position, not always 0.
@@ -489,8 +491,8 @@ fn lower_curried_function() {
 fn lower_polymorphic_identity() {
     let m = lower_src("let id = (x) => x");
     let f = m.function("id").unwrap();
-    // id is ∀a. a → a — at IR level this becomes a function with one param
-    assert_eq!(f.params.len(), 1);
+    // id is ∀a. a → a — at IR level this becomes a function with env + arg
+    assert_eq!(f.params.len(), 2); // env + x
     let entry = &f.blocks[0];
     assert!(matches!(entry.terminator, Terminator::Return(_)));
 }

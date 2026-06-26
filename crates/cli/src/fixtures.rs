@@ -125,6 +125,8 @@ pub fn run_fixture(fixture: &Fixture) -> RunResult {
         .read_source()
         .expect("fixture source should be readable");
 
+    // Clear any previous global registry to ensure test isolation.
+    runtime::clear_global_registry();
     // Enable global output capture in the runtime. Builtins like `println`
     // will append to this buffer instead of writing to fd 1.
     runtime::enable_capture();

@@ -60,27 +60,42 @@ fn call_jit_fn(
     param_descs: &[Vec<u8>],
     ret_desc: &[u8],
 ) -> Result<Value, String> {
-    let mut args_buf = vec![0u8; (captures.len() + call_args.len()) * 8];
-    let mut offset = 0;
+    // Synthesize a closure environment buffer: [ref_count(8)][func_ptr(8)][capture_count(8)][captures...]
+    let mut closure_buf = vec![0u8; 8 + 16 + captures.len() * 8];
+    closure_buf[0..8].copy_from_slice(&1u64.to_le_bytes()); // ref count
+    closure_buf[8..16].copy_from_slice(&(address as u64).to_le_bytes()); // func_ptr
+    closure_buf[16..24].copy_from_slice(&(captures.len() as u64).to_le_bytes()); // capture_count
+
     let mut heap_args = Vec::new();
+    let mut offset = 24;
 
     for (i, cap) in captures.iter().enumerate() {
         if i < param_descs.len() {
             let desc = &param_descs[i];
             let tag = u32::from_le_bytes(desc[0..4].try_into().unwrap());
             let bytes = serialize_value_to_jit_arg(cap, desc, tag);
-            args_buf[offset..offset + bytes.len()].copy_from_slice(&bytes);
+            closure_buf[offset..offset + bytes.len()].copy_from_slice(&bytes);
             if is_tag_heap_type(tag) {
                 let jit_ptr = u64::from_le_bytes(bytes[0..8].try_into().unwrap());
                 heap_args.push((jit_ptr, desc.as_ptr()));
             }
-            offset += 8;
         }
+        offset += 8;
     }
 
+    let closure_buf_len = closure_buf.len();
+    let closure_ptr = Box::leak(closure_buf.into_boxed_slice()).as_mut_ptr();
+    let jit_closure_ptr = unsafe { closure_ptr.add(8) as u64 };
+
+    // Build args buffer: [closure_env(8)][call_args...]
+    let mut args_buf = vec![0u8; (1 + call_args.len()) * 8];
+    args_buf[0..8].copy_from_slice(&jit_closure_ptr.to_le_bytes());
+    offset = 8;
+
     for (i, arg) in call_args.iter().enumerate() {
-        if i < param_descs.len() {
-            let desc = &param_descs[i];
+        let desc_idx = captures.len() + i;
+        if desc_idx < param_descs.len() {
+            let desc = &param_descs[desc_idx];
             let tag = u32::from_le_bytes(desc[0..4].try_into().unwrap());
             let bytes = serialize_value_to_jit_arg(arg, desc, tag);
             args_buf[offset..offset + bytes.len()].copy_from_slice(&bytes);
@@ -88,8 +103,8 @@ fn call_jit_fn(
                 let jit_ptr = u64::from_le_bytes(bytes[0..8].try_into().unwrap());
                 heap_args.push((jit_ptr, desc.as_ptr()));
             }
-            offset += 8;
         }
+        offset += 8;
     }
 
     let mut ret_buf = vec![0u8; 12];
@@ -100,6 +115,11 @@ fn call_jit_fn(
 
     for (ptr, desc_ptr) in heap_args {
         unsafe { pipe_rt_release_ptr_exported(ptr, desc_ptr); }
+    }
+    // Free the synthesized closure buffer
+    unsafe {
+        let slice = std::slice::from_raw_parts_mut(closure_ptr, closure_buf_len);
+        let _ = Box::from_raw(slice);
     }
 
     if ret_desc.is_empty() {

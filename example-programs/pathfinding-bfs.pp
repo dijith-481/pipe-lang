@@ -9,7 +9,7 @@ let in_bounds = (r, c, rows, cols) =>
 
 // Check if a position is in a list
 let contains = (list, r, c) =>
-    list.filter((p) => match p { (pr, pc) => pr == r && pc == c }).len() > 0
+    list.filter((p) => match p { (pr, pc) => pr == r && pc == c }).len() > 0usize
 
 // Four cardinal directions
 let get_neighbors = (r, c) =>
@@ -18,7 +18,7 @@ let get_neighbors = (r, c) =>
 // BFS step: expand frontier by one level
 let bfs_step = (frontier, visited, depth, rows, cols) => {
     match frontier.len() {
-        0 => None
+        0usize => None
         _ => {
             let current = match frontier.head() { Some(v) => v _ => (0, 0) }
             let rest = match frontier.tail() { Some(t) => t _ => [] }

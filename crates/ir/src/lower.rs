@@ -946,9 +946,14 @@ fn resolve_and_queue_global<'src>(
                 fb.type_args.clone(),
             );
 
-            // Capture params — type from outer scope value_types or func params.
+            // EVERY function needs closure_env as arg 0
+            let env_val = inner_fb.alloc_value();
+            inner_fb.func.params.push((env_val, "closure_env".into(), IrType::I64));
+            inner_fb.value_types.insert(env_val, IrType::I64);
+
+            // Capture params — emit ClosureGet from env pointer with 8-byte offsets.
+            let mut cap_offset: u32 = 16; // Skip ref_count(8) + func_ptr(8)
             for cap in &captures {
-                let v = inner_fb.alloc_value();
                 let cap_ty = fb
                     .lookup(cap.as_str())
                     .and_then(|cv| {
@@ -961,9 +966,14 @@ fn resolve_and_queue_global<'src>(
                         })
                     })
                     .unwrap_or(IrType::I32);
-                inner_fb.func.params.push((v, cap.clone(), cap_ty.clone()));
+                let v = inner_fb.emit(Instruction::ClosureGet {
+                    env: env_val,
+                    offset: cap_offset,
+                    ty: cap_ty.clone(),
+                });
                 inner_fb.value_types.insert(v, cap_ty);
                 inner_fb.bind(cap.clone(), v);
+                cap_offset += 8;
             }
             // Declared params — resolve type from annotation, type_map, or default I32.
             // Look up the lambda's MonoType::Func to extract param types when
@@ -1484,6 +1494,9 @@ fn lower_decl_monomorphized<'src>(
                         tag_variants,
                         type_args,
                     );
+                    let env_val = fb.alloc_value();
+                    fb.func.params.push((env_val, "closure_env".into(), IrType::I64));
+                    fb.value_types.insert(env_val, IrType::I64);
                     for p in params.iter() {
                         let v = fb.alloc_value();
                         let param_ty = p
@@ -1519,6 +1532,9 @@ fn lower_decl_monomorphized<'src>(
                         tag_variants,
                         type_args,
                     );
+                    let env_val = fb.alloc_value();
+                    fb.func.params.push((env_val, "closure_env".into(), IrType::I64));
+                    fb.value_types.insert(env_val, IrType::I64);
                     let v = lower_expr(&mut fb, other, &mut hoisted, ctx)?;
                     fb.set_terminator(Terminator::Return(v));
                     module.decls.push(IrDecl::Function(fb.func));

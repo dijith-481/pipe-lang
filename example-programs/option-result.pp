@@ -23,12 +23,14 @@ let parse_age = (s) => match s {
 // Process user if found
 let greet_user = (user_id) =>
     find_user(user_id)
-        .map((user) => `Hello, ${user.name}!`)
+        .map((user: {id: i32, name: str, email: str}) => `Hello, ${user.name}!`)
 
 // Validate age
 let validate_age = (input) =>
-    parse_age(input)
-        .flatMap((age) => if age >= 0 { if age <= 150 { Ok(age) } else { Err(`age out of range`) } } else { Err(`age out of range`) })
+    match parse_age(input) {
+        Ok(age) => if age >= 0 { if age <= 150 { Ok(age) } else { Err(`age out of range`) } } else { Err(`age out of range`) }
+        Err(e) => Err(e)
+    }
 
 let main = () => {
     // Option usage

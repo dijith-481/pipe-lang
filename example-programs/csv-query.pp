@@ -60,7 +60,7 @@ let avg_prc = (rows) => match to_f64(rows.len()) > 0.0 {
 let unique = (rows, f) =>
     rows.fold([], (acc, r) => {
         let val = f(r)
-        match acc.filter((x) => x == val).len() > 0 {
+        match acc.filter((x) => x == val).len() > 0usize {
             true  => acc
             false => acc.concat([val])
         }

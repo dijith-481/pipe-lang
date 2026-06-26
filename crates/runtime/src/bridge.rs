@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, RwLock};
 
 use crate::value::Value;
 
-static GLOBAL_REGISTRY: OnceLock<BuiltinRegistry> = OnceLock::new();
+static GLOBAL_REGISTRY: RwLock<Option<BuiltinRegistry>> = RwLock::new(None);
 
 /// A native function exposed to pipe-lang programs.
 ///
@@ -119,23 +119,39 @@ pub fn expect_arity(name: &str, args: &[Value], expected: usize) -> Result<(), S
 ///
 /// * `registry` - The complete builtin registry for JIT name resolution.
 ///
-/// If the global registry was already initialized, this is a no-op
-/// (useful for multi-test environments where the same registry is
-/// reused).
+/// Replaces any previously registered registry.
 pub fn init_global_registry(registry: BuiltinRegistry) {
-    let _ = GLOBAL_REGISTRY.set(registry);
+    *GLOBAL_REGISTRY.write().unwrap() = Some(registry);
 }
 
-/// Returns the process-wide builtin registry.
+/// Clears the process-wide builtin registry.
 ///
-/// # Panics
+/// Useful for test isolation to prevent cross-test contamination.
+pub fn clear_global_registry() {
+    *GLOBAL_REGISTRY.write().unwrap() = None;
+}
+
+/// Executes a builtin function by source-level name using the global registry.
 ///
-/// Panics when [`init_global_registry`] has not been called yet.
-#[must_use]
-pub fn global_registry() -> &'static BuiltinRegistry {
-    GLOBAL_REGISTRY
-        .get()
-        .expect("global registry not initialized - call init_global_registry() first")
+/// # Arguments
+///
+/// * `name` - The builtin name emitted by lowering.
+/// * `args` - Runtime arguments supplied by the caller.
+///
+/// # Returns
+///
+/// The builtin's runtime result.
+///
+/// # Errors
+///
+/// Returns an error when the registry is uninitialized, the builtin is
+/// unknown, or execution fails.
+pub fn execute_builtin(name: &str, args: &[Value]) -> Result<Value, String> {
+    let guard = GLOBAL_REGISTRY.read().unwrap();
+    let registry = guard
+        .as_ref()
+        .ok_or_else(|| "global registry not initialized".to_owned())?;
+    registry.execute(name, args)
 }
 
 #[cfg(test)]
@@ -189,5 +205,19 @@ mod tests {
             expect_arity("echo", &[Value::Unit, Value::Unit], 1).expect_err("arity must fail");
 
         assert_eq!(error, "`echo` expected 1 argument(s), got 2");
+    }
+
+    #[test]
+    fn global_registry_reinitializable() {
+        clear_global_registry();
+        assert!(execute_builtin("echo", &[]).is_err());
+
+        let mut reg = BuiltinRegistry::new();
+        reg.register(Arc::new(Echo));
+        init_global_registry(reg);
+
+        let result = execute_builtin("echo", &[Value::I32(99)])
+            .expect("should resolve after re-init");
+        assert_eq!(result, Value::I32(99));
     }
 }

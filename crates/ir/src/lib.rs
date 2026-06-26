@@ -396,6 +396,12 @@ pub enum Instruction {
     Retain(ValueId),
     /// Decrement reference count of a heap value.
     Release(ValueId),
+    /// Load a captured variable from the closure environment.
+    ClosureGet {
+        env: ValueId,
+        offset: u32,
+        ty: IrType,
+    },
 }
 
 impl fmt::Display for Instruction {
@@ -516,6 +522,9 @@ impl fmt::Display for Instruction {
             Instruction::Panic { msg } => write!(f, "panic {msg:?}"),
             Instruction::Retain(v) => write!(f, "retain {v}"),
             Instruction::Release(v) => write!(f, "release {v}"),
+            Instruction::ClosureGet { env, offset, .. } => {
+                write!(f, "closure_get {env} + {offset}")
+            }
         }
     }
 }
@@ -1055,6 +1064,7 @@ pub fn infer_instruction_type(
         Instruction::ArrayConcat(a, _) => lookup_type(types, *a).cloned(),
         Instruction::RecordSet { .. } | Instruction::ArraySet { .. } => Some(IrType::Unit),
         Instruction::Retain(_) | Instruction::Release(_) => Some(IrType::Unit),
+        Instruction::ClosureGet { ty, .. } => Some(ty.clone()),
         _ => None,
     }
 }

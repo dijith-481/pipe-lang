@@ -5,8 +5,8 @@
 
 // Quicksort: partition around pivot, recurse on halves
 let quicksort : (Array<i32>) -> Array<i32> = (arr) => match arr.len() {
-    0 => []
-    1 => arr
+    0usize => []
+    1usize => arr
     _ => {
         let pivot = match arr.head() { Some(v) => v _ => 0 }
         let rest = match arr.tail() { Some(t) => t _ => [] }
@@ -18,8 +18,8 @@ let quicksort : (Array<i32>) -> Array<i32> = (arr) => match arr.len() {
 
 // Merge: combine two sorted arrays
 let merge : (Array<i32>, Array<i32>) -> Array<i32> = (a, b) => match (a.len(), b.len()) {
-    (0, _) => b
-    (_, 0) => a
+    (0usize, _) => b
+    (_, 0usize) => a
     _ => {
         let a_head = match a.head() { Some(v) => v _ => 0 }
         let b_head = match b.head() { Some(v) => v _ => 0 }
@@ -35,8 +35,8 @@ let merge : (Array<i32>, Array<i32>) -> Array<i32> = (a, b) => match (a.len(), b
 
 // Merge sort: divide and conquer
 let merge_sort : (Array<i32>) -> Array<i32> = (arr) => match arr.len() {
-    0 => []
-    1 => arr
+    0usize => []
+    1usize => arr
     _ => {
         let mid = arr.len() / 2usize
         let left = arr.take(mid)
