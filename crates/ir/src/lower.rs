@@ -494,6 +494,11 @@ fn resolve_and_queue_global<'src>(
 
         Expr::Ident(_, name, _) => {
             if let Some(v) = fb.lookup(name) {
+                if let Some(ty) = fb.value_types.get(&v) {
+                    if ty.is_heap_type() {
+                        fb.emit(Instruction::Retain(v));
+                    }
+                }
                 Ok(v)
             } else if let Some((tag_type, disc, _)) = find_tag_constructor(name, fb.tag_variants) {
                 // Bare tag constructor like `None` (0-arg). Emit a
@@ -622,6 +627,17 @@ fn resolve_and_queue_global<'src>(
                 lower_stmt(fb, stmt, hoisted, ctx)?;
             }
             let v = lower_expr(fb, result, hoisted, ctx)?;
+            let locals_to_release: Vec<ValueId> = fb.locals.iter()
+                .filter(|(name, val)| !saved.contains_key(name.as_str()) && **val != v)
+                .map(|(_, val)| *val)
+                .collect();
+            for val in locals_to_release {
+                if let Some(ty) = fb.value_types.get(&val) {
+                    if ty.is_heap_type() {
+                        fb.emit(Instruction::Release(val));
+                    }
+                }
+            }
             fb.locals = saved;
             Ok(v)
         }
@@ -653,6 +669,24 @@ fn resolve_and_queue_global<'src>(
                 fb.set_current(arm_id);
                 lower_pattern(fb, arm.pattern, subj_v)?;
                 let arm_v = lower_expr(fb, arm.body, hoisted, ctx)?;
+                let locals_to_release: Vec<ValueId> = fb.locals.iter()
+                    .filter(|(name, val)| !saved.contains_key(name.as_str()) && **val != arm_v)
+                    .map(|(_, val)| *val)
+                    .collect();
+                for val in locals_to_release {
+                    if let Some(ty) = fb.value_types.get(&val) {
+                        if ty.is_heap_type() {
+                            fb.emit(Instruction::Release(val));
+                        }
+                    }
+                }
+                if subj_v != arm_v {
+                    if let Some(ty) = fb.value_types.get(&subj_v) {
+                        if ty.is_heap_type() {
+                            fb.emit(Instruction::Release(subj_v));
+                        }
+                    }
+                }
                 fb.set_terminator(Terminator::Jump {
                     target: merge_id,
                     args: vec![arm_v],
@@ -770,13 +804,19 @@ fn resolve_and_queue_global<'src>(
                 .get(&expr.id())
                 .map(|m| fb.mono_to_ir(m))
                 .unwrap_or(IrType::Unit);
-            Ok(
-                fb.emit(Instruction::CallNamed(Box::new(crate::CallNamedData {
-                    name: "array_literal".into(),
-                    args: elem_vals,
-                    return_type,
-                }))),
-            )
+            let ret_v = fb.emit(Instruction::CallNamed(Box::new(crate::CallNamedData {
+                name: "array_literal".into(),
+                args: elem_vals.clone(),
+                return_type,
+            })));
+            for elem in &elem_vals {
+                if let Some(ty) = fb.value_types.get(elem) {
+                    if ty.is_heap_type() {
+                        fb.emit(Instruction::Release(*elem));
+                    }
+                }
+            }
+            Ok(ret_v)
         }
 
         Expr::Tuple { elems, .. } => {
@@ -814,20 +854,47 @@ fn resolve_and_queue_global<'src>(
             let obj_v = lower_expr(fb, object, hoisted, ctx)?;
             // Compute the field index from the object's inferred record type.
             let field_index = field_index_of(fb, object, field);
-            Ok(fb.emit(Instruction::RecordGet {
+            let fv = fb.emit(Instruction::RecordGet {
                 record: obj_v,
                 field: (*field).into(),
                 field_index,
-            }))
+            });
+            if let Some(ty) = fb.value_types.get(&fv) {
+                if ty.is_heap_type() {
+                    fb.emit(Instruction::Retain(fv));
+                }
+            }
+            if let Some(ty) = fb.value_types.get(&obj_v) {
+                if ty.is_heap_type() {
+                    fb.emit(Instruction::Release(obj_v));
+                }
+            }
+            Ok(fv)
         }
 
         Expr::Index { array, index, .. } => {
             let arr_v = lower_expr(fb, array, hoisted, ctx)?;
             let idx_v = lower_expr(fb, index, hoisted, ctx)?;
-            Ok(fb.emit(Instruction::ArrayGet {
+            let ev = fb.emit(Instruction::ArrayGet {
                 array: arr_v,
                 index: idx_v,
-            }))
+            });
+            if let Some(ty) = fb.value_types.get(&ev) {
+                if ty.is_heap_type() {
+                    fb.emit(Instruction::Retain(ev));
+                }
+            }
+            if let Some(ty) = fb.value_types.get(&arr_v) {
+                if ty.is_heap_type() {
+                    fb.emit(Instruction::Release(arr_v));
+                }
+            }
+            if let Some(ty) = fb.value_types.get(&idx_v) {
+                if ty.is_heap_type() {
+                    fb.emit(Instruction::Release(idx_v));
+                }
+            }
+            Ok(ev)
         }
 
         Expr::Template { parts, .. } => {
@@ -955,44 +1022,89 @@ fn resolve_and_queue_global<'src>(
                         // Value-defined global (e.g. `let t = mk(5)`): evaluate it
                         // to get the closure value, then call it with args.
                         let callee = lower_expr(fb, func, hoisted, ctx)?;
-                        Ok(fb.emit(Instruction::CallIndirect(Box::new(
+                        let ret_v = fb.emit(Instruction::CallIndirect(Box::new(
                             crate::CallIndirectData {
                                 callee,
-                                args: arg_vals,
+                                args: arg_vals.clone(),
                                 return_type,
                             },
-                        ))))
+                        )));
+                        if let Some(ty) = fb.value_types.get(&callee) {
+                            if ty.is_heap_type() {
+                                fb.emit(Instruction::Release(callee));
+                            }
+                        }
+                        for arg in &arg_vals {
+                            if let Some(ty) = fb.value_types.get(arg) {
+                                if ty.is_heap_type() {
+                                    fb.emit(Instruction::Release(*arg));
+                                }
+                            }
+                        }
+                        Ok(ret_v)
                     } else if fb.lookup(name).is_some() {
                         // Local variable or parameter used in call position.
                         // Evaluate it to get the closure value, then call via CallIndirect.
                         let callee = lower_expr(fb, func, hoisted, ctx)?;
-                        Ok(fb.emit(Instruction::CallIndirect(Box::new(
+                        let ret_v = fb.emit(Instruction::CallIndirect(Box::new(
                             crate::CallIndirectData {
                                 callee,
-                                args: arg_vals,
+                                args: arg_vals.clone(),
                                 return_type,
                             },
-                        ))))
+                        )));
+                        if let Some(ty) = fb.value_types.get(&callee) {
+                            if ty.is_heap_type() {
+                                fb.emit(Instruction::Release(callee));
+                            }
+                        }
+                        for arg in &arg_vals {
+                            if let Some(ty) = fb.value_types.get(arg) {
+                                if ty.is_heap_type() {
+                                    fb.emit(Instruction::Release(*arg));
+                                }
+                            }
+                        }
+                        Ok(ret_v)
                     } else {
                         let mangled = resolve_and_queue_global(name, func.id(), fb, ctx);
-                        Ok(
-                            fb.emit(Instruction::CallNamed(Box::new(crate::CallNamedData {
-                                name: mangled.into(),
-                                args: arg_vals,
-                                return_type,
-                            }))),
-                        )
+                        let ret_v = fb.emit(Instruction::CallNamed(Box::new(crate::CallNamedData {
+                            name: mangled.into(),
+                            args: arg_vals.clone(),
+                            return_type,
+                        })));
+                        for arg in &arg_vals {
+                            if let Some(ty) = fb.value_types.get(arg) {
+                                if ty.is_heap_type() {
+                                    fb.emit(Instruction::Release(*arg));
+                                }
+                            }
+                        }
+                        Ok(ret_v)
                     }
                 }
                 _ => {
                     let callee = lower_expr(fb, func, hoisted, ctx)?;
-                    Ok(fb.emit(Instruction::CallIndirect(Box::new(
+                    let ret_v = fb.emit(Instruction::CallIndirect(Box::new(
                         crate::CallIndirectData {
                             callee,
-                            args: arg_vals,
+                            args: arg_vals.clone(),
                             return_type,
                         },
-                    ))))
+                    )));
+                    if let Some(ty) = fb.value_types.get(&callee) {
+                        if ty.is_heap_type() {
+                            fb.emit(Instruction::Release(callee));
+                        }
+                    }
+                    for arg in &arg_vals {
+                        if let Some(ty) = fb.value_types.get(arg) {
+                            if ty.is_heap_type() {
+                                fb.emit(Instruction::Release(*arg));
+                            }
+                        }
+                    }
+                    Ok(ret_v)
                 }
             }
         }
@@ -1148,9 +1260,19 @@ fn lower_stmt<'src>(
         Stmt::Let { pattern, value } => {
             let v = lower_expr(fb, value, hoisted, ctx)?;
             bind_pattern_local(fb, pattern, v);
+            if let Some(ty) = fb.value_types.get(&v) {
+                if ty.is_heap_type() {
+                    fb.emit(Instruction::Release(v));
+                }
+            }
         }
         Stmt::Expr(e) => {
-            lower_expr(fb, e, hoisted, ctx)?;
+            let v = lower_expr(fb, e, hoisted, ctx)?;
+            if let Some(ty) = fb.value_types.get(&v) {
+                if ty.is_heap_type() {
+                    fb.emit(Instruction::Release(v));
+                }
+            }
         }
     }
     Ok(())
@@ -1162,7 +1284,14 @@ fn lower_pattern<'src>(
     scrutinee: ValueId,
 ) -> Result<(), LowerError> {
     match pat {
-        Pattern::Binding(_, name, _) => fb.bind((*name).into(), scrutinee),
+        Pattern::Binding(_, name, _) => {
+            if let Some(ty) = fb.value_types.get(&scrutinee) {
+                if ty.is_heap_type() {
+                    fb.emit(Instruction::Retain(scrutinee));
+                }
+            }
+            fb.bind((*name).into(), scrutinee);
+        }
         Pattern::Wildcard(_, _) | Pattern::Literal(_, _, _) => {}
         Pattern::Constructor { fields, .. } => {
             for (i, p) in fields.iter().enumerate() {
@@ -1192,6 +1321,11 @@ fn lower_pattern<'src>(
                 if let Some(p) = f.pattern {
                     lower_pattern(fb, p, fv)?;
                 } else {
+                    if let Some(ty) = fb.value_types.get(&fv) {
+                        if ty.is_heap_type() {
+                            fb.emit(Instruction::Retain(fv));
+                        }
+                    }
                     fb.bind(f.name.into(), fv);
                 }
             }
@@ -1202,7 +1336,14 @@ fn lower_pattern<'src>(
 
 fn bind_pattern_local<'src>(fb: &mut FunctionBuilder<'_>, pat: &Pattern<'src>, v: ValueId) {
     match pat {
-        Pattern::Binding(_, name, _) => fb.bind((*name).into(), v),
+        Pattern::Binding(_, name, _) => {
+            if let Some(ty) = fb.value_types.get(&v) {
+                if ty.is_heap_type() {
+                    fb.emit(Instruction::Retain(v));
+                }
+            }
+            fb.bind((*name).into(), v);
+        }
         Pattern::Wildcard(..) | Pattern::Literal(..) => {}
         Pattern::Tuple { patterns, .. } => {
             for (i, p) in patterns.iter().enumerate() {
@@ -1232,6 +1373,11 @@ fn bind_pattern_local<'src>(fb: &mut FunctionBuilder<'_>, pat: &Pattern<'src>, v
                 if let Some(p) = f.pattern {
                     bind_pattern_local(fb, p, fv);
                 } else {
+                    if let Some(ty) = fb.value_types.get(&fv) {
+                        if ty.is_heap_type() {
+                            fb.emit(Instruction::Retain(fv));
+                        }
+                    }
                     fb.bind(f.name.into(), fv);
                 }
             }

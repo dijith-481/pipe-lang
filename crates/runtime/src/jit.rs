@@ -188,7 +188,8 @@ pub fn compile_ir(ir_module: &IrModule) -> Result<CompiledModule, JitError> {
         let mut data_desc = DataDescription::new();
         let bytes = s.as_bytes();
         let len = bytes.len() as u32;
-        let mut data = Vec::with_capacity(4 + bytes.len());
+        let mut data = Vec::with_capacity(8 + 4 + bytes.len());
+        data.extend_from_slice(&u64::MAX.to_ne_bytes());
         data.extend_from_slice(&len.to_ne_bytes());
         data.extend_from_slice(bytes);
         data_desc.define(data.into_boxed_slice());
@@ -341,6 +342,28 @@ pub fn compile_ir(ir_module: &IrModule) -> Result<CompiledModule, JitError> {
         module.define_data(unbox_value_jit_ptr_data_id, &data_desc)?;
     }
 
+    // Declare a data object for the pipe_rt_retain function pointer.
+    let retain_ptr = pipe_rt_retain as *const ();
+    let retain_ptr_data_id =
+        module.declare_data("__pipe_retain_ptr", Linkage::Local, false, false)?;
+    {
+        let mut data_desc = DataDescription::new();
+        let ptr_bytes: Vec<u8> = (retain_ptr as u64).to_ne_bytes().to_vec();
+        data_desc.define(ptr_bytes.into_boxed_slice());
+        module.define_data(retain_ptr_data_id, &data_desc)?;
+    }
+
+    // Declare a data object for the pipe_rt_release function pointer.
+    let release_ptr = pipe_rt_release as *const ();
+    let release_ptr_data_id =
+        module.declare_data("__pipe_release_ptr", Linkage::Local, false, false)?;
+    {
+        let mut data_desc = DataDescription::new();
+        let ptr_bytes: Vec<u8> = (release_ptr as u64).to_ne_bytes().to_vec();
+        data_desc.define(ptr_bytes.into_boxed_slice());
+        module.define_data(release_ptr_data_id, &data_desc)?;
+    }
+
     // Pre-compute each function's actual return type (with full closure
     // params including captures) so CallNamed can propagate the richer
     // type to downstream CallIndirect instructions.
@@ -397,6 +420,8 @@ pub fn compile_ir(ir_module: &IrModule) -> Result<CompiledModule, JitError> {
             arr_eq_ptr_data_id,
             box_value_jit_ptr_data_id,
             unbox_value_jit_ptr_data_id,
+            retain_ptr_data_id,
+            release_ptr_data_id,
             builtin_name_data_ids: &builtin_name_data_ids,
             tag_variants: &ir_module.tag_variants,
         };
@@ -487,6 +512,10 @@ struct BlockContext<'a> {
     box_value_jit_sig: SigRef,
     unbox_value_jit_fn_ptr: Value,
     unbox_value_jit_sig: SigRef,
+    retain_fn_ptr: Value,
+    retain_sig: SigRef,
+    release_fn_ptr: Value,
+    release_sig: SigRef,
     builtin_name_globals: &'a HashMap<String, GlobalValue>,
     closure_callee_funcs: &'a HashMap<String, FuncRef>,
     blocks: &'a HashMap<BlockId, Block>,
@@ -512,6 +541,8 @@ struct FunctionBodyParams<'a> {
     arr_eq_ptr_data_id: DataId,
     box_value_jit_ptr_data_id: DataId,
     unbox_value_jit_ptr_data_id: DataId,
+    retain_ptr_data_id: DataId,
+    release_ptr_data_id: DataId,
     builtin_name_data_ids: &'a HashMap<String, DataId>,
     tag_variants: &'a typechecker::TagVariants,
 }
@@ -831,6 +862,50 @@ fn compile_function_body(
         f.import_signature(sig)
     };
 
+    // Import the pipe_rt_retain function pointer from a data object.
+    let retain_fn_ptr_gv = {
+        let f: &mut Function = builder.func;
+        params
+            .module
+            .declare_data_in_func(params.retain_ptr_data_id, f)
+    };
+    let retain_fn_ptr_addr = builder
+        .ins()
+        .global_value(types::I64, retain_fn_ptr_gv);
+    let retain_fn_ptr = builder.ins().load(
+        types::I64,
+        MemFlags::trusted(),
+        retain_fn_ptr_addr,
+        0,
+    );
+    let retain_sig = {
+        let sig = make_signature(params.module);
+        let f: &mut Function = builder.func;
+        f.import_signature(sig)
+    };
+
+    // Import the pipe_rt_release function pointer from a data object.
+    let release_fn_ptr_gv = {
+        let f: &mut Function = builder.func;
+        params
+            .module
+            .declare_data_in_func(params.release_ptr_data_id, f)
+    };
+    let release_fn_ptr_addr = builder
+        .ins()
+        .global_value(types::I64, release_fn_ptr_gv);
+    let release_fn_ptr = builder.ins().load(
+        types::I64,
+        MemFlags::trusted(),
+        release_fn_ptr_addr,
+        0,
+    );
+    let release_sig = {
+        let sig = make_signature(params.module);
+        let f: &mut Function = builder.func;
+        f.import_signature(sig)
+    };
+
     // Pre-import builtin name data objects referenced by CallNamed in this function.
     let mut builtin_name_globals: HashMap<String, GlobalValue> = HashMap::new();
     for ir_block in &func.blocks {
@@ -921,6 +996,10 @@ fn compile_function_body(
         box_value_jit_sig,
         unbox_value_jit_fn_ptr,
         unbox_value_jit_sig,
+        retain_fn_ptr,
+        retain_sig,
+        release_fn_ptr,
+        release_sig,
         builtin_name_globals: &builtin_name_globals,
         closure_callee_funcs: &closure_callee_funcs,
         blocks: &blocks,
@@ -1202,7 +1281,8 @@ fn compile_instruction(
                     function: ctx.func_name.to_string(),
                 }
             })?;
-            builder.ins().global_value(types::I64, *gv)
+            let addr = builder.ins().global_value(types::I64, *gv);
+            builder.ins().iadd_imm(addr, 8)
         }
 
         ir::Instruction::Add(left, right) => {
@@ -1365,6 +1445,14 @@ fn compile_instruction(
             index,
             value,
         } => compile_array_set(builder, ctx, *array, *index, *value, values)?,
+
+        ir::Instruction::Retain(val_id) => {
+            compile_retain(builder, ctx, *val_id, values)?
+        }
+
+        ir::Instruction::Release(val_id) => {
+            compile_release(builder, ctx, *val_id, values)?
+        }
 
         ir::Instruction::Panic { .. } => {
             builder.ins().trap(UNREACHABLE_TRAP);
@@ -2183,6 +2271,108 @@ fn compile_tag_get(
         tag_val,
         offset,
     ))
+}
+
+fn is_heap_type(ty: &IrType) -> bool {
+    matches!(
+        ty,
+        IrType::Str
+            | IrType::Array(_)
+            | IrType::Record(_)
+            | IrType::Closure(_)
+            | IrType::Tag(_)
+            | IrType::Effect(_)
+    )
+}
+
+fn compile_retain(
+    builder: &mut FunctionBuilder,
+    ctx: &BlockContext,
+    value_id: ValueId,
+    values: &HashMap<ValueId, Value>,
+) -> Result<Value, JitError> {
+    let ty = lookup_type(ctx.value_types, value_id, ctx.func_name)?;
+    let val = lookup_value(values, value_id, ctx.func_name)?;
+
+    if is_heap_type(ty) {
+        let args_slot = builder.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            8,
+            0,
+        ));
+        let args_buf = builder.ins().stack_addr(types::I64, args_slot, 0);
+
+        let val_i64 = if builder.func.dfg.value_type(val) == types::I64 {
+            val
+        } else {
+            builder.ins().uextend(types::I64, val)
+        };
+        builder.ins().store(MemFlags::trusted(), val_i64, args_buf, 0);
+
+        let ret_slot = builder.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            4,
+            0,
+        ));
+        let ret_buf = builder.ins().stack_addr(types::I64, ret_slot, 0);
+
+        builder.ins().call_indirect(ctx.retain_sig, ctx.retain_fn_ptr, &[args_buf, ret_buf]);
+    }
+
+    Ok(builder.ins().iconst(I32, 0))
+}
+
+fn compile_release(
+    builder: &mut FunctionBuilder,
+    ctx: &BlockContext,
+    value_id: ValueId,
+    values: &HashMap<ValueId, Value>,
+) -> Result<Value, JitError> {
+    let ty = lookup_type(ctx.value_types, value_id, ctx.func_name)?;
+    let val = lookup_value(values, value_id, ctx.func_name)?;
+
+    if is_heap_type(ty) {
+        let desc_bytes = serialize_type_desc_to_bytes(ty, ctx.func_name)?;
+        let desc_slot = builder.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            desc_bytes.len() as u32,
+            0,
+        ));
+        let desc_ptr = builder.ins().stack_addr(types::I64, desc_slot, 0);
+        for (j, chunk) in desc_bytes.chunks(4).enumerate() {
+            let chunk_val = u32::from_le_bytes(chunk.try_into().unwrap_or([0; 4]));
+            let v = builder.ins().iconst(I32, chunk_val as i64);
+            builder
+                .ins()
+                .store(MemFlags::trusted(), v, desc_ptr, (j * 4) as i32);
+        }
+
+        let args_slot = builder.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            16,
+            0,
+        ));
+        let args_buf = builder.ins().stack_addr(types::I64, args_slot, 0);
+
+        let val_i64 = if builder.func.dfg.value_type(val) == types::I64 {
+            val
+        } else {
+            builder.ins().uextend(types::I64, val)
+        };
+        builder.ins().store(MemFlags::trusted(), val_i64, args_buf, 0);
+        builder.ins().store(MemFlags::trusted(), desc_ptr, args_buf, 8);
+
+        let ret_slot = builder.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            4,
+            0,
+        ));
+        let ret_buf = builder.ins().stack_addr(types::I64, ret_slot, 0);
+
+        builder.ins().call_indirect(ctx.release_sig, ctx.release_fn_ptr, &[args_buf, ret_buf]);
+    }
+
+    Ok(builder.ins().iconst(I32, 0))
 }
 
 /// Compile a `RecordAlloc` instruction.
@@ -3232,12 +3422,13 @@ unsafe extern "C" fn pipe_rt_str_concat(args: *const u8, ret: *mut u8) -> i32 {
     }
     let bytes = result.into_bytes();
     let len = bytes.len() as u32;
-    let mut buf = Vec::with_capacity(4 + bytes.len());
+    let mut buf = Vec::with_capacity(8 + 4 + bytes.len());
+    buf.extend_from_slice(&1u64.to_ne_bytes());
     buf.extend_from_slice(&len.to_ne_bytes());
     buf.extend_from_slice(&bytes);
     let ptr = Box::leak(buf.into_boxed_slice()).as_ptr();
     unsafe {
-        *(ret as *mut u64) = ptr as u64;
+        *(ret as *mut u64) = ptr.add(8) as u64;
     }
     0
 }
@@ -3350,10 +3541,16 @@ unsafe extern "C" fn pipe_rt_arr_eq(a: u64, b: u64, elem_size: u32, elem_type_ta
 unsafe extern "C" fn pipe_rt_alloc_closure(args: *const u8, ret: *mut u8) -> i32 {
     let data_ptr = unsafe { std::ptr::read_unaligned(args as *const u64) } as *const u8;
     let byte_size = unsafe { std::ptr::read_unaligned(args.add(8) as *const u32) } as usize;
-    let closure = Vec::from(unsafe { std::slice::from_raw_parts(data_ptr, byte_size) });
-    let ptr = Box::leak(closure.into_boxed_slice()).as_ptr();
+    let mut buf = vec![0u8; 8 + byte_size];
     unsafe {
-        *(ret as *mut u64) = ptr as u64;
+        std::ptr::write_unaligned(buf.as_mut_ptr() as *mut u64, 1u64); // ref count = 1
+        if byte_size > 0 && !data_ptr.is_null() {
+            std::ptr::copy_nonoverlapping(data_ptr, buf.as_mut_ptr().add(8), byte_size);
+        }
+    }
+    let ptr = Box::leak(buf.into_boxed_slice()).as_ptr();
+    unsafe {
+        *(ret as *mut u64) = ptr.add(8) as u64;
     }
     0
 }
@@ -3379,12 +3576,15 @@ unsafe extern "C" fn pipe_rt_alloc_array(args: *const u8, ret: *mut u8) -> i32 {
     let element_size = unsafe { std::ptr::read_unaligned(args.add(4) as *const u32) } as usize;
     let init_raw = unsafe { std::ptr::read_unaligned(args.add(8) as *const u64) };
 
-    let total_size = 8 + len * element_size;
+    let total_size = 8 + 8 + len * element_size;
     let mut buf = vec![0u8; total_size];
 
-    unsafe { std::ptr::write_unaligned(buf.as_mut_ptr() as *mut u64, len as u64) };
+    unsafe {
+        std::ptr::write_unaligned(buf.as_mut_ptr() as *mut u64, 1u64); // ref count = 1
+        std::ptr::write_unaligned(buf.as_mut_ptr().add(8) as *mut u64, len as u64); // len
+    }
 
-    let data_ptr = unsafe { buf.as_mut_ptr().add(8) };
+    let data_ptr = unsafe { buf.as_mut_ptr().add(16) };
     let init_bytes = &init_raw as *const u64 as *const u8;
     for i in 0..len {
         unsafe {
@@ -3394,7 +3594,7 @@ unsafe extern "C" fn pipe_rt_alloc_array(args: *const u8, ret: *mut u8) -> i32 {
 
     let ptr = Box::leak(buf.into_boxed_slice()).as_ptr();
     unsafe {
-        *(ret as *mut u64) = ptr as u64;
+        *(ret as *mut u64) = ptr.add(8) as u64; // pointer to len
     }
     0
 }
@@ -3427,15 +3627,18 @@ unsafe extern "C" fn pipe_rt_array_concat(args: *const u8, ret: *mut u8) -> i32 
     let right_len = unsafe { std::ptr::read_unaligned(right_ptr as *const u64) } as usize;
     let total_len = left_len + right_len;
 
-    let total_size = 8 + total_len * element_size;
+    let total_size = 8 + 8 + total_len * element_size;
     let mut buf = vec![0u8; total_size];
 
-    unsafe { std::ptr::write_unaligned(buf.as_mut_ptr() as *mut u64, total_len as u64) };
+    unsafe {
+        std::ptr::write_unaligned(buf.as_mut_ptr() as *mut u64, 1u64); // ref count = 1
+        std::ptr::write_unaligned(buf.as_mut_ptr().add(8) as *mut u64, total_len as u64); // len
+    }
 
     let left_data = unsafe { left_ptr.add(8) };
     let right_data = unsafe { right_ptr.add(8) };
     let left_bytes = left_len * element_size;
-    let dst = unsafe { buf.as_mut_ptr().add(8) };
+    let dst = unsafe { buf.as_mut_ptr().add(16) };
     unsafe {
         std::ptr::copy_nonoverlapping(left_data, dst, left_bytes);
         std::ptr::copy_nonoverlapping(right_data, dst.add(left_bytes), right_len * element_size);
@@ -3443,7 +3646,7 @@ unsafe extern "C" fn pipe_rt_array_concat(args: *const u8, ret: *mut u8) -> i32 
 
     let ptr = Box::leak(buf.into_boxed_slice()).as_ptr();
     unsafe {
-        *(ret as *mut u64) = ptr as u64;
+        *(ret as *mut u64) = ptr.add(8) as u64; // pointer to len
     }
     0
 }
@@ -3675,12 +3878,12 @@ unsafe extern "C" fn pipe_rt_call_builtin(args: *const u8, ret: *mut u8) -> i32 
                     RuntimeValue::str(s.to_owned())
                 }
             }
-            13 | 14 | 15 | 17 => {
+            13 | 14 | 15 | 16 | 17 => {
                 if raw == 0 || (raw as u64) < 0x1000 {
                     RuntimeValue::Unit
                 } else {
-                    let val = unsafe { &*(raw as *const RuntimeValue) };
-                    val.clone()
+                    let box_val = unsafe { Box::from_raw(raw as *mut RuntimeValue) };
+                    (*box_val).clone()
                 }
             }
             _ => RuntimeValue::Unit,
@@ -3719,11 +3922,12 @@ fn value_to_ret_buf(value: crate::value::Value, ret: *mut u8) {
         RuntimeValue::Str(s) => {
             let bytes = s.as_bytes();
             let len = bytes.len() as u32;
-            let mut buf = Vec::with_capacity(4 + bytes.len());
+            let mut buf = Vec::with_capacity(8 + 4 + bytes.len());
+            buf.extend_from_slice(&1u64.to_ne_bytes());
             buf.extend_from_slice(&len.to_ne_bytes());
             buf.extend_from_slice(bytes);
             let ptr = Box::leak(buf.into_boxed_slice()).as_ptr();
-            (ptr as i64, 11)
+            (unsafe { ptr.add(8) } as i64, 11)
         }
         RuntimeValue::Array(a) => {
             let ptr = Box::into_raw(Box::new(RuntimeValue::Array(a))) as i64;
@@ -4034,7 +4238,230 @@ unsafe extern "C" fn pipe_rt_unbox_value_jit(ptr: u64, _desc_ptr: u64, _desc_len
     }
 
     let jit_data = unsafe { value_to_jit_bytes(box_val) };
-    Box::leak(jit_data.into_boxed_slice()).as_ptr() as u64
+    let mut final_data = Vec::with_capacity(8 + jit_data.len());
+    final_data.extend_from_slice(&1u64.to_ne_bytes());
+    final_data.extend_from_slice(&jit_data);
+    let ptr = Box::leak(final_data.into_boxed_slice()).as_ptr();
+    unsafe { ptr.add(8) as u64 }
+}
+
+fn is_tag_heap_type(tag: u32) -> bool {
+    matches!(tag, 11 | 13 | 14 | 15 | 16 | 17)
+}
+
+unsafe fn pipe_rt_release_ptr(ptr: u64, type_desc: *const u8) {
+    unsafe {
+        if ptr == 0 || type_desc.is_null() {
+            return;
+        }
+        let rc_ptr = (ptr - 8) as *mut u64;
+        let rc_atomic = &*(rc_ptr as *const std::sync::atomic::AtomicU64);
+        let mut current = rc_atomic.load(std::sync::atomic::Ordering::Acquire);
+        loop {
+            if current == u64::MAX {
+                return;
+            }
+            match rc_atomic.compare_exchange_weak(
+                current,
+                current - 1,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    if current == 1 {
+                        pipe_rt_free_value(ptr, type_desc);
+                    }
+                    break;
+                }
+                Err(actual) => current = actual,
+            }
+        }
+    }
+}
+
+unsafe fn pipe_rt_free_value(ptr: u64, type_desc: *const u8) {
+    unsafe {
+        if ptr == 0 || type_desc.is_null() {
+            return;
+        }
+        let type_tag = std::ptr::read_unaligned(type_desc as *const u32);
+        match type_tag {
+            11 => {
+                // Str
+                let len = std::ptr::read_unaligned(ptr as *const u32) as usize;
+                let original_alloc = (ptr - 8) as *mut u8;
+                let slice = std::slice::from_raw_parts_mut(original_alloc, 8 + 4 + len);
+                let _ = Box::from_raw(slice);
+            }
+            13 => {
+                // Array
+                let elem_size = std::ptr::read_unaligned(type_desc.add(8) as *const u32) as usize;
+                let elem_type_desc = type_desc.add(12);
+                let len = std::ptr::read_unaligned(ptr as *const u64) as usize;
+
+                let elem_tag = std::ptr::read_unaligned(elem_type_desc as *const u32);
+                if is_tag_heap_type(elem_tag) {
+                    for i in 0..len {
+                        let elem_ptr = std::ptr::read_unaligned((ptr + 8 + (i * elem_size) as u64) as *const u64);
+                        if elem_ptr != 0 {
+                            pipe_rt_release_ptr(elem_ptr, elem_type_desc);
+                        }
+                    }
+                }
+                let original_alloc = (ptr - 8) as *mut u8;
+                let total_size = 8 + 8 + len * elem_size;
+                let slice = std::slice::from_raw_parts_mut(original_alloc, total_size);
+                let _ = Box::from_raw(slice);
+            }
+            14 => {
+                // Record
+                let field_count = std::ptr::read_unaligned(type_desc.add(8) as *const u32) as usize;
+                let mut desc_offset = 12;
+                let mut record_offset = 0;
+
+                for _ in 0..field_count {
+                    let field_size = std::ptr::read_unaligned(type_desc.add(desc_offset) as *const u32) as usize;
+                    let name_len = std::ptr::read_unaligned(type_desc.add(desc_offset + 4) as *const u32) as usize;
+                    let mut name_bytes_len = name_len;
+                    while name_bytes_len % 4 != 0 {
+                        name_bytes_len += 1;
+                    }
+                    let field_type_desc = type_desc.add(desc_offset + 8 + name_bytes_len);
+                    let field_tag = std::ptr::read_unaligned(field_type_desc as *const u32);
+                    if is_tag_heap_type(field_tag) {
+                        let field_ptr = std::ptr::read_unaligned((ptr + record_offset as u64) as *const u64);
+                        if field_ptr != 0 {
+                            pipe_rt_release_ptr(field_ptr, field_type_desc);
+                        }
+                    }
+
+                    record_offset += field_size;
+                    let field_desc_total_bytes = std::ptr::read_unaligned(field_type_desc.add(4) as *const u32) as usize;
+                    desc_offset += 8 + name_bytes_len + field_desc_total_bytes;
+                }
+
+                let original_alloc = (ptr - 8) as *mut u8;
+                let slice = std::slice::from_raw_parts_mut(original_alloc, 8 + record_offset);
+                let _ = Box::from_raw(slice);
+            }
+            15 => {
+                // Effect
+                let original_alloc = (ptr - 8) as *mut u8;
+                let slice = std::slice::from_raw_parts_mut(original_alloc, 16);
+                let _ = Box::from_raw(slice);
+            }
+            16 => {
+                // Closure
+                let capture_count = std::ptr::read_unaligned(type_desc.add(8) as *const u32) as usize;
+                let mut desc_offset = 12;
+                let mut capture_offset = 8; // skip func_ptr
+
+                for _ in 0..capture_count {
+                    let capture_size = std::ptr::read_unaligned(type_desc.add(desc_offset) as *const u32) as usize;
+                    let capture_type_desc = type_desc.add(desc_offset + 4);
+                    let capture_tag = std::ptr::read_unaligned(capture_type_desc as *const u32);
+                    if is_tag_heap_type(capture_tag) {
+                        let capture_ptr = std::ptr::read_unaligned((ptr + capture_offset as u64) as *const u64);
+                        if capture_ptr != 0 {
+                            pipe_rt_release_ptr(capture_ptr, capture_type_desc);
+                        }
+                    }
+
+                    capture_offset += capture_size;
+                    let capture_desc_total_bytes = std::ptr::read_unaligned(capture_type_desc.add(4) as *const u32) as usize;
+                    desc_offset += 4 + capture_desc_total_bytes;
+                }
+
+                let original_alloc = (ptr - 8) as *mut u8;
+                let slice = std::slice::from_raw_parts_mut(original_alloc, 8 + capture_offset);
+                let _ = Box::from_raw(slice);
+            }
+            17 => {
+                // Tag
+                let disc = std::ptr::read_unaligned(ptr as *const u32);
+                let variant_count = std::ptr::read_unaligned(type_desc.add(8) as *const u32) as usize;
+                let mut desc_offset = 12;
+                let mut matched_variant = None;
+                for _ in 0..variant_count {
+                    let v_disc = std::ptr::read_unaligned(type_desc.add(desc_offset) as *const u32);
+                    let payload_byte_len = std::ptr::read_unaligned(type_desc.add(desc_offset + 4) as *const u32) as usize;
+                    let payload_count = std::ptr::read_unaligned(type_desc.add(desc_offset + 8) as *const u32) as usize;
+
+                    if v_disc == disc {
+                        matched_variant = Some((desc_offset + 12, payload_count, payload_byte_len));
+                    }
+
+                    let mut v_offset = desc_offset + 12;
+                    for _ in 0..payload_count {
+                        let field_desc = type_desc.add(v_offset + 4);
+                        let field_desc_total_bytes = std::ptr::read_unaligned(field_desc.add(4) as *const u32) as usize;
+                        v_offset += 4 + field_desc_total_bytes;
+                    }
+                    desc_offset = v_offset;
+                }
+
+                let mut payload_byte_len = 0;
+                if let Some((mut p_offset, payload_count, p_len)) = matched_variant {
+                    payload_byte_len = p_len;
+                    let mut payload_offset = 4; // skip disc
+                    for _ in 0..payload_count {
+                        let field_size = std::ptr::read_unaligned(type_desc.add(p_offset) as *const u32) as usize;
+                        let field_type_desc = type_desc.add(p_offset + 4);
+                        let field_tag = std::ptr::read_unaligned(field_type_desc as *const u32);
+                        if is_tag_heap_type(field_tag) {
+                            let field_ptr = std::ptr::read_unaligned((ptr + payload_offset as u64) as *const u64);
+                            if field_ptr != 0 {
+                                pipe_rt_release_ptr(field_ptr, field_type_desc);
+                            }
+                        }
+                        payload_offset += field_size;
+                        let field_desc_total_bytes = std::ptr::read_unaligned(field_type_desc.add(4) as *const u32) as usize;
+                        p_offset += 4 + field_desc_total_bytes;
+                    }
+                }
+
+                let original_alloc = (ptr - 8) as *mut u8;
+                let slice = std::slice::from_raw_parts_mut(original_alloc, 8 + 4 + payload_byte_len);
+                let _ = Box::from_raw(slice);
+            }
+            _ => {}
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+unsafe extern "C" fn pipe_rt_retain(args: *const u8, _ret: *mut u8) -> i32 {
+    let ptr = unsafe { std::ptr::read_unaligned(args as *const u64) };
+    if ptr != 0 {
+        let rc_ptr = (ptr - 8) as *mut u64;
+        let rc_atomic = unsafe { &*(rc_ptr as *const std::sync::atomic::AtomicU64) };
+        let mut current = rc_atomic.load(std::sync::atomic::Ordering::Acquire);
+        loop {
+            if current == u64::MAX {
+                break;
+            }
+            match rc_atomic.compare_exchange_weak(
+                current,
+                current + 1,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(actual) => current = actual,
+            }
+        }
+    }
+    0
+}
+
+#[unsafe(no_mangle)]
+unsafe extern "C" fn pipe_rt_release(args: *const u8, _ret: *mut u8) -> i32 {
+    let ptr = unsafe { std::ptr::read_unaligned(args as *const u64) };
+    let type_desc = unsafe { std::ptr::read_unaligned(args.add(8) as *const u64) } as *const u8;
+    unsafe {
+        pipe_rt_release_ptr(ptr, type_desc);
+    }
+    0
 }
 
 // ---------------------------------------------------------------------------

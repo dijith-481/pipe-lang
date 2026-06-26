@@ -89,6 +89,20 @@ pub enum IrType {
     Effect(Box<IrType>),
 }
 
+impl IrType {
+    pub fn is_heap_type(&self) -> bool {
+        matches!(
+            self,
+            IrType::Str
+                | IrType::Array(_)
+                | IrType::Record(_)
+                | IrType::Closure(_)
+                | IrType::Tag(_)
+                | IrType::Effect(_)
+        )
+    }
+}
+
 /// The type of a record: a name (for diagnostics) and an ordered
 /// list of field name + type pairs. Order matters for layout.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -376,6 +390,12 @@ pub enum Instruction {
     Panic {
         msg: SmolStr,
     },
+
+    // -- Reference Counting (ARC) --
+    /// Increment reference count of a heap value.
+    Retain(ValueId),
+    /// Decrement reference count of a heap value.
+    Release(ValueId),
 }
 
 impl fmt::Display for Instruction {
@@ -494,6 +514,8 @@ impl fmt::Display for Instruction {
             }
             Instruction::Println(v) => write!(f, "println {v}"),
             Instruction::Panic { msg } => write!(f, "panic {msg:?}"),
+            Instruction::Retain(v) => write!(f, "retain {v}"),
+            Instruction::Release(v) => write!(f, "release {v}"),
         }
     }
 }
@@ -1032,6 +1054,7 @@ pub fn infer_instruction_type(
         Instruction::ArrayLen(_) => Some(IrType::Usize),
         Instruction::ArrayConcat(a, _) => lookup_type(types, *a).cloned(),
         Instruction::RecordSet { .. } | Instruction::ArraySet { .. } => Some(IrType::Unit),
+        Instruction::Retain(_) | Instruction::Release(_) => Some(IrType::Unit),
         _ => None,
     }
 }
