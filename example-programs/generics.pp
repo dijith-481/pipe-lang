@@ -29,6 +29,11 @@ let map_result = (result, f) => match result {
     Ok(v)   => Ok(f(v))
 }
 
+let get_value= (result) => match result {
+    Err(e)  => 0
+    Ok(v)   => v
+}
+
 let main = () => {
     // Using generic functions
     let x = id(42)
@@ -45,10 +50,10 @@ let main = () => {
     // Map over Option
     let opt = Some(10)
     let mapped = map_option(opt, (n) => n * 3)
-    println(`map_option(Some(10), *3) = ${mapped}`)
+    println(`map_option(Some(10), *3) = ${mapped.unwrap_or(0)}`)
 
     // Map over Result
     let res = Ok(42)
     let mapped_res = map_result(res, (n) => n - 10)
-    println(`map_result(Ok(42), -10) = ${mapped_res}`)
+    println(`map_result(Ok(42), -10) = ${get_value(mapped_res)}`)
 }

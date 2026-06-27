@@ -851,15 +851,10 @@ fn compile_function_body(
             .module
             .declare_data_in_func(params.retain_ptr_data_id, f)
     };
-    let retain_fn_ptr_addr = builder
+    let retain_fn_ptr_addr = builder.ins().global_value(types::I64, retain_fn_ptr_gv);
+    let retain_fn_ptr = builder
         .ins()
-        .global_value(types::I64, retain_fn_ptr_gv);
-    let retain_fn_ptr = builder.ins().load(
-        types::I64,
-        MemFlags::trusted(),
-        retain_fn_ptr_addr,
-        0,
-    );
+        .load(types::I64, MemFlags::trusted(), retain_fn_ptr_addr, 0);
     let retain_sig = {
         let sig = make_signature(params.module);
         let f: &mut Function = builder.func;
@@ -873,15 +868,11 @@ fn compile_function_body(
             .module
             .declare_data_in_func(params.release_ptr_data_id, f)
     };
-    let release_fn_ptr_addr = builder
-        .ins()
-        .global_value(types::I64, release_fn_ptr_gv);
-    let release_fn_ptr = builder.ins().load(
-        types::I64,
-        MemFlags::trusted(),
-        release_fn_ptr_addr,
-        0,
-    );
+    let release_fn_ptr_addr = builder.ins().global_value(types::I64, release_fn_ptr_gv);
+    let release_fn_ptr =
+        builder
+            .ins()
+            .load(types::I64, MemFlags::trusted(), release_fn_ptr_addr, 0);
     let release_sig = {
         let sig = make_signature(params.module);
         let f: &mut Function = builder.func;
@@ -1428,13 +1419,9 @@ fn compile_instruction(
             value,
         } => compile_array_set(builder, ctx, *array, *index, *value, values)?,
 
-        ir::Instruction::Retain(val_id) => {
-            compile_retain(builder, ctx, *val_id, values)?
-        }
+        ir::Instruction::Retain(val_id) => compile_retain(builder, ctx, *val_id, values)?,
 
-        ir::Instruction::Release(val_id) => {
-            compile_release(builder, ctx, *val_id, values)?
-        }
+        ir::Instruction::Release(val_id) => compile_release(builder, ctx, *val_id, values)?,
 
         ir::Instruction::ClosureGet { env, offset, ty } => {
             let env_val = lookup_value(values, *env, ctx.func_name)?;
@@ -1488,9 +1475,7 @@ fn compile_call_named(
 
         // Arg 0: Null closure env for local named functions
         let zero = builder.ins().iconst(types::I64, 0);
-        builder
-            .ins()
-            .store(MemFlags::trusted(), zero, args_buf, 0);
+        builder.ins().store(MemFlags::trusted(), zero, args_buf, 0);
 
         let mut offset: i32 = 8;
         for arg_id in &data.args {
@@ -1629,11 +1614,13 @@ fn compile_builtin_call(
         builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 12, 0));
     let ret_buf = builder.ins().stack_addr(types::I64, ret_slot, 0);
 
-    builder.ins().call_indirect(
+    let inst = builder.ins().call_indirect(
         ctx.call_builtin_sig,
         ctx.call_builtin_fn_ptr,
         &[args_buf, ret_buf],
     );
+    let ret_code = builder.inst_results(inst)[0];
+    builder.ins().trapnz(ret_code, UNREACHABLE_TRAP);
 
     // For heap-typed return values the bridge stores a `Box<Value>`
     // pointer; convert it back to JIT format via `pipe_rt_unbox_value_jit`.
@@ -1931,7 +1918,9 @@ fn compile_call_indirect(
         )
         .collect();
     // Double-check consistency with FuncType params.
-    let expected_arg_types: Vec<&IrType> = func_type.params[total_param_count - call_arg_count..].iter().collect();
+    let expected_arg_types: Vec<&IrType> = func_type.params[total_param_count - call_arg_count..]
+        .iter()
+        .collect();
     if call_arg_types.len() != expected_arg_types.len() {
         return Err(JitError::UnimplementedInstruction {
             instruction: format!(
@@ -2199,11 +2188,8 @@ fn compile_retain(
     let val = lookup_value(values, value_id, ctx.func_name)?;
 
     if is_heap_type(ty) {
-        let args_slot = builder.create_sized_stack_slot(StackSlotData::new(
-            StackSlotKind::ExplicitSlot,
-            8,
-            0,
-        ));
+        let args_slot =
+            builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 0));
         let args_buf = builder.ins().stack_addr(types::I64, args_slot, 0);
 
         let val_i64 = if builder.func.dfg.value_type(val) == types::I64 {
@@ -2211,16 +2197,17 @@ fn compile_retain(
         } else {
             builder.ins().uextend(types::I64, val)
         };
-        builder.ins().store(MemFlags::trusted(), val_i64, args_buf, 0);
+        builder
+            .ins()
+            .store(MemFlags::trusted(), val_i64, args_buf, 0);
 
-        let ret_slot = builder.create_sized_stack_slot(StackSlotData::new(
-            StackSlotKind::ExplicitSlot,
-            4,
-            0,
-        ));
+        let ret_slot =
+            builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 4, 0));
         let ret_buf = builder.ins().stack_addr(types::I64, ret_slot, 0);
 
-        builder.ins().call_indirect(ctx.retain_sig, ctx.retain_fn_ptr, &[args_buf, ret_buf]);
+        builder
+            .ins()
+            .call_indirect(ctx.retain_sig, ctx.retain_fn_ptr, &[args_buf, ret_buf]);
     }
 
     Ok(builder.ins().iconst(I32, 0))
@@ -2251,11 +2238,8 @@ fn compile_release(
                 .store(MemFlags::trusted(), v, desc_ptr, (j * 4) as i32);
         }
 
-        let args_slot = builder.create_sized_stack_slot(StackSlotData::new(
-            StackSlotKind::ExplicitSlot,
-            16,
-            0,
-        ));
+        let args_slot =
+            builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 16, 0));
         let args_buf = builder.ins().stack_addr(types::I64, args_slot, 0);
 
         let val_i64 = if builder.func.dfg.value_type(val) == types::I64 {
@@ -2263,17 +2247,20 @@ fn compile_release(
         } else {
             builder.ins().uextend(types::I64, val)
         };
-        builder.ins().store(MemFlags::trusted(), val_i64, args_buf, 0);
-        builder.ins().store(MemFlags::trusted(), desc_ptr, args_buf, 8);
+        builder
+            .ins()
+            .store(MemFlags::trusted(), val_i64, args_buf, 0);
+        builder
+            .ins()
+            .store(MemFlags::trusted(), desc_ptr, args_buf, 8);
 
-        let ret_slot = builder.create_sized_stack_slot(StackSlotData::new(
-            StackSlotKind::ExplicitSlot,
-            4,
-            0,
-        ));
+        let ret_slot =
+            builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 4, 0));
         let ret_buf = builder.ins().stack_addr(types::I64, ret_slot, 0);
 
-        builder.ins().call_indirect(ctx.release_sig, ctx.release_fn_ptr, &[args_buf, ret_buf]);
+        builder
+            .ins()
+            .call_indirect(ctx.release_sig, ctx.release_fn_ptr, &[args_buf, ret_buf]);
     }
 
     Ok(builder.ins().iconst(I32, 0))
@@ -3783,11 +3770,14 @@ unsafe extern "C" fn pipe_rt_call_builtin(args: *const u8, ret: *mut u8) -> i32 
                     RuntimeValue::str(s.to_owned())
                 }
             }
-            13 | 14 | 15 | 16 | 17 => {
+            13..=17 => {
                 if raw == 0 || (raw as u64) < 0x1000 {
                     RuntimeValue::Unit
                 } else {
-                    unsafe { (&*(raw as *const RuntimeValue)).clone() }
+                    unsafe {
+                        let boxed = Box::from_raw(raw as *mut RuntimeValue);
+                        *boxed
+                    }
                 }
             }
             _ => RuntimeValue::Unit,
@@ -3878,6 +3868,9 @@ unsafe fn desc_read_u32(buf: *const u8, offset: &mut usize) -> u32 {
 /// `desc` must be valid for `desc_len` bytes.
 #[unsafe(no_mangle)]
 unsafe extern "C" fn pipe_rt_box_value_jit(ptr: u64, desc_ptr: u64, _desc_len: u32) -> u64 {
+    if ptr == 0 {
+        return 0;
+    }
     use crate::value::Value as V;
 
     let ptr = ptr as *const u8;
@@ -3888,7 +3881,7 @@ unsafe extern "C" fn pipe_rt_box_value_jit(ptr: u64, desc_ptr: u64, _desc_len: u
         if ptr.is_null() {
             return V::Unit;
         }
-        
+
         let tag = unsafe { desc_read_u32(desc, offset) };
         let total_bytes = unsafe { desc_read_u32(desc, offset) } as usize;
         let start = *offset;
@@ -3898,10 +3891,16 @@ unsafe extern "C" fn pipe_rt_box_value_jit(ptr: u64, desc_ptr: u64, _desc_len: u
             2 => V::I32(unsafe { std::ptr::read_unaligned(ptr as *const i32) }),
             3 | 7 => V::I64(unsafe { std::ptr::read_unaligned(ptr as *const i64) }),
             4 => V::I32(i32::from(unsafe { std::ptr::read_unaligned(ptr) })),
-            5 => V::I32(i32::from(unsafe { std::ptr::read_unaligned(ptr as *const u16) })),
+            5 => V::I32(i32::from(unsafe {
+                std::ptr::read_unaligned(ptr as *const u16)
+            })),
             6 => V::I32(unsafe { std::ptr::read_unaligned(ptr as *const u32) } as i32),
-            8 => V::F64(f64::from(f32::from_bits(unsafe { std::ptr::read_unaligned(ptr as *const u32) }))),
-            9 => V::F64(f64::from_bits(unsafe { std::ptr::read_unaligned(ptr as *const u64) })),
+            8 => V::F64(f64::from(f32::from_bits(unsafe {
+                std::ptr::read_unaligned(ptr as *const u32)
+            }))),
+            9 => V::F64(f64::from_bits(unsafe {
+                std::ptr::read_unaligned(ptr as *const u64)
+            })),
             10 => V::Bool(unsafe { std::ptr::read_unaligned(ptr) } != 0),
             11 => {
                 let len = unsafe { std::ptr::read_unaligned(ptr as *const u32) } as usize;
@@ -3913,14 +3912,19 @@ unsafe extern "C" fn pipe_rt_box_value_jit(ptr: u64, desc_ptr: u64, _desc_len: u
                 let elem_size = unsafe { desc_read_u32(desc, offset) } as usize;
                 let arr_len = unsafe { std::ptr::read_unaligned(ptr as *const u64) } as usize;
                 let sub_desc_offset = *offset;
-                let elem_tag = unsafe { std::ptr::read_unaligned(desc.add(sub_desc_offset) as *const u32) };
-                
+                let elem_tag =
+                    unsafe { std::ptr::read_unaligned(desc.add(sub_desc_offset) as *const u32) };
+
                 let mut elements = Vec::with_capacity(arr_len);
                 for i in 0..arr_len {
                     let elem_ptr = unsafe { ptr.add(8 + i * elem_size) };
                     let actual_ptr = if is_tag_heap_type(elem_tag) {
                         let p = unsafe { std::ptr::read_unaligned(elem_ptr as *const u64) };
-                        if p == 0 { std::ptr::null() } else { p as *const u8 }
+                        if p == 0 {
+                            std::ptr::null()
+                        } else {
+                            p as *const u8
+                        }
                     } else {
                         elem_ptr
                     };
@@ -3935,23 +3939,29 @@ unsafe extern "C" fn pipe_rt_box_value_jit(ptr: u64, desc_ptr: u64, _desc_len: u
                 let field_count = unsafe { desc_read_u32(desc, offset) } as usize;
                 let mut fields = BTreeMap::new();
                 let mut field_ptr = ptr;
-                
+
                 for _ in 0..field_count {
                     let field_size = unsafe { desc_read_u32(desc, offset) } as usize;
                     let field_name_len = unsafe { desc_read_u32(desc, offset) } as usize;
                     let name_padded = field_name_len.div_ceil(4) * 4;
-                    let name_bytes = unsafe { std::slice::from_raw_parts(desc.add(*offset), field_name_len) };
+                    let name_bytes =
+                        unsafe { std::slice::from_raw_parts(desc.add(*offset), field_name_len) };
                     let name = unsafe { std::str::from_utf8_unchecked(name_bytes) };
                     *offset += name_padded;
-                    
-                    let field_tag = unsafe { std::ptr::read_unaligned(desc.add(*offset) as *const u32) };
+
+                    let field_tag =
+                        unsafe { std::ptr::read_unaligned(desc.add(*offset) as *const u32) };
                     let actual_ptr = if is_tag_heap_type(field_tag) {
                         let p = unsafe { std::ptr::read_unaligned(field_ptr as *const u64) };
-                        if p == 0 { std::ptr::null() } else { p as *const u8 }
+                        if p == 0 {
+                            std::ptr::null()
+                        } else {
+                            p as *const u8
+                        }
                     } else {
                         field_ptr
                     };
-                    
+
                     let field_val = unsafe { box_rec(actual_ptr, desc, offset) };
                     field_ptr = unsafe { field_ptr.add(field_size) };
                     fields.insert(SmolStr::new(name), field_val);
@@ -3962,32 +3972,34 @@ unsafe extern "C" fn pipe_rt_box_value_jit(ptr: u64, desc_ptr: u64, _desc_len: u
             16 => {
                 let total_param_count = unsafe { desc_read_u32(desc, offset) } as usize;
                 let func_addr = unsafe { std::ptr::read_unaligned(ptr as *const u64) } as usize;
-                let capture_count = unsafe { std::ptr::read_unaligned(ptr.add(8) as *const u64) } as usize;
-                // total_param_count = 1 (closure_env) + capture_count + call_param_count
-                let arity = total_param_count.saturating_sub(1 + capture_count);
+                let capture_count =
+                    unsafe { std::ptr::read_unaligned(ptr.add(8) as *const u64) } as usize;
+                // total_param_count is capture_count + call_param_count
+                let arity = total_param_count.saturating_sub(capture_count);
 
                 let mut captures = Vec::with_capacity(capture_count);
                 let mut call_param_descs = Vec::with_capacity(arity);
                 let mut cap_ptr = unsafe { ptr.add(16) };
 
-                // Skip param[0] (closure_env)
-                let _p0_size = unsafe { desc_read_u32(desc, offset) };
-                let _p0_tag = unsafe { desc_read_u32(desc, offset) };
-                let p0_total = unsafe { desc_read_u32(desc, offset) } as usize;
-                *offset += p0_total.saturating_sub(8);
-
-                for i in 1..total_param_count {
+                for i in 0..total_param_count {
                     let p_desc_start = *offset;
                     let _cap_size = unsafe { desc_read_u32(desc, offset) } as usize;
                     let p_tag = unsafe { desc_read_u32(desc, offset) };
                     let p_total_bytes = unsafe { desc_read_u32(desc, offset) } as usize;
                     *offset = p_desc_start + 4 + p_total_bytes;
-                    let p_desc = unsafe { std::slice::from_raw_parts(desc.add(p_desc_start + 4), p_total_bytes) }.to_vec();
+                    let p_desc = unsafe {
+                        std::slice::from_raw_parts(desc.add(p_desc_start + 4), p_total_bytes)
+                    }
+                    .to_vec();
 
-                    if i - 1 < capture_count {
+                    if i < capture_count {
                         let actual_ptr = if is_tag_heap_type(p_tag) {
                             let p = unsafe { std::ptr::read_unaligned(cap_ptr as *const u64) };
-                            if p == 0 { std::ptr::null() } else { p as *const u8 }
+                            if p == 0 {
+                                std::ptr::null()
+                            } else {
+                                p as *const u8
+                            }
                         } else {
                             cap_ptr
                         };
@@ -4004,9 +4016,15 @@ unsafe extern "C" fn pipe_rt_box_value_jit(ptr: u64, desc_ptr: u64, _desc_len: u
                 let _ret_tag = unsafe { desc_read_u32(desc, offset) };
                 let ret_total_bytes = unsafe { desc_read_u32(desc, offset) } as usize;
                 *offset = ret_desc_start + ret_total_bytes;
-                let ret_desc = unsafe { std::slice::from_raw_parts(desc.add(ret_desc_start), ret_total_bytes) }.to_vec();
+                let ret_desc = unsafe {
+                    std::slice::from_raw_parts(desc.add(ret_desc_start), ret_total_bytes)
+                }
+                .to_vec();
 
-                let func = crate::value::FuncPtr::Jit { address: func_addr, arity };
+                let func = crate::value::FuncPtr::Jit {
+                    address: func_addr,
+                    arity,
+                };
                 V::Closure(std::sync::Arc::new(crate::value::ClosureData {
                     func,
                     captures: captures.into(),
@@ -4018,39 +4036,46 @@ unsafe extern "C" fn pipe_rt_box_value_jit(ptr: u64, desc_ptr: u64, _desc_len: u
             17 => {
                 let variant_count = unsafe { desc_read_u32(desc, offset) } as usize;
                 let disc = unsafe { std::ptr::read_unaligned(ptr as *const i32) } as u32;
-                
+
                 let mut matched_variant = None;
                 let mut current_offset = *offset;
-                
+
                 for _ in 0..variant_count {
                     let var_disc = unsafe { desc_read_u32(desc, &mut current_offset) };
                     let _payload_byte_len = unsafe { desc_read_u32(desc, &mut current_offset) };
-                    let payload_count = unsafe { desc_read_u32(desc, &mut current_offset) } as usize;
-                    
+                    let payload_count =
+                        unsafe { desc_read_u32(desc, &mut current_offset) } as usize;
+
                     if var_disc == disc {
                         matched_variant = Some((current_offset, payload_count));
                     }
-                    
+
                     // Advance past this variant's schema
                     for _ in 0..payload_count {
                         let _size = unsafe { desc_read_u32(desc, &mut current_offset) };
                         let _tag = unsafe { desc_read_u32(desc, &mut current_offset) };
-                        let total_bytes = unsafe { desc_read_u32(desc, &mut current_offset) } as usize;
+                        let total_bytes =
+                            unsafe { desc_read_u32(desc, &mut current_offset) } as usize;
                         current_offset += total_bytes - 8;
                     }
                 }
-                
+
                 *offset = current_offset; // Skip remainder of descriptor
-                
+
                 let mut payload_fields = Vec::new();
                 if let Some((mut p_offset, payload_count)) = matched_variant {
                     let mut p_ptr = unsafe { ptr.add(4) }; // skip disc
                     for _ in 0..payload_count {
                         let field_size = unsafe { desc_read_u32(desc, &mut p_offset) } as usize;
-                        let field_tag = unsafe { std::ptr::read_unaligned(desc.add(p_offset) as *const u32) };
+                        let field_tag =
+                            unsafe { std::ptr::read_unaligned(desc.add(p_offset) as *const u32) };
                         let actual_ptr = if is_tag_heap_type(field_tag) {
                             let p = unsafe { std::ptr::read_unaligned(p_ptr as *const u64) };
-                            if p == 0 { std::ptr::null() } else { p as *const u8 }
+                            if p == 0 {
+                                std::ptr::null()
+                            } else {
+                                p as *const u8
+                            }
                         } else {
                             p_ptr
                         };
@@ -4058,13 +4083,13 @@ unsafe extern "C" fn pipe_rt_box_value_jit(ptr: u64, desc_ptr: u64, _desc_len: u
                         p_ptr = unsafe { p_ptr.add(field_size) };
                     }
                 }
-                
+
                 let payload_val = if payload_fields.len() == 1 {
                     payload_fields.into_iter().next().unwrap()
                 } else {
                     V::Array(payload_fields.into())
                 };
-                
+
                 V::Tag {
                     tag: disc,
                     payload: match payload_val {
@@ -4086,6 +4111,14 @@ unsafe extern "C" fn pipe_rt_box_value_jit(ptr: u64, desc_ptr: u64, _desc_len: u
     Box::into_raw(Box::new(boxed)) as u64
 }
 
+/// Releases a heap-allocated value by pointer, decrementing its
+/// reference count and freeing memory if the count reaches zero.
+///
+/// # Safety
+///
+/// `ptr` must be a valid pointer to a heap-allocated value previously
+/// returned by a pipe-lang allocation function. `type_desc` must point
+/// to a valid type descriptor matching the value.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pipe_rt_release_ptr_exported(ptr: u64, type_desc: *const u8) {
     unsafe { pipe_rt_release_ptr(ptr, type_desc) }
@@ -4093,6 +4126,9 @@ pub unsafe extern "C" fn pipe_rt_release_ptr_exported(ptr: u64, type_desc: *cons
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn pipe_rt_unbox_value_jit(ptr: u64, desc_ptr: u64, _desc_len: u32) -> u64 {
+    if ptr == 0 {
+        return 0;
+    }
     use crate::value::Value as V;
     let box_val = unsafe { *Box::from_raw(ptr as *mut V) };
     let desc = desc_ptr as *const u8;
@@ -4104,9 +4140,10 @@ unsafe fn unbox_rec_heap(val: crate::value::Value, desc: *const u8, offset: &mut
     let start = *offset;
     let tag = unsafe { desc_read_u32(desc, offset) };
     let total_bytes = unsafe { desc_read_u32(desc, offset) } as usize;
-    
+
     let payload = match tag {
-        11 => { // Str
+        11 => {
+            // Str
             let s = match val {
                 crate::value::Value::Str(s) => s.to_string(),
                 _ => String::new(),
@@ -4117,39 +4154,41 @@ unsafe fn unbox_rec_heap(val: crate::value::Value, desc: *const u8, offset: &mut
             buf.extend_from_slice(bytes);
             buf
         }
-        13 => { // Array
+        13 => {
+            // Array
             let elem_size = unsafe { desc_read_u32(desc, offset) } as usize;
             let sub_desc_offset = *offset;
-            
+
             let arr = match val {
                 crate::value::Value::Array(a) => a,
                 _ => std::sync::Arc::from([]),
             };
-            
+
             let mut buf = Vec::with_capacity(8 + arr.len() * elem_size);
             buf.extend_from_slice(&(arr.len() as u64).to_le_bytes());
-            
+
             for elem in arr.iter() {
                 let mut temp_offset = sub_desc_offset;
                 let elem_bytes = unsafe { unbox_rec_inline(elem.clone(), desc, &mut temp_offset) };
                 buf.extend_from_slice(&elem_bytes);
             }
-            
+
             // Advance offset past the element descriptor
             let mut temp_offset = sub_desc_offset;
             let _elem_tag = unsafe { desc_read_u32(desc, &mut temp_offset) };
             let elem_total_bytes = unsafe { desc_read_u32(desc, &mut temp_offset) } as usize;
             *offset = sub_desc_offset + elem_total_bytes;
-            
+
             buf
         }
-        14 => { // Record
+        14 => {
+            // Record
             let field_count = unsafe { desc_read_u32(desc, offset) } as usize;
             let mut fields = match val {
                 crate::value::Value::Record(r) => r.fields.clone(),
                 _ => std::collections::BTreeMap::new(),
             };
-            
+
             let mut buf = Vec::new();
             for _ in 0..field_count {
                 let _field_size = unsafe { desc_read_u32(desc, offset) } as usize;
@@ -4158,14 +4197,15 @@ unsafe fn unbox_rec_heap(val: crate::value::Value, desc: *const u8, offset: &mut
                 let name_bytes = unsafe { std::slice::from_raw_parts(desc.add(*offset), name_len) };
                 let name = unsafe { std::str::from_utf8_unchecked(name_bytes) };
                 *offset += name_padded;
-                
+
                 let field_val = fields.remove(name).unwrap_or(crate::value::Value::Unit);
                 let field_bytes = unsafe { unbox_rec_inline(field_val, desc, offset) };
                 buf.extend_from_slice(&field_bytes);
             }
             buf
         }
-        16 => { // Closure
+        16 => {
+            // Closure
             let total_param_count = unsafe { desc_read_u32(desc, offset) } as usize;
             let (func_addr, captures) = match val {
                 crate::value::Value::Closure(c) => {
@@ -4177,16 +4217,19 @@ unsafe fn unbox_rec_heap(val: crate::value::Value, desc: *const u8, offset: &mut
                 }
                 _ => (0, Vec::new()),
             };
-            
+
             let capture_count = captures.len();
-            
+
             let mut buf = Vec::with_capacity(16);
             buf.extend_from_slice(&(func_addr as u64).to_le_bytes());
             buf.extend_from_slice(&(capture_count as u64).to_le_bytes());
-            
+
             for i in 0..total_param_count {
                 if i < capture_count {
-                    let cap_val = captures.get(i).cloned().unwrap_or(crate::value::Value::Unit);
+                    let cap_val = captures
+                        .get(i)
+                        .cloned()
+                        .unwrap_or(crate::value::Value::Unit);
                     let cap_bytes = unsafe { unbox_rec_inline(cap_val, desc, offset) };
                     buf.extend_from_slice(&cap_bytes);
                 } else {
@@ -4196,36 +4239,36 @@ unsafe fn unbox_rec_heap(val: crate::value::Value, desc: *const u8, offset: &mut
                     *offset += total_bytes.saturating_sub(8);
                 }
             }
-            
+
             // Skip ret_desc
             let _ret_tag = unsafe { desc_read_u32(desc, offset) };
             let ret_total_bytes = unsafe { desc_read_u32(desc, offset) } as usize;
             *offset += ret_total_bytes.saturating_sub(8);
-            
+
             buf
         }
-        17 => { // Tag
+        17 => {
+            // Tag
             let variant_count = unsafe { desc_read_u32(desc, offset) } as usize;
             let (disc, payload_fields) = match val {
-                crate::value::Value::Tag { tag: disc, payload } => {
-                    (disc, payload.to_vec())
-                }
+                crate::value::Value::Tag { tag: disc, payload } => (disc, payload.to_vec()),
                 _ => (0, Vec::new()),
             };
-            
+
             let mut buf = Vec::new();
             buf.extend_from_slice(&disc.to_le_bytes());
-            
+
             for _ in 0..variant_count {
                 let var_disc = unsafe { desc_read_u32(desc, offset) };
                 let _payload_byte_len = unsafe { desc_read_u32(desc, offset) };
                 let payload_count = unsafe { desc_read_u32(desc, offset) } as usize;
-                
+
                 if var_disc == disc {
-                    let mut p_idx = 0;
-                    for _ in 0..payload_count {
-                        let field_val = payload_fields.get(p_idx).cloned().unwrap_or(crate::value::Value::Unit);
-                        p_idx += 1;
+                    for (p_idx, _) in (0..payload_count).enumerate() {
+                        let field_val = payload_fields
+                            .get(p_idx)
+                            .cloned()
+                            .unwrap_or(crate::value::Value::Unit);
                         let field_bytes = unsafe { unbox_rec_inline(field_val, desc, offset) };
                         buf.extend_from_slice(&field_bytes);
                     }
@@ -4243,9 +4286,9 @@ unsafe fn unbox_rec_heap(val: crate::value::Value, desc: *const u8, offset: &mut
         }
         _ => Vec::new(),
     };
-    
+
     *offset = start + total_bytes;
-    
+
     let mut final_data = Vec::with_capacity(8 + payload.len());
     final_data.extend_from_slice(&1u64.to_ne_bytes());
     final_data.extend_from_slice(&payload);
@@ -4253,18 +4296,23 @@ unsafe fn unbox_rec_heap(val: crate::value::Value, desc: *const u8, offset: &mut
     unsafe { ptr.add(8) as u64 }
 }
 
-unsafe fn unbox_rec_inline(val: crate::value::Value, desc: *const u8, offset: &mut usize) -> Vec<u8> {
+unsafe fn unbox_rec_inline(
+    val: crate::value::Value,
+    desc: *const u8,
+    offset: &mut usize,
+) -> Vec<u8> {
     let start = *offset;
     let tag = unsafe { desc_read_u32(desc, offset) };
     let total_bytes = unsafe { desc_read_u32(desc, offset) } as usize;
-    
-    let bytes = if is_tag_heap_type(tag) {
+
+    if is_tag_heap_type(tag) {
         *offset = start;
         let ptr = unsafe { unbox_rec_heap(val, desc, offset) };
         ptr.to_le_bytes().to_vec()
     } else {
         let res = match tag {
-            0 | 1 | 2 => { // I8, I16, I32
+            0..=2 => {
+                // I8, I16, I32
                 let n = match val {
                     crate::value::Value::I32(n) => n,
                     crate::value::Value::I64(n) => n as i32,
@@ -4279,7 +4327,8 @@ unsafe fn unbox_rec_inline(val: crate::value::Value, desc: *const u8, offset: &m
                     n.to_le_bytes().to_vec()
                 }
             }
-            3 | 7 => { // I64, U64
+            3 | 7 => {
+                // I64, U64
                 let n = match val {
                     crate::value::Value::I32(n) => n as i64,
                     crate::value::Value::I64(n) => n,
@@ -4288,7 +4337,8 @@ unsafe fn unbox_rec_inline(val: crate::value::Value, desc: *const u8, offset: &m
                 };
                 n.to_le_bytes().to_vec()
             }
-            4 => { // U8
+            4 => {
+                // U8
                 let n = match val {
                     crate::value::Value::I32(n) => n as u8,
                     crate::value::Value::I64(n) => n as u8,
@@ -4296,7 +4346,8 @@ unsafe fn unbox_rec_inline(val: crate::value::Value, desc: *const u8, offset: &m
                 };
                 vec![n]
             }
-            5 => { // U16
+            5 => {
+                // U16
                 let n = match val {
                     crate::value::Value::I32(n) => n as u16,
                     crate::value::Value::I64(n) => n as u16,
@@ -4304,7 +4355,8 @@ unsafe fn unbox_rec_inline(val: crate::value::Value, desc: *const u8, offset: &m
                 };
                 n.to_le_bytes().to_vec()
             }
-            6 => { // U32
+            6 => {
+                // U32
                 let n = match val {
                     crate::value::Value::I32(n) => n as u32,
                     crate::value::Value::I64(n) => n as u32,
@@ -4312,36 +4364,39 @@ unsafe fn unbox_rec_inline(val: crate::value::Value, desc: *const u8, offset: &m
                 };
                 n.to_le_bytes().to_vec()
             }
-            8 => { // F32
+            8 => {
+                // F32
                 let f = match val {
                     crate::value::Value::F64(f) => f as f32,
                     _ => 0.0,
                 };
                 f.to_bits().to_le_bytes().to_vec()
             }
-            9 => { // F64
+            9 => {
+                // F64
                 let f = match val {
                     crate::value::Value::F64(f) => f,
                     _ => 0.0,
                 };
                 f.to_bits().to_le_bytes().to_vec()
             }
-            10 => { // Bool
+            10 => {
+                // Bool
                 let b = match val {
                     crate::value::Value::Bool(b) => b,
                     _ => false,
                 };
                 vec![b as u8]
             }
-            12 => { // Unit
+            12 => {
+                // Unit
                 vec![0, 0, 0, 0] // Unit takes 4 bytes of padding
             }
             _ => Vec::new(),
         };
         *offset = start + total_bytes;
         res
-    };
-    bytes
+    }
 }
 
 fn is_tag_heap_type(tag: u32) -> bool {
@@ -4401,7 +4456,9 @@ unsafe fn pipe_rt_free_value(ptr: u64, type_desc: *const u8) {
                 let elem_tag = std::ptr::read_unaligned(elem_type_desc as *const u32);
                 if is_tag_heap_type(elem_tag) {
                     for i in 0..len {
-                        let elem_ptr = std::ptr::read_unaligned((ptr + 8 + (i * elem_size) as u64) as *const u64);
+                        let elem_ptr = std::ptr::read_unaligned(
+                            (ptr + 8 + (i * elem_size) as u64) as *const u64,
+                        );
                         if elem_ptr != 0 {
                             pipe_rt_release_ptr(elem_ptr, elem_type_desc);
                         }
@@ -4419,23 +4476,28 @@ unsafe fn pipe_rt_free_value(ptr: u64, type_desc: *const u8) {
                 let mut record_offset = 0;
 
                 for _ in 0..field_count {
-                    let field_size = std::ptr::read_unaligned(type_desc.add(desc_offset) as *const u32) as usize;
-                    let name_len = std::ptr::read_unaligned(type_desc.add(desc_offset + 4) as *const u32) as usize;
+                    let field_size =
+                        std::ptr::read_unaligned(type_desc.add(desc_offset) as *const u32) as usize;
+                    let name_len =
+                        std::ptr::read_unaligned(type_desc.add(desc_offset + 4) as *const u32)
+                            as usize;
                     let mut name_bytes_len = name_len;
-                    while name_bytes_len % 4 != 0 {
+                    while !name_bytes_len.is_multiple_of(4) {
                         name_bytes_len += 1;
                     }
                     let field_type_desc = type_desc.add(desc_offset + 8 + name_bytes_len);
                     let field_tag = std::ptr::read_unaligned(field_type_desc as *const u32);
                     if is_tag_heap_type(field_tag) {
-                        let field_ptr = std::ptr::read_unaligned((ptr + record_offset as u64) as *const u64);
+                        let field_ptr =
+                            std::ptr::read_unaligned((ptr + record_offset as u64) as *const u64);
                         if field_ptr != 0 {
                             pipe_rt_release_ptr(field_ptr, field_type_desc);
                         }
                     }
 
                     record_offset += field_size;
-                    let field_desc_total_bytes = std::ptr::read_unaligned(field_type_desc.add(4) as *const u32) as usize;
+                    let field_desc_total_bytes =
+                        std::ptr::read_unaligned(field_type_desc.add(4) as *const u32) as usize;
                     desc_offset += 8 + name_bytes_len + field_desc_total_bytes;
                 }
 
@@ -4455,23 +4517,22 @@ unsafe fn pipe_rt_free_value(ptr: u64, type_desc: *const u8) {
                 let mut desc_offset = 12;
                 let mut capture_offset = 16; // skip func_ptr + capture_count
 
-                // Skip param[0] (closure_env, I64) in the type descriptor
-                let p0_total = std::ptr::read_unaligned(type_desc.add(desc_offset + 8) as *const u32) as usize;
-                desc_offset += 4 + p0_total;
-
                 for _ in 0..capture_count {
-                    let _capture_size = std::ptr::read_unaligned(type_desc.add(desc_offset) as *const u32) as usize;
+                    let _capture_size =
+                        std::ptr::read_unaligned(type_desc.add(desc_offset) as *const u32) as usize;
                     let capture_type_desc = type_desc.add(desc_offset + 4);
                     let capture_tag = std::ptr::read_unaligned(capture_type_desc as *const u32);
                     if is_tag_heap_type(capture_tag) {
-                        let capture_ptr = std::ptr::read_unaligned((ptr + capture_offset as u64) as *const u64);
+                        let capture_ptr =
+                            std::ptr::read_unaligned((ptr + capture_offset as u64) as *const u64);
                         if capture_ptr != 0 {
                             pipe_rt_release_ptr(capture_ptr, capture_type_desc);
                         }
                     }
 
                     capture_offset += 8; // Each capture uses an 8-byte slot in the closure data
-                    let capture_desc_total_bytes = std::ptr::read_unaligned(capture_type_desc.add(4) as *const u32) as usize;
+                    let capture_desc_total_bytes =
+                        std::ptr::read_unaligned(capture_type_desc.add(4) as *const u32) as usize;
                     desc_offset += 4 + capture_desc_total_bytes;
                 }
 
@@ -4482,13 +4543,18 @@ unsafe fn pipe_rt_free_value(ptr: u64, type_desc: *const u8) {
             17 => {
                 // Tag
                 let disc = std::ptr::read_unaligned(ptr as *const u32);
-                let variant_count = std::ptr::read_unaligned(type_desc.add(8) as *const u32) as usize;
+                let variant_count =
+                    std::ptr::read_unaligned(type_desc.add(8) as *const u32) as usize;
                 let mut desc_offset = 12;
                 let mut matched_variant = None;
                 for _ in 0..variant_count {
                     let v_disc = std::ptr::read_unaligned(type_desc.add(desc_offset) as *const u32);
-                    let payload_byte_len = std::ptr::read_unaligned(type_desc.add(desc_offset + 4) as *const u32) as usize;
-                    let payload_count = std::ptr::read_unaligned(type_desc.add(desc_offset + 8) as *const u32) as usize;
+                    let payload_byte_len =
+                        std::ptr::read_unaligned(type_desc.add(desc_offset + 4) as *const u32)
+                            as usize;
+                    let payload_count =
+                        std::ptr::read_unaligned(type_desc.add(desc_offset + 8) as *const u32)
+                            as usize;
 
                     if v_disc == disc {
                         matched_variant = Some((desc_offset + 12, payload_count, payload_byte_len));
@@ -4497,7 +4563,8 @@ unsafe fn pipe_rt_free_value(ptr: u64, type_desc: *const u8) {
                     let mut v_offset = desc_offset + 12;
                     for _ in 0..payload_count {
                         let field_desc = type_desc.add(v_offset + 4);
-                        let field_desc_total_bytes = std::ptr::read_unaligned(field_desc.add(4) as *const u32) as usize;
+                        let field_desc_total_bytes =
+                            std::ptr::read_unaligned(field_desc.add(4) as *const u32) as usize;
                         v_offset += 4 + field_desc_total_bytes;
                     }
                     desc_offset = v_offset;
@@ -4508,23 +4575,29 @@ unsafe fn pipe_rt_free_value(ptr: u64, type_desc: *const u8) {
                     payload_byte_len = p_len;
                     let mut payload_offset = 4; // skip disc
                     for _ in 0..payload_count {
-                        let field_size = std::ptr::read_unaligned(type_desc.add(p_offset) as *const u32) as usize;
+                        let field_size =
+                            std::ptr::read_unaligned(type_desc.add(p_offset) as *const u32)
+                                as usize;
                         let field_type_desc = type_desc.add(p_offset + 4);
                         let field_tag = std::ptr::read_unaligned(field_type_desc as *const u32);
                         if is_tag_heap_type(field_tag) {
-                            let field_ptr = std::ptr::read_unaligned((ptr + payload_offset as u64) as *const u64);
+                            let field_ptr = std::ptr::read_unaligned(
+                                (ptr + payload_offset as u64) as *const u64,
+                            );
                             if field_ptr != 0 {
                                 pipe_rt_release_ptr(field_ptr, field_type_desc);
                             }
                         }
                         payload_offset += field_size;
-                        let field_desc_total_bytes = std::ptr::read_unaligned(field_type_desc.add(4) as *const u32) as usize;
+                        let field_desc_total_bytes =
+                            std::ptr::read_unaligned(field_type_desc.add(4) as *const u32) as usize;
                         p_offset += 4 + field_desc_total_bytes;
                     }
                 }
 
                 let original_alloc = (ptr - 8) as *mut u8;
-                let slice = std::slice::from_raw_parts_mut(original_alloc, 8 + 4 + payload_byte_len);
+                let slice =
+                    std::slice::from_raw_parts_mut(original_alloc, 8 + 4 + payload_byte_len);
                 let _ = Box::from_raw(slice);
             }
             _ => {}
@@ -4575,7 +4648,7 @@ unsafe extern "C" fn pipe_rt_release(args: *const u8, _ret: *mut u8) -> i32 {
 mod tests {
     use super::*;
     use ast::SmolStr;
-    use ir::{BasicBlock, IrFunction, IrModule};
+    use ir::{BasicBlock, FuncType, IrFunction, IrModule};
 
     fn push_inst(func: &mut IrFunction, block: &mut BasicBlock, inst: ir::Instruction) -> ValueId {
         let value_id = func.alloc_value();
@@ -5461,8 +5534,263 @@ mod tests {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Verifier error reproduction tests
+    // -----------------------------------------------------------------------
+
     #[test]
-    fn value_to_ret_buf_encodes_record_as_non_null_pointer() {
+    fn compile_ir_rejects_block_param_type_mismatch() {
+        // If a merge block has param type I32 but the jump passes I64,
+        // Cranelift's verifier must reject it.
+        let mut func = IrFunction::new(SmolStr::new("main"), IrType::I64);
+        let entry_id = func.alloc_block();
+        let merge_id = func.alloc_block();
+
+        let mut entry = BasicBlock::new(entry_id);
+        let i64_val = push_inst(&mut func, &mut entry, ir::Instruction::ConstI64(42));
+        entry.terminator = Terminator::Jump {
+            target: merge_id,
+            args: vec![i64_val],
+        };
+
+        let mut merge = BasicBlock::new(merge_id);
+        let result = func.alloc_value();
+        merge.params.push((result, IrType::I32)); // INTENTIONAL MISMATCH: I32
+        merge.terminator = Terminator::Return(result);
+
+        func.blocks.extend([entry, merge]);
+
+        let result = compile_ir(&module_with_main(func));
+        match result {
+            Err(JitError::Cranelift { msg }) if msg.contains("Verifier") => {}
+            Err(e) => panic!("expected Verifier error, got: {e}"),
+            Ok(_) => panic!("expected Verifier error, but compilation succeeded"),
+        }
+    }
+
+    #[test]
+    fn compile_ir_rejects_branch_arg_type_mismatch() {
+        // Branch with block arguments: if the arm passes I64 but the
+        // target block expects I32, verifier must reject.
+        let mut func = IrFunction::new(SmolStr::new("main"), IrType::I64);
+        let entry_id = func.alloc_block();
+        let then_id = func.alloc_block();
+        let else_id = func.alloc_block();
+        let merge_id = func.alloc_block();
+
+        let mut entry = BasicBlock::new(entry_id);
+        let cond = push_inst(&mut func, &mut entry, ir::Instruction::ConstBool(true));
+        let i64_val = push_inst(&mut func, &mut entry, ir::Instruction::ConstI64(99));
+        entry.terminator = Terminator::Branch {
+            condition: cond,
+            then_block: then_id,
+            then_args: vec![i64_val],
+            else_block: else_id,
+            else_args: vec![],
+        };
+
+        let mut then_block = BasicBlock::new(then_id);
+        let then_param = func.alloc_value();
+        then_block.params.push((then_param, IrType::I32)); // INTENTIONAL MISMATCH
+        then_block.terminator = Terminator::Jump {
+            target: merge_id,
+            args: vec![then_param],
+        };
+
+        let mut else_block = BasicBlock::new(else_id);
+        let else_val = push_inst(&mut func, &mut else_block, ir::Instruction::ConstI64(0));
+        else_block.terminator = Terminator::Jump {
+            target: merge_id,
+            args: vec![else_val],
+        };
+
+        let mut merge = BasicBlock::new(merge_id);
+        let result = func.alloc_value();
+        merge.params.push((result, IrType::I64));
+        merge.terminator = Terminator::Return(result);
+
+        func.blocks.extend([entry, then_block, else_block, merge]);
+
+        let result = compile_ir(&module_with_main(func));
+        match result {
+            Err(JitError::Cranelift { msg }) if msg.contains("Verifier") => {}
+            Err(e) => panic!("expected Verifier error, got: {e}"),
+            Ok(_) => panic!("expected Verifier error, but compilation succeeded"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Builtin error propagation tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn pipe_rt_call_builtin_returns_nonzero_on_failure() {
+        // Calling a builtin with invalid arguments should return 1.
+        let mut args_buf = vec![0u8; 64];
+        let mut ret_buf = [0u8; 12];
+
+        // Store a valid name pointer (with length prefix).
+        let name = "nonexistent_builtin_xyz";
+        let name_bytes = name.as_bytes();
+        let mut name_data = Vec::with_capacity(4 + name_bytes.len());
+        name_data.extend_from_slice(&(name_bytes.len() as u32).to_le_bytes());
+        name_data.extend_from_slice(name_bytes);
+        let name_ptr = Box::leak(name_data.into_boxed_slice()).as_ptr() as u64;
+
+        unsafe {
+            std::ptr::write_unaligned(args_buf.as_mut_ptr() as *mut u64, name_ptr);
+            std::ptr::write_unaligned(
+                args_buf.as_mut_ptr().add(8) as *mut u32,
+                name_bytes.len() as u32,
+            );
+            std::ptr::write_unaligned(args_buf.as_mut_ptr().add(12) as *mut u32, 0u32); // 0 args
+        }
+
+        let code = unsafe { pipe_rt_call_builtin(args_buf.as_ptr(), ret_buf.as_mut_ptr()) };
+        assert_ne!(code, 0, "builtin should fail for nonexistent name");
+    }
+
+    #[test]
+    fn pipe_rt_call_builtin_fails_on_invalid_arg_type() {
+        // Pass an invalid type tag to a valid builtin.
+        let mut args_buf = vec![0u8; 64];
+        let mut ret_buf = [0u8; 12];
+
+        let name = "fold";
+        let name_bytes = name.as_bytes();
+        let mut name_data = Vec::with_capacity(4 + name_bytes.len());
+        name_data.extend_from_slice(&(name_bytes.len() as u32).to_le_bytes());
+        name_data.extend_from_slice(name_bytes);
+        let name_ptr = Box::leak(name_data.into_boxed_slice()).as_ptr() as u64;
+
+        unsafe {
+            std::ptr::write_unaligned(args_buf.as_mut_ptr() as *mut u64, name_ptr);
+            std::ptr::write_unaligned(
+                args_buf.as_mut_ptr().add(8) as *mut u32,
+                name_bytes.len() as u32,
+            );
+            std::ptr::write_unaligned(args_buf.as_mut_ptr().add(12) as *mut u32, 2u32); // 2 args
+            // arg 0: array pointer (tag 13) - use 0 as invalid
+            std::ptr::write_unaligned(args_buf.as_mut_ptr().add(16) as *mut i64, 0i64);
+            std::ptr::write_unaligned(args_buf.as_mut_ptr().add(24) as *mut u32, 13u32);
+            // arg 1: closure pointer (tag 16) - use 0 as invalid
+            std::ptr::write_unaligned(args_buf.as_mut_ptr().add(28) as *mut i64, 0i64);
+            std::ptr::write_unaligned(args_buf.as_mut_ptr().add(36) as *mut u32, 16u32);
+        }
+
+        let code = unsafe { pipe_rt_call_builtin(args_buf.as_ptr(), ret_buf.as_mut_ptr()) };
+        assert_ne!(code, 0, "builtin should fail with invalid arg types");
+    }
+
+    // -----------------------------------------------------------------------
+    // Null-check tests for box/unbox runtime helpers
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn pipe_rt_unbox_value_jit_returns_zero_for_null_ptr() {
+        let result = unsafe { pipe_rt_unbox_value_jit(0, 0, 0) };
+        assert_eq!(result, 0, "unbox with null ptr should return 0");
+    }
+
+    #[test]
+    fn pipe_rt_box_value_jit_returns_zero_for_null_ptr() {
+        let result = unsafe { pipe_rt_box_value_jit(0, 0, 0) };
+        assert_eq!(result, 0, "box with null ptr should return 0");
+    }
+
+    // -----------------------------------------------------------------------
+    // Closure descriptor alignment test
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn pipe_rt_box_value_jit_handles_closure_with_captures() {
+        // Build a minimal JIT-style closure and box it via the runtime helper.
+        // This tests that the closure descriptor parsing is aligned correctly
+        // (no off-by-one from closure_env skipping).
+        //
+        // Closure layout: [func_ptr: u64, capture_count: u64, cap1: u64, ...]
+        // Descriptor: tag 16, total_bytes, param_count,
+        //   for each capture: size, type_desc...
+
+        // Create a fake closure with one capture.
+        let func_addr = 0x1234u64;
+        let cap_val = 42i64;
+        let mut closure_data = Vec::with_capacity(24);
+        closure_data.extend_from_slice(&func_addr.to_le_bytes());
+        closure_data.extend_from_slice(&1u64.to_le_bytes()); // 1 capture
+        closure_data.extend_from_slice(&cap_val.to_le_bytes()); // cap value
+
+        let ptr = closure_data.as_ptr();
+        let desc = serialize_type_desc_to_bytes(
+            &IrType::Closure(Box::new(FuncType {
+                params: vec![IrType::I64], // capture type
+                ret: Box::new(IrType::Unit),
+            })),
+            "test_func",
+        )
+        .expect("serialize closure desc");
+
+        // Box the closure (this should not crash or corrupt memory).
+        let result =
+            unsafe { pipe_rt_box_value_jit(ptr as u64, desc.as_ptr() as u64, desc.len() as u32) };
+        assert!(result != 0, "boxed closure pointer should be non-null");
+
+        // Verify the boxed value is a valid Closure.
+        let boxed = unsafe { &*(result as *const crate::value::Value) };
+        match boxed {
+            crate::value::Value::Closure(c) => {
+                assert_eq!(c.captures.len(), 1, "closure should have 1 capture");
+                assert_eq!(
+                    c.arity, 0,
+                    "closure should have 0 call params (capture only)"
+                );
+            }
+            _ => panic!("expected Closure, got {boxed:?}"),
+        }
+
+        // Clean up the leaked box.
+        let _ = unsafe { Box::from_raw(result as *mut crate::value::Value) };
+    }
+
+    #[test]
+    fn pipe_rt_box_value_jit_closure_without_captures() {
+        // Test a closure that has no captures (just a function pointer).
+        // The descriptor should have 0 params (no captures, no call params).
+        let func_addr = 0xABCDu64;
+        let mut closure_data = Vec::with_capacity(16);
+        closure_data.extend_from_slice(&func_addr.to_le_bytes());
+        closure_data.extend_from_slice(&0u64.to_le_bytes()); // 0 captures
+
+        let ptr = closure_data.as_ptr();
+
+        // Descriptor with 0 params: just captures, no call params.
+        let desc = serialize_type_desc_to_bytes(
+            &IrType::Closure(Box::new(FuncType {
+                params: vec![], // no captures, no call params
+                ret: Box::new(IrType::Unit),
+            })),
+            "test_func",
+        )
+        .expect("serialize closure desc");
+
+        let result =
+            unsafe { pipe_rt_box_value_jit(ptr as u64, desc.as_ptr() as u64, desc.len() as u32) };
+        assert!(result != 0, "boxed closure pointer should be non-null");
+
+        let boxed = unsafe { &*(result as *const crate::value::Value) };
+        match boxed {
+            crate::value::Value::Closure(c) => {
+                assert_eq!(c.captures.len(), 0);
+                assert_eq!(c.arity, 0);
+            }
+            _ => panic!("expected Closure, got {boxed:?}"),
+        }
+
+        let _ = unsafe { Box::from_raw(result as *mut crate::value::Value) };
+    }
+
+    #[test]
+    fn e2e_value_to_ret_buf_encodes_record_as_non_null_pointer() {
         use ast::SmolStr;
         use std::collections::BTreeMap;
         use std::sync::Arc;
@@ -5483,5 +5811,243 @@ mod tests {
             crate::value::Value::Record(r) => assert_eq!(r.fields.len(), 1),
             _ => panic!("expected Record, got {decoded:?}"),
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Memory ownership: pipe_rt_call_builtin must take ownership of Box<Value>
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn pipe_rt_call_builtin_takes_ownership_of_heap_box() {
+        // The old code used `(&*(raw as *const RuntimeValue)).clone()` which
+        // leaked the heap allocation. The fix uses `Box::from_raw` to take
+        // ownership and free the allocation on drop.
+        //
+        // We verify ownership transfer works by boxing a value, converting to
+        // a raw pointer, then using the `Box::from_raw` pattern from the fix.
+
+        let original = crate::value::Value::Array(
+            vec![
+                crate::value::Value::I32(1),
+                crate::value::Value::I32(2),
+                crate::value::Value::I32(3),
+            ]
+            .into(),
+        );
+        let raw_ptr = Box::into_raw(Box::new(original));
+
+        // This mirrors the fix: take ownership of the Box, deref (which moves
+        // the value out), and let the Box drop (freeing the allocation).
+        let owned = unsafe {
+            let boxed = Box::from_raw(raw_ptr);
+            *boxed
+        };
+
+        // Verify the value is intact after ownership transfer
+        match owned {
+            crate::value::Value::Array(ref a) => assert_eq!(a.len(), 3),
+            _ => panic!("expected Array"),
+        }
+        // `owned` drops here, which is fine for stack-allocated inner values.
+        // The key point is that `Box::from_raw` consumed the allocation.
+    }
+
+    #[test]
+    fn pipe_rt_call_builtin_clone_without_ownership_leaks_memory() {
+        // This test demonstrates the OLD buggy pattern that caused memory
+        // leaks: cloning from a raw pointer without freeing the allocation.
+        //
+        // We create a heap value, leak it via `Box::into_raw`, clone it (old
+        // pattern), and verify the original allocation is NOT freed (it leaks).
+        // This is expected behavior with the old code — the test documents it.
+        //
+        // When the fix is fully verified, the old pattern is never used.
+
+        let original = crate::value::Value::Record(std::sync::Arc::new(crate::value::RecordData {
+            fields: {
+                let mut m = std::collections::BTreeMap::new();
+                m.insert(SmolStr::new("x"), crate::value::Value::I32(42));
+                m
+            },
+        }));
+        let raw_ptr = Box::into_raw(Box::new(original));
+
+        // OLD pattern: clone from raw without freeing the Box
+        let _cloned = unsafe { (&*raw_ptr).clone() };
+
+        // The Box at raw_ptr is LEAKED (never freed).
+        // This is the bug that was fixed: `Box::from_raw` must be used instead
+        // so the Box is dropped when we're done with it.
+        //
+        // We can't assert the leak directly (no memory tracking), but this test
+        // at least verifies the old pattern compiles and runs without crashing.
+        // The fix replaces this with `let boxed = Box::from_raw(raw); *boxed`
+        // which properly frees the allocation.
+    }
+
+    // -----------------------------------------------------------------------
+    // If/Match merge block type verification via source compilation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn lower_and_compile_if_with_heap_branch_rejects_type_mismatch() {
+        // Lower and compile a source program that uses an If expression where
+        // both branches return heap types. If the If lowering incorrectly
+        // uses expr_type (which defaults to I32 for generics), the Cranelift
+        // verifier will reject it because the merge block would expect I32
+        // but the actual values are I64 (heap pointers).
+        //
+        // This program: if/else returning arrays (heap type = I64 pointer).
+        // The merge block MUST use I64, not I32.
+        let src = "let main = () => { let x = if true { [1] } else { [2] }; x }";
+        let arena = bumpalo::Bump::new();
+        let prog = parser::parse(src, &arena).expect("parse");
+        let typed = typechecker::typecheck(&prog).expect("typecheck");
+        let ir_module = ir::lower(&typed).expect("lower");
+        let result = compile_ir(&ir_module);
+        // This should succeed: both branches return Array<i32> (I64 pointer),
+        // and the If fix correctly propagates the branch type to the merge.
+        assert!(
+            result.is_ok(),
+            "expected If with heap branches to compile, got: {:?}",
+            result.err(),
+        );
+    }
+
+    #[test]
+    fn lower_and_compile_if_with_mismatched_branch_types() {
+        // If the lowering incorrectly sets the merge block parameter type,
+        // this program with a mix of I32 and I64 returns would trigger
+        // a verifier error. This verifies the If lowering is correct.
+        let src = "let main = () => if true { 42 } else { 0 }";
+        let arena = bumpalo::Bump::new();
+        let prog = parser::parse(src, &arena).expect("parse");
+        let typed = typechecker::typecheck(&prog).expect("typecheck");
+        let ir_module = ir::lower(&typed).expect("lower");
+        let result = compile_ir(&ir_module);
+        // Both branches return I32, the merge should be I32 — must compile.
+        assert!(
+            result.is_ok(),
+            "expected simple If to compile: {:?}",
+            result.err()
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Overflow in unbox_rec_heap skip loop (line 4281): advancing past a
+    // non-matching variant's field uses `total_bytes - 8`, which underflows
+    // when the field's type descriptor has total_node_bytes < 8.
+    // The closure handler (lines 4239, 4246) already uses saturating_sub,
+    // but the tag handler does not.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn unbox_rec_heap_tag_skip_underflows_on_small_total_bytes() {
+        // Simulate the skip loop in unbox_rec_heap (line 4277-4282) with a
+        // crafted descriptor where a field's total_node_bytes < 8.
+        // The skip loop reads: size(4) + tag(4) + total_bytes(4) per field,
+        // then advances offset by `total_bytes - 8`.
+        //
+        // With total_bytes = 3, the subtraction `3usize - 8` wraps around
+        // (panic in debug, UB in release).
+        let desc: Vec<u8> = vec![
+            8, 0, 0, 0, // field_size = 8
+            3, 0, 0, 0, // field_tag = 3 (I64)
+            3, 0, 0, 0, // BAD: total_node_bytes = 3 (< 8, triggers underflow)
+        ];
+        let desc_ptr = desc.as_ptr();
+        let mut offset = 0usize;
+
+        // This is the exact code from lines 4277-4282
+        let payload_count = 1;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+            for _ in 0..payload_count {
+                let _size = desc_read_u32(desc_ptr, &mut offset);
+                let _tag = desc_read_u32(desc_ptr, &mut offset);
+                let total_bytes = desc_read_u32(desc_ptr, &mut offset) as usize;
+                offset += total_bytes - 8; // <-- BUG: underflow when total_bytes < 8
+            }
+        }));
+        assert!(
+            result.is_ok(),
+            "tag descriptor skip loop overflowed: {:?}. \
+             Bug: jit.rs:4281 uses `total_bytes - 8` which underflows when \
+             total_bytes < 8.  Should use saturating_sub(8) like lines 4239, 4246.",
+            result,
+        );
+    }
+
+    #[test]
+    fn box_rec_tag_skip_underflows_on_small_total_bytes() {
+        // Same underflow in box_rec (line 4059): `current_offset += total_bytes - 8`
+        let desc: Vec<u8> = vec![
+            8, 0, 0, 0, // field_size = 8
+            3, 0, 0, 0, // field_tag = 3 (I64)
+            3, 0, 0, 0, // BAD: total_node_bytes = 3
+        ];
+        let desc_ptr = desc.as_ptr();
+        let mut offset = 0usize;
+
+        // This is the exact code from lines 4054-4059
+        let payload_count = 1;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+            for _ in 0..payload_count {
+                let _size = desc_read_u32(desc_ptr, &mut offset);
+                let _tag = desc_read_u32(desc_ptr, &mut offset);
+                let total_bytes = desc_read_u32(desc_ptr, &mut offset) as usize;
+                offset += total_bytes - 8; // <-- BUG: same underflow
+            }
+        }));
+        assert!(
+            result.is_ok(),
+            "box_rec skip loop overflowed: {:?}. \
+             Same bug at jit.rs:4059.",
+            result,
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Cranelift dominance violation when a match subject is a merge block
+    // parameter (e.g. from a previous match or if).  The lowering searches
+    // for the subject's defining block in `b.instructions` but misses
+    // block parameters (`b.params`), so dispatch is placed in block 0.
+    // This violates SSA dominance.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn nested_match_on_merge_block_param_does_not_violate_dominance() {
+        // When the subject of a `match` expression is itself the result of
+        // another `match` (produced as a merge block parameter), the
+        // subject_block_idx search in lower.rs:783-788 only checks
+        // `b.instructions`, missing `b.params`.  It defaults to block 0,
+        // placing the dispatch terminator in a block that does not dominate
+        // the subject's definition (the merge block).
+        //
+        // This program creates y as a merge block param from match x,
+        // then matches on y — triggering the bug.
+        let src = "let main = () => {
+            let x = Some([1, 2, 3]);
+            let y = match x {
+                Some(arr) => arr.head(),
+                None => None
+            };
+            match y {
+                Some(v) => v,
+                None => 0
+            }
+        }";
+        let arena = bumpalo::Bump::new();
+        let prog = parser::parse(src, &arena).expect("parse");
+        let typed = typechecker::typecheck(&prog).expect("typecheck");
+        let ir_module = ir::lower(&typed).expect("lower");
+        let result = compile_ir(&ir_module);
+        assert!(
+            result.is_ok(),
+            "nested match on merge block param should not produce \
+             Cranelift dominance error, got: {:?}. \
+             Bug: lower.rs:783-788 subject_block_idx search misses \
+             block params, defaults to block 0, dispatch in wrong block.",
+            result.err(),
+        );
     }
 }

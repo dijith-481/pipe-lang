@@ -16,7 +16,7 @@ let product = (xs) => xs.fold(1i64, (acc, x) => acc * x)
 let max = (xs) => xs.fold(None, (acc, x) => match acc {
     None    => Some(x)
     Some(m) => if x > m { Some(x) } else { Some(m) }
-})
+}).unwrap_or(0)
 
 // Chain operations: sum of squares of even numbers
 let sum_of_squares_of_evens = (xs) =>
@@ -27,9 +27,9 @@ let sum_of_squares_of_evens = (xs) =>
 
 let main = () => {
     let data = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
-    println(`Original: ${data}`)
-    println(`Doubled:  ${double_all(data)}`)
-    println(`Evens:    ${evens(data)}`)
+    data.map((x) => println(`Element: ${x}`))
+    double_all(data).map((x) => println(`Doubled: ${x}`))
+    evens(data).map((x) => println(`Evens:   ${x}`))
     println(`Sum:      ${sum(data)}`)
     println(`Max:      ${max(data)}`)
     println(`Sum of squares of evens: ${sum_of_squares_of_evens(data)}`)

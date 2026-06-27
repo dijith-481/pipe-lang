@@ -1205,4 +1205,421 @@ mod tests {
         assert_eq!(ty.fields[0].0.as_str(), "name");
         assert_eq!(ty.fields[1].0.as_str(), "age");
     }
+
+    // -----------------------------------------------------------------------
+    // Merge-block type inference tests
+    // -----------------------------------------------------------------------
+    //
+    // These tests verify that If/Match merge blocks use the actual emitted
+    // value type from the branch, not the AST type-map default (I32).
+    // Type mismatches here cause Cranelift VerifierErrors like:
+    //   "arg vN has type i64, expected i32".
+
+    #[test]
+    fn infer_instruction_type_call_named_preserves_return_type() {
+        // CallNamed's return_type comes from the AST type map. If the map
+        // contains a heap type, the IR must preserve it (not default to I32).
+        let data = Box::new(CallNamedData {
+            name: "fold".into(),
+            args: vec![],
+            return_type: IrType::Array(Box::new(IrType::I32)), // heap type
+        });
+        let result = infer_instruction_type(
+            &Instruction::CallNamed(data),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(result, Some(IrType::Array(Box::new(IrType::I32))));
+    }
+
+    #[test]
+    fn infer_instruction_type_call_indirect_preserves_heap_return_type() {
+        let data = Box::new(CallIndirectData {
+            callee: ValueId(0),
+            args: vec![],
+            return_type: IrType::Closure(Box::new(FuncType {
+                params: vec![],
+                ret: Box::new(IrType::I32),
+            })),
+        });
+        let result = infer_instruction_type(
+            &Instruction::CallIndirect(data),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert!(matches!(result, Some(IrType::Closure(_))));
+    }
+
+    #[test]
+    fn infer_instruction_type_binary_non_primitive_fallthrough() {
+        // Binary operations (Add/Div/etc.) look up the left operand's type.
+        // If the left operand isn't in the types map, they return None,
+        // causing the If/Match merge block to fall back to expr_type.
+        let mut types = HashMap::new();
+        types.insert(ValueId(0), IrType::I64);
+        let result = infer_instruction_type(
+            &Instruction::Add(ValueId(0), ValueId(1)),
+            &types,
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        // Left operand (v0) has type I64, so Add should inherit I64.
+        assert_eq!(result, Some(IrType::I64));
+    }
+
+    #[test]
+    fn infer_instruction_type_returns_correct_types() {
+        // Verify basic type inference for key instructions.
+        use Instruction as I;
+
+        let types = HashMap::new();
+        let empty_returns = HashMap::new();
+
+        // ConstI32 -> I32
+        assert_eq!(
+            infer_instruction_type(&I::ConstI32(42), &types, &empty_returns, &HashMap::new()),
+            Some(IrType::I32),
+        );
+
+        // ConstI64 -> I64
+        assert_eq!(
+            infer_instruction_type(&I::ConstI64(42), &types, &empty_returns, &HashMap::new()),
+            Some(IrType::I64),
+        );
+
+        // MakeClosure with capture params -> Closure with those params
+        let closure = infer_instruction_type(
+            &I::MakeClosure(Box::new(MakeClosureData {
+                func_name: "fn".into(),
+                captures: vec![],
+            })),
+            &types,
+            &empty_returns,
+            &HashMap::new(),
+        );
+        assert!(matches!(closure, Some(IrType::Closure(_))));
+    }
+
+    // -----------------------------------------------------------------------
+    // TagConstruct type inference must NOT default Var to I32 for heap
+    // payloads.  mono_type_to_ir calls Var(_) => I32, which is WRONG when
+    // the template type variable should resolve to a heap type like Array.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn infer_instruction_type_tag_construct_preserves_heap_payload_types() {
+        // Regression: `Some(Array<i32>)` must produce a Tag whose Some
+        // variant has payload [Array(I32)], not [I32].
+        //
+        // The bug: mono_type_to_ir in lib.rs:875-896 converts Tag types
+        // by iterating tag_variants' template types (e.g. Var(opt_a) for
+        // Some's payload) and feeding them through mono_type_to_ir, which
+        // defaults MonoType::Var(_) => IrType::I32.  It has no access to
+        // the concrete payload types, so heap types (Array, Closure) are
+        // silently demoted to I32.  This corrupts the TagGet output type
+        // and causes the verifier error "arg v? has type i64, expected i32"
+        // when a merge block expects I32 but receives an I64 heap pointer.
+
+        let opt_a = typechecker::TypeId(0);
+        let mut tv: typechecker::TagVariants = std::collections::HashMap::new();
+        tv.insert(
+            SmolStr::new("Option"),
+            vec![
+                (SmolStr::new("None"), vec![]),
+                (
+                    SmolStr::new("Some"),
+                    vec![typechecker::MonoType::Var(opt_a)],
+                ),
+            ],
+        );
+
+        let arr_val = ValueId(0);
+        let mut types = std::collections::HashMap::new();
+        types.insert(arr_val, IrType::Array(Box::new(IrType::I32)));
+
+        let inst = Instruction::TagConstruct(Box::new(TagConstructData {
+            type_name: SmolStr::new("Option"),
+            variant: SmolStr::new("Some"),
+            discriminant: 1,
+            payload: vec![arr_val],
+        }));
+
+        let result = infer_instruction_type(&inst, &types, &HashMap::new(), &tv);
+
+        // The correct result: Some variant payload is [Array(I32)].
+        // Buggy mono_type_to_ir defaults Var(opt_a) => I32, yielding
+        // payload [I32].  This assertion will FAIL until the fix is
+        // applied to mono_type_to_ir.
+        let expected = IrType::Tag(TagType {
+            name: SmolStr::new("Option"),
+            variants: vec![
+                TagVariant {
+                    name: SmolStr::new("None"),
+                    discriminant: 0,
+                    payload: vec![],
+                },
+                TagVariant {
+                    name: SmolStr::new("Some"),
+                    discriminant: 1,
+                    payload: vec![IrType::Array(Box::new(IrType::I32))],
+                },
+            ],
+        });
+        assert_eq!(
+            result,
+            Some(expected),
+            "TagConstruct(Some(Array<i32>)) type: expected Some variant \
+             payload [Array(I32)], got {:?}. This means mono_type_to_ir \
+             defaulted Var(_) to I32 instead of resolving through the \
+             concrete payload types.",
+            result,
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // TagGet type inference follows the same path — if the IR-level TagType
+    // has wrong variant payloads, TagGet returns the wrong type.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn infer_instruction_type_tag_get_wrong_payload_from_mono_type_to_ir() {
+        // When a Tag value has an incorrect TagType (Some payload = [I32]
+        // from the mono_type_to_ir bug), TagGet { index: 0 } reads the
+        // payload type from the IR-level variants and returns I32 instead
+        // of the correct heap type.  This test constructs the buggy IR
+        // TagType directly to verify that TagGet propagates the error,
+        // then introduces the correct TagType to show what it *should*
+        // return.
+
+        let opt_a = typechecker::TypeId(0);
+        let mut tv: typechecker::TagVariants = std::collections::HashMap::new();
+        tv.insert(
+            SmolStr::new("Option"),
+            vec![
+                (SmolStr::new("None"), vec![]),
+                (
+                    SmolStr::new("Some"),
+                    vec![typechecker::MonoType::Var(opt_a)],
+                ),
+            ],
+        );
+
+        // Simulate a Some value whose type was incorrectly inferred as
+        // Tag<Option, [None([], Some([I32]))]> instead of the correct
+        // Tag<Option, [None([], Some([Array(I32)]))]>.
+        let some_val = ValueId(0);
+        let buggy_tag_type = IrType::Tag(TagType {
+            name: SmolStr::new("Option"),
+            variants: vec![
+                TagVariant {
+                    name: SmolStr::new("None"),
+                    discriminant: 0,
+                    payload: vec![],
+                },
+                TagVariant {
+                    name: SmolStr::new("Some"),
+                    discriminant: 1,
+                    payload: vec![IrType::I32], // BUGGY: should be Array(I32)
+                },
+            ],
+        });
+        let mut types = std::collections::HashMap::new();
+        types.insert(some_val, buggy_tag_type);
+
+        let tag_get = Instruction::TagGet {
+            value: some_val,
+            index: 0,
+        };
+        let result = infer_instruction_type(&tag_get, &types, &HashMap::new(), &tv);
+
+        // With the buggy TagType, TagGet returns I32 (the wrong type).
+        assert_eq!(
+            result,
+            Some(IrType::I32),
+            "TagGet on buggy Tag with Some payload=[I32] should return I32"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Println and Panic fall through to _ => None in infer_instruction_type.
+    // They should return Some(IrType::Unit) so the emitted value's type is
+    // recorded in value_types.  Currently the None return silently drops
+    // the type, and downstream lookup_type calls return None for them.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn println_instruction_type_is_unit_not_none() {
+        let types = HashMap::new();
+        let result = infer_instruction_type(
+            &Instruction::Println(ValueId(0)),
+            &types,
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(
+            result,
+            Some(IrType::Unit),
+            "Println should return Some(Unit), got {:?}. \
+             Bug: Println is not matched in infer_instruction_type's match \
+             block — it falls through to _ => None, so no type is recorded \
+             in value_types.",
+            result,
+        );
+    }
+
+    #[test]
+    fn panic_instruction_type_is_unit_not_none() {
+        let types = HashMap::new();
+        let result = infer_instruction_type(
+            &Instruction::Panic { msg: "oops".into() },
+            &types,
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(
+            result,
+            Some(IrType::Unit),
+            "Panic should return Some(Unit), got {:?}. \
+             Bug: Panic is not matched in infer_instruction_type's match \
+             block — it falls through to _ => None.",
+            result,
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // ArrayConcat always returns the first operand's type, ignoring the
+    // second operand's element type.  If the two operands have different
+    // element types (which shouldn't happen in well-typed code but can
+    // occur due to lowering bugs), the returned type silently propagates
+    // the wrong type for the second operand's elements.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn array_concat_ignores_second_operand_type() {
+        let mut types = HashMap::new();
+        types.insert(ValueId(0), IrType::Array(Box::new(IrType::I32)));
+        types.insert(ValueId(1), IrType::Array(Box::new(IrType::I64)));
+
+        let result = infer_instruction_type(
+            &Instruction::ArrayConcat(ValueId(0), ValueId(1)),
+            &types,
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+
+        // The correct behavior is to return Array(I32) (matching first
+        // operand).  But this test documents that the second operand's
+        // element type (I64) is completely ignored — no validation or
+        // consistency check is performed.
+        assert_eq!(
+            result,
+            Some(IrType::Array(Box::new(IrType::I32))),
+            "ArrayConcat returns first operand type, ignoring second",
+        );
+        // This should also hold: mismatched types would be caught by
+        // the typechecker, but the IR layer provides no defense.
+    }
+
+    // -----------------------------------------------------------------------
+    // lookup_func_type always returns params = [] even for well-known
+    // functions that take declared parameters.  This means MakeClosure
+    // infers a Closure type that only contains capture types, missing
+    // the function's own parameter types.  Downstream CallIndirect then
+    // sees fewer params than actual call args, causing verifier errors
+    // or SIGSEGV from reading wrong stack offsets.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn lookup_func_type_returns_empty_params() {
+        // lookup_func_type in lib.rs:830-838 hardcodes params = vec![] and
+        // only looks up the return type.  Even when fn_return_types has a
+        // function with known params (like I32 -> I32), the returned FuncType
+        // has empty params.
+        let mut fn_return_types: HashMap<String, IrType> = HashMap::new();
+        fn_return_types.insert("double".into(), IrType::I32);
+
+        let func_type = lookup_func_type("double", &fn_return_types);
+
+        // The CORRECT result should have params = [I32] (double takes one I32).
+        // But the buggy lookup_func_type returns params = [].
+        assert!(
+            !func_type.params.is_empty(),
+            "lookup_func_type for 'double' should return params=[I32], got params=[] — \
+             this means the declared function parameter types are lost, causing \
+             MakeClosure to produce Closure types with missing params. \
+             The JIT then fails with 'expected at most 0 arguments' or SIGSEGV \
+             when calling closures that capture + take arguments.",
+        );
+        assert_eq!(
+            func_type.params,
+            vec![IrType::I32],
+            "double(i32) -> i32 should have params=[I32]",
+        );
+    }
+
+    #[test]
+    fn infer_make_closure_missing_declared_params() {
+        // When MakeClosure creates a closure that captures values AND takes
+        // its own arguments, the inferred Closure type must include BOTH
+        // the capture types AND the declared function params.
+        //
+        // Example: compose_fn = (f, g) => (x) => f(g(x))
+        // The inner closure (x) => f(g(x)) captures f and g, and takes x.
+        // Its FuncType should have params = [Closure, Closure, I32].
+        // But lookup_func_type returns empty params, so only captures appear:
+        // params = [Closure, Closure] (missing I32 for x).
+
+        // Simulate a function "inner" that takes (Closure, Closure) -> I32
+        // and is called with one argument x.
+        let captured_f = ValueId(0);
+        let captured_g = ValueId(1);
+        let mut types: HashMap<ValueId, IrType> = HashMap::new();
+        types.insert(
+            captured_f,
+            IrType::Closure(Box::new(FuncType {
+                params: vec![IrType::I32],
+                ret: Box::new(IrType::I32),
+            })),
+        );
+        types.insert(
+            captured_g,
+            IrType::Closure(Box::new(FuncType {
+                params: vec![IrType::I32],
+                ret: Box::new(IrType::I32),
+            })),
+        );
+        // The hoisted function "compose_lambda" has return type I32
+        // but its declared params are NOT in fn_return_types.
+        let mut fn_return_types: HashMap<String, IrType> = HashMap::new();
+        fn_return_types.insert("compose_lambda".into(), IrType::I32);
+
+        let result = infer_instruction_type(
+            &Instruction::MakeClosure(Box::new(MakeClosureData {
+                func_name: "compose_lambda".into(),
+                captures: vec![captured_f, captured_g],
+            })),
+            &types,
+            &fn_return_types,
+            &HashMap::new(), // tag_variants
+        );
+
+        // The closure captures f and g (2 closures) and should have
+        // one declared param (x: I32).  Total params = 3.
+        // Bug: lookup_func_type returns params=[] so total params = 2 (only captures).
+        if let Some(IrType::Closure(func_type)) = result {
+            assert_eq!(
+                func_type.params.len(),
+                3,
+                "MakeClosure for (x) => f(g(x)) should have 3 params \
+                 (2 captures + 1 declared), got {} params = {:?}. \
+                 This means lookup_func_type lost the declared params.",
+                func_type.params.len(),
+                func_type.params,
+            );
+        } else {
+            panic!("MakeClosure should return Closure type, got {:?}", result);
+        }
+    }
 }

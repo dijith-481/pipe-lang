@@ -216,8 +216,8 @@ mod tests {
         reg.register(Arc::new(Echo));
         init_global_registry(reg);
 
-        let result = execute_builtin("echo", &[Value::I32(99)])
-            .expect("should resolve after re-init");
+        let result =
+            execute_builtin("echo", &[Value::I32(99)]).expect("should resolve after re-init");
         assert_eq!(result, Value::I32(99));
     }
 }

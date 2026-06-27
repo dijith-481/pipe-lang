@@ -56,7 +56,7 @@ let nth = (arr, n) => arr[n]
 let repl_loop = (count) => {
     println(`[${to_str(count)}] > `)
     let inputs = [`42`, `3 + 4`, `10 + 20`, `exit`]
-    match count < to_i32(inputs.len()) {
+    match count < inputs.len().to_i32() {
         true => {
             let input = nth(inputs, count)
             println(input)

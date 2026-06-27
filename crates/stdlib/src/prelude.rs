@@ -98,7 +98,7 @@ fn closure_value(builtin: Arc<dyn BuiltinFunction>, arity: usize) -> Value {
     Value::Closure(Arc::new(ClosureData {
         func: FuncPtr::Builtin(builtin),
         captures: Arc::from([]),
-            arity,
+        arity,
         param_descs: Arc::from([]),
         ret_desc: vec![],
     }))
@@ -321,8 +321,6 @@ impl BuiltinFunction for Apply {
         call_closure(&function, std::slice::from_ref(&args[1]))
     }
 }
-
-
 
 // -- Take --
 

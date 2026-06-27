@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
 use ast::SmolStr;
-use ast::ast::NodeId;
 use ast::ast::{BinOp, Decl, Expr, Pattern, Stmt, TemplatePart, UnaryOp};
+use ast::ast::{LiteralPattern, NodeId};
 use typechecker::{MonoType, PolyType, TagVariants, TypedProgram};
 
 use crate::{
@@ -28,8 +28,6 @@ pub enum LowerError {
 // MonoType → IrType
 // ---------------------------------------------------------------------------
 
-
-
 fn mono_to_ir_inner(
     ty: &MonoType,
     tag_variants: Option<&TagVariants>,
@@ -50,7 +48,9 @@ fn mono_to_ir_inner(
         MonoType::Bool => IrType::Bool,
         MonoType::Str => IrType::Str,
         MonoType::Unit => IrType::Unit,
-        MonoType::Array(inner) => IrType::Array(Box::new(mono_to_ir_inner(inner, tag_variants, type_args))),
+        MonoType::Array(inner) => {
+            IrType::Array(Box::new(mono_to_ir_inner(inner, tag_variants, type_args)))
+        }
         MonoType::Func { params, ret } => IrType::Closure(Box::new(FuncType {
             params: params
                 .iter()
@@ -65,7 +65,9 @@ fn mono_to_ir_inner(
                 .map(|(k, v)| (k.clone(), mono_to_ir_inner(v, tag_variants, type_args)))
                 .collect(),
         }),
-        MonoType::Effect(inner) => IrType::Effect(Box::new(mono_to_ir_inner(inner, tag_variants, type_args))),
+        MonoType::Effect(inner) => {
+            IrType::Effect(Box::new(mono_to_ir_inner(inner, tag_variants, type_args)))
+        }
         MonoType::Tag { name, payload } => {
             if let Some(variants) = tag_variants.and_then(|tv| tv.get(name.as_str())) {
                 // Use the combined payload from tag_variants (which has all
@@ -75,6 +77,20 @@ fn mono_to_ir_inner(
                     .iter()
                     .flat_map(|(_, ptys)| ptys.iter().cloned())
                     .collect();
+                // Build a substitution from the tag_variants' template type
+                // variables (e.g. `Var(opt_a)` from the prelude) to the
+                // concrete payload types from this MonoType::Tag. Without
+                // this, prelude-internal type variables default to I32,
+                // causing TagGet to infer the wrong type for payload fields.
+                let mut local_type_args = type_args.clone();
+                for (template, actual) in combined.iter().zip(payload.iter()) {
+                    if let MonoType::Var(id) | MonoType::IntVar(id) | MonoType::FloatVar(id) =
+                        template
+                    {
+                        let actual_ir = mono_to_ir_inner(actual, tag_variants, type_args);
+                        local_type_args.entry(*id).or_insert(actual_ir);
+                    }
+                }
                 let mut offset = 0;
                 let ir_variants: Vec<TagVariant> = variants
                     .iter()
@@ -83,7 +99,7 @@ fn mono_to_ir_inner(
                         let count = vtemplate.len();
                         let vpayload: Vec<IrType> = combined[offset..offset + count]
                             .iter()
-                            .map(|t| mono_to_ir_inner(t, tag_variants, type_args))
+                            .map(|t| mono_to_ir_inner(t, tag_variants, &local_type_args))
                             .collect();
                         offset += count;
                         TagVariant {
@@ -341,7 +357,11 @@ impl<'a> FunctionBuilder<'a> {
 // ---------------------------------------------------------------------------
 
 struct MonoCtx<'a, 'src> {
-    queue: &'a mut Vec<(String, &'src Decl<'src>, HashMap<typechecker::TypeId, IrType>)>,
+    queue: &'a mut Vec<(
+        String,
+        &'src Decl<'src>,
+        HashMap<typechecker::TypeId, IrType>,
+    )>,
     generated: &'a mut HashSet<String>,
     global_decls: &'a HashMap<&'src str, &'src Decl<'src>>,
     env: &'a typechecker::TypeEnv,
@@ -361,7 +381,16 @@ fn extract_type_args(
         (MonoType::Array(inner_poly), MonoType::Array(inner_concrete)) => {
             extract_type_args(inner_poly, inner_concrete, type_args, tag_variants);
         }
-        (MonoType::Func { params: p_poly, ret: r_poly }, MonoType::Func { params: p_concrete, ret: r_concrete }) => {
+        (
+            MonoType::Func {
+                params: p_poly,
+                ret: r_poly,
+            },
+            MonoType::Func {
+                params: p_concrete,
+                ret: r_concrete,
+            },
+        ) => {
             for (p_p, p_c) in p_poly.iter().zip(p_concrete.iter()) {
                 extract_type_args(p_p, p_c, type_args, tag_variants);
             }
@@ -374,7 +403,16 @@ fn extract_type_args(
                 }
             }
         }
-        (MonoType::Tag { name: name_poly, payload: payload_poly }, MonoType::Tag { name: name_concrete, payload: payload_concrete }) => {
+        (
+            MonoType::Tag {
+                name: name_poly,
+                payload: payload_poly,
+            },
+            MonoType::Tag {
+                name: name_concrete,
+                payload: payload_concrete,
+            },
+        ) => {
             if name_poly == name_concrete {
                 for (p_poly, p_concrete) in payload_poly.iter().zip(payload_concrete.iter()) {
                     extract_type_args(p_poly, p_concrete, type_args, tag_variants);
@@ -433,7 +471,10 @@ fn format_ir_type_mangled(ty: &IrType) -> String {
         }
         IrType::Effect(inner) => format!("Eff{}", format_ir_type_mangled(inner)),
     };
-    mangled.chars().filter(|c| c.is_alphanumeric() || *c == '_').collect()
+    mangled
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '_')
+        .collect()
 }
 
 fn mangle_name(
@@ -480,7 +521,8 @@ fn resolve_and_queue_global<'src>(
     } else {
         name.to_string()
     }
-}fn lower_expr<'src>(
+}
+fn lower_expr<'src>(
     fb: &mut FunctionBuilder<'_>,
     expr: &Expr<'src>,
     hoisted: &mut Vec<IrFunction>,
@@ -494,10 +536,10 @@ fn resolve_and_queue_global<'src>(
 
         Expr::Ident(_, name, _) => {
             if let Some(v) = fb.lookup(name) {
-                if let Some(ty) = fb.value_types.get(&v) {
-                    if ty.is_heap_type() {
-                        fb.emit(Instruction::Retain(v));
-                    }
+                if let Some(ty) = fb.value_types.get(&v)
+                    && ty.is_heap_type()
+                {
+                    fb.emit(Instruction::Retain(v));
                 }
                 Ok(v)
             } else if let Some((tag_type, disc, _)) = find_tag_constructor(name, fb.tag_variants) {
@@ -607,17 +649,24 @@ fn resolve_and_queue_global<'src>(
                 args: vec![else_v],
             });
 
-            // Use the if-expression's inferred type for the merge block param.
-            let result_ty = fb.expr_type(expr.id());
+            // Use the actual emitted type of then_v to prevent verifier mismatches
+            // in cases where generic types temporarily default to I32 in the type map.
+            let final_ty = fb
+                .value_types
+                .get(&then_v)
+                .cloned()
+                .unwrap_or_else(|| fb.expr_type(expr.id()));
+
             fb.set_current(merge_id);
             let result_v = fb.alloc_value();
+            fb.value_types.insert(result_v, final_ty.clone());
             let merge_idx = fb
                 .func
                 .blocks
                 .iter()
                 .position(|b| b.id == merge_id)
                 .expect("merge block");
-            fb.func.blocks[merge_idx].params.push((result_v, result_ty));
+            fb.func.blocks[merge_idx].params.push((result_v, final_ty));
             Ok(result_v)
         }
 
@@ -627,15 +676,17 @@ fn resolve_and_queue_global<'src>(
                 lower_stmt(fb, stmt, hoisted, ctx)?;
             }
             let v = lower_expr(fb, result, hoisted, ctx)?;
-            let locals_to_release: Vec<ValueId> = fb.locals.iter()
+            let locals_to_release: Vec<ValueId> = fb
+                .locals
+                .iter()
                 .filter(|(name, val)| !saved.contains_key(name.as_str()) && **val != v)
                 .map(|(_, val)| *val)
                 .collect();
             for val in locals_to_release {
-                if let Some(ty) = fb.value_types.get(&val) {
-                    if ty.is_heap_type() {
-                        fb.emit(Instruction::Release(val));
-                    }
+                if let Some(ty) = fb.value_types.get(&val)
+                    && ty.is_heap_type()
+                {
+                    fb.emit(Instruction::Release(val));
                 }
             }
             fb.locals = saved;
@@ -651,7 +702,7 @@ fn resolve_and_queue_global<'src>(
 
             let is_tag = matches!(subj_ty, IrType::Tag(_));
             let mut switch_arms: Vec<(u32, BlockId, Vec<ValueId>)> = Vec::new();
-            let mut literal_arms: Vec<(i64, BlockId)> = Vec::new();
+            let mut literal_arms: Vec<(&LiteralPattern<'src>, BlockId)> = Vec::new();
             let mut default_arm: Option<(BlockId, Vec<ValueId>)> = None;
 
             for arm in arms.iter() {
@@ -663,23 +714,24 @@ fn resolve_and_queue_global<'src>(
                 if resolved_result_ty.is_none() {
                     resolved_result_ty = fb.value_types.get(&arm_v).cloned();
                 }
-                let locals_to_release: Vec<ValueId> = fb.locals.iter()
+                let locals_to_release: Vec<ValueId> = fb
+                    .locals
+                    .iter()
                     .filter(|(name, val)| !saved.contains_key(name.as_str()) && **val != arm_v)
                     .map(|(_, val)| *val)
                     .collect();
                 for val in locals_to_release {
-                    if let Some(ty) = fb.value_types.get(&val) {
-                        if ty.is_heap_type() {
-                            fb.emit(Instruction::Release(val));
-                        }
+                    if let Some(ty) = fb.value_types.get(&val)
+                        && ty.is_heap_type()
+                    {
+                        fb.emit(Instruction::Release(val));
                     }
                 }
-                if subj_v != arm_v {
-                    if let Some(ty) = fb.value_types.get(&subj_v) {
-                        if ty.is_heap_type() {
-                            fb.emit(Instruction::Release(subj_v));
-                        }
-                    }
+                if subj_v != arm_v
+                    && let Some(ty) = fb.value_types.get(&subj_v)
+                    && ty.is_heap_type()
+                {
+                    fb.emit(Instruction::Release(subj_v));
                 }
                 fb.set_terminator(Terminator::Jump {
                     target: merge_id,
@@ -692,8 +744,7 @@ fn resolve_and_queue_global<'src>(
                         default_arm = Some((arm_id, vec![]));
                     }
                     Pattern::Literal(_, lit, _) => {
-                        let disc = literal_discriminant(lit);
-                        literal_arms.push((disc, arm_id));
+                        literal_arms.push((lit, arm_id));
                     }
                     Pattern::Constructor { name, .. } if is_tag => {
                         let disc = subj_tag_discriminant(fb, subj_v, name);
@@ -747,22 +798,35 @@ fn resolve_and_queue_global<'src>(
                 // The subject value IS the discriminant.
                 // Emit arms in reverse so the first literal becomes the outermost check.
                 let mut cascade_target: Option<BlockId> = default_arm.map(|(b, _)| b);
-                for (disc, block_id) in literal_arms.into_iter().rev() {
+                for (lit, block_id) in literal_arms.into_iter().rev() {
                     let check_block = fb.alloc_block();
                     fb.set_current(check_block);
-                    let lit_v = fb.emit(match subj_ty {
-                        IrType::I8 => Instruction::ConstI8(disc as i8),
-                        IrType::I16 => Instruction::ConstI16(disc as i16),
-                        IrType::I32 => Instruction::ConstI32(disc as i32),
-                        IrType::I64 => Instruction::ConstI64(disc),
-                        IrType::U8 => Instruction::ConstU8(disc as u8),
-                        IrType::U16 => Instruction::ConstU16(disc as u16),
-                        IrType::U32 => Instruction::ConstU32(disc as u32),
-                        IrType::U64 => Instruction::ConstU64(disc as u64),
-                        IrType::Usize => Instruction::ConstUsize(disc as usize),
-                        IrType::Bool => Instruction::ConstBool(disc != 0),
-                        _ => Instruction::ConstI64(disc),
-                    });
+                    let lit_v = match lit {
+                        LiteralPattern::Str(s) => fb.emit(Instruction::ConstStr((*s).into())),
+                        LiteralPattern::Bool(b) => fb.emit(Instruction::ConstBool(*b)),
+                        LiteralPattern::Float(s) => {
+                            if matches!(subj_ty, IrType::F32) {
+                                fb.emit(Instruction::ConstF32(s.parse().unwrap_or(0.0)))
+                            } else {
+                                fb.emit(Instruction::ConstF64(s.parse().unwrap_or(0.0)))
+                            }
+                        }
+                        LiteralPattern::Int(_) => {
+                            let disc = literal_discriminant(lit);
+                            fb.emit(match subj_ty {
+                                IrType::I8 => Instruction::ConstI8(disc as i8),
+                                IrType::I16 => Instruction::ConstI16(disc as i16),
+                                IrType::I32 => Instruction::ConstI32(disc as i32),
+                                IrType::I64 => Instruction::ConstI64(disc),
+                                IrType::U8 => Instruction::ConstU8(disc as u8),
+                                IrType::U16 => Instruction::ConstU16(disc as u16),
+                                IrType::U32 => Instruction::ConstU32(disc as u32),
+                                IrType::U64 => Instruction::ConstU64(disc as u64),
+                                IrType::Usize => Instruction::ConstUsize(disc as usize),
+                                _ => Instruction::ConstI64(disc),
+                            })
+                        }
+                    };
                     let eq_v = fb.emit(Instruction::Eq(subj_v, lit_v));
                     let else_target = cascade_target.unwrap_or_else(|| {
                         let trap = fb.alloc_block();
@@ -819,10 +883,10 @@ fn resolve_and_queue_global<'src>(
                 return_type,
             })));
             for elem in &elem_vals {
-                if let Some(ty) = fb.value_types.get(elem) {
-                    if ty.is_heap_type() {
-                        fb.emit(Instruction::Release(*elem));
-                    }
+                if let Some(ty) = fb.value_types.get(elem)
+                    && ty.is_heap_type()
+                {
+                    fb.emit(Instruction::Release(*elem));
                 }
             }
             Ok(ret_v)
@@ -868,15 +932,15 @@ fn resolve_and_queue_global<'src>(
                 field: (*field).into(),
                 field_index,
             });
-            if let Some(ty) = fb.value_types.get(&fv) {
-                if ty.is_heap_type() {
-                    fb.emit(Instruction::Retain(fv));
-                }
+            if let Some(ty) = fb.value_types.get(&fv)
+                && ty.is_heap_type()
+            {
+                fb.emit(Instruction::Retain(fv));
             }
-            if let Some(ty) = fb.value_types.get(&obj_v) {
-                if ty.is_heap_type() {
-                    fb.emit(Instruction::Release(obj_v));
-                }
+            if let Some(ty) = fb.value_types.get(&obj_v)
+                && ty.is_heap_type()
+            {
+                fb.emit(Instruction::Release(obj_v));
             }
             Ok(fv)
         }
@@ -888,20 +952,20 @@ fn resolve_and_queue_global<'src>(
                 array: arr_v,
                 index: idx_v,
             });
-            if let Some(ty) = fb.value_types.get(&ev) {
-                if ty.is_heap_type() {
-                    fb.emit(Instruction::Retain(ev));
-                }
+            if let Some(ty) = fb.value_types.get(&ev)
+                && ty.is_heap_type()
+            {
+                fb.emit(Instruction::Retain(ev));
             }
-            if let Some(ty) = fb.value_types.get(&arr_v) {
-                if ty.is_heap_type() {
-                    fb.emit(Instruction::Release(arr_v));
-                }
+            if let Some(ty) = fb.value_types.get(&arr_v)
+                && ty.is_heap_type()
+            {
+                fb.emit(Instruction::Release(arr_v));
             }
-            if let Some(ty) = fb.value_types.get(&idx_v) {
-                if ty.is_heap_type() {
-                    fb.emit(Instruction::Release(idx_v));
-                }
+            if let Some(ty) = fb.value_types.get(&idx_v)
+                && ty.is_heap_type()
+            {
+                fb.emit(Instruction::Release(idx_v));
             }
             Ok(ev)
         }
@@ -948,7 +1012,10 @@ fn resolve_and_queue_global<'src>(
 
             // EVERY function needs closure_env as arg 0
             let env_val = inner_fb.alloc_value();
-            inner_fb.func.params.push((env_val, "closure_env".into(), IrType::I64));
+            inner_fb
+                .func
+                .params
+                .push((env_val, "closure_env".into(), IrType::I64));
             inner_fb.value_types.insert(env_val, IrType::I64);
 
             // Capture params — emit ClosureGet from env pointer with 8-byte offsets.
@@ -1048,16 +1115,16 @@ fn resolve_and_queue_global<'src>(
                                 return_type,
                             },
                         )));
-                        if let Some(ty) = fb.value_types.get(&callee) {
-                            if ty.is_heap_type() {
-                                fb.emit(Instruction::Release(callee));
-                            }
+                        if let Some(ty) = fb.value_types.get(&callee)
+                            && ty.is_heap_type()
+                        {
+                            fb.emit(Instruction::Release(callee));
                         }
                         for arg in &arg_vals {
-                            if let Some(ty) = fb.value_types.get(arg) {
-                                if ty.is_heap_type() {
-                                    fb.emit(Instruction::Release(*arg));
-                                }
+                            if let Some(ty) = fb.value_types.get(arg)
+                                && ty.is_heap_type()
+                            {
+                                fb.emit(Instruction::Release(*arg));
                             }
                         }
                         Ok(ret_v)
@@ -1072,31 +1139,32 @@ fn resolve_and_queue_global<'src>(
                                 return_type,
                             },
                         )));
-                        if let Some(ty) = fb.value_types.get(&callee) {
-                            if ty.is_heap_type() {
-                                fb.emit(Instruction::Release(callee));
-                            }
+                        if let Some(ty) = fb.value_types.get(&callee)
+                            && ty.is_heap_type()
+                        {
+                            fb.emit(Instruction::Release(callee));
                         }
                         for arg in &arg_vals {
-                            if let Some(ty) = fb.value_types.get(arg) {
-                                if ty.is_heap_type() {
-                                    fb.emit(Instruction::Release(*arg));
-                                }
+                            if let Some(ty) = fb.value_types.get(arg)
+                                && ty.is_heap_type()
+                            {
+                                fb.emit(Instruction::Release(*arg));
                             }
                         }
                         Ok(ret_v)
                     } else {
                         let mangled = resolve_and_queue_global(name, func.id(), fb, ctx);
-                        let ret_v = fb.emit(Instruction::CallNamed(Box::new(crate::CallNamedData {
-                            name: mangled.into(),
-                            args: arg_vals.clone(),
-                            return_type,
-                        })));
+                        let ret_v =
+                            fb.emit(Instruction::CallNamed(Box::new(crate::CallNamedData {
+                                name: mangled.into(),
+                                args: arg_vals.clone(),
+                                return_type,
+                            })));
                         for arg in &arg_vals {
-                            if let Some(ty) = fb.value_types.get(arg) {
-                                if ty.is_heap_type() {
-                                    fb.emit(Instruction::Release(*arg));
-                                }
+                            if let Some(ty) = fb.value_types.get(arg)
+                                && ty.is_heap_type()
+                            {
+                                fb.emit(Instruction::Release(*arg));
                             }
                         }
                         Ok(ret_v)
@@ -1111,16 +1179,16 @@ fn resolve_and_queue_global<'src>(
                             return_type,
                         },
                     )));
-                    if let Some(ty) = fb.value_types.get(&callee) {
-                        if ty.is_heap_type() {
-                            fb.emit(Instruction::Release(callee));
-                        }
+                    if let Some(ty) = fb.value_types.get(&callee)
+                        && ty.is_heap_type()
+                    {
+                        fb.emit(Instruction::Release(callee));
                     }
                     for arg in &arg_vals {
-                        if let Some(ty) = fb.value_types.get(arg) {
-                            if ty.is_heap_type() {
-                                fb.emit(Instruction::Release(*arg));
-                            }
+                        if let Some(ty) = fb.value_types.get(arg)
+                            && ty.is_heap_type()
+                        {
+                            fb.emit(Instruction::Release(*arg));
                         }
                     }
                     Ok(ret_v)
@@ -1279,18 +1347,18 @@ fn lower_stmt<'src>(
         Stmt::Let { pattern, value } => {
             let v = lower_expr(fb, value, hoisted, ctx)?;
             bind_pattern_local(fb, pattern, v);
-            if let Some(ty) = fb.value_types.get(&v) {
-                if ty.is_heap_type() {
-                    fb.emit(Instruction::Release(v));
-                }
+            if let Some(ty) = fb.value_types.get(&v)
+                && ty.is_heap_type()
+            {
+                fb.emit(Instruction::Release(v));
             }
         }
         Stmt::Expr(e) => {
             let v = lower_expr(fb, e, hoisted, ctx)?;
-            if let Some(ty) = fb.value_types.get(&v) {
-                if ty.is_heap_type() {
-                    fb.emit(Instruction::Release(v));
-                }
+            if let Some(ty) = fb.value_types.get(&v)
+                && ty.is_heap_type()
+            {
+                fb.emit(Instruction::Release(v));
             }
         }
     }
@@ -1304,10 +1372,10 @@ fn lower_pattern<'src>(
 ) -> Result<(), LowerError> {
     match pat {
         Pattern::Binding(_, name, _) => {
-            if let Some(ty) = fb.value_types.get(&scrutinee) {
-                if ty.is_heap_type() {
-                    fb.emit(Instruction::Retain(scrutinee));
-                }
+            if let Some(ty) = fb.value_types.get(&scrutinee)
+                && ty.is_heap_type()
+            {
+                fb.emit(Instruction::Retain(scrutinee));
             }
             fb.bind((*name).into(), scrutinee);
         }
@@ -1340,10 +1408,10 @@ fn lower_pattern<'src>(
                 if let Some(p) = f.pattern {
                     lower_pattern(fb, p, fv)?;
                 } else {
-                    if let Some(ty) = fb.value_types.get(&fv) {
-                        if ty.is_heap_type() {
-                            fb.emit(Instruction::Retain(fv));
-                        }
+                    if let Some(ty) = fb.value_types.get(&fv)
+                        && ty.is_heap_type()
+                    {
+                        fb.emit(Instruction::Retain(fv));
                     }
                     fb.bind(f.name.into(), fv);
                 }
@@ -1356,10 +1424,10 @@ fn lower_pattern<'src>(
 fn bind_pattern_local<'src>(fb: &mut FunctionBuilder<'_>, pat: &Pattern<'src>, v: ValueId) {
     match pat {
         Pattern::Binding(_, name, _) => {
-            if let Some(ty) = fb.value_types.get(&v) {
-                if ty.is_heap_type() {
-                    fb.emit(Instruction::Retain(v));
-                }
+            if let Some(ty) = fb.value_types.get(&v)
+                && ty.is_heap_type()
+            {
+                fb.emit(Instruction::Retain(v));
             }
             fb.bind((*name).into(), v);
         }
@@ -1392,10 +1460,10 @@ fn bind_pattern_local<'src>(fb: &mut FunctionBuilder<'_>, pat: &Pattern<'src>, v
                 if let Some(p) = f.pattern {
                     bind_pattern_local(fb, p, fv);
                 } else {
-                    if let Some(ty) = fb.value_types.get(&fv) {
-                        if ty.is_heap_type() {
-                            fb.emit(Instruction::Retain(fv));
-                        }
+                    if let Some(ty) = fb.value_types.get(&fv)
+                        && ty.is_heap_type()
+                    {
+                        fb.emit(Instruction::Retain(fv));
                     }
                     fb.bind(f.name.into(), fv);
                 }
@@ -1468,9 +1536,7 @@ fn lower_decl_monomorphized<'src>(
 ) -> Result<(), LowerError> {
     match decl {
         Decl::Bind {
-            value,
-            id: decl_id,
-            ..
+            value, id: decl_id, ..
         } => {
             let ret_ty = type_map
                 .get(decl_id)
@@ -1495,7 +1561,9 @@ fn lower_decl_monomorphized<'src>(
                         type_args,
                     );
                     let env_val = fb.alloc_value();
-                    fb.func.params.push((env_val, "closure_env".into(), IrType::I64));
+                    fb.func
+                        .params
+                        .push((env_val, "closure_env".into(), IrType::I64));
                     fb.value_types.insert(env_val, IrType::I64);
                     for p in params.iter() {
                         let v = fb.alloc_value();
@@ -1533,7 +1601,9 @@ fn lower_decl_monomorphized<'src>(
                         type_args,
                     );
                     let env_val = fb.alloc_value();
-                    fb.func.params.push((env_val, "closure_env".into(), IrType::I64));
+                    fb.func
+                        .params
+                        .push((env_val, "closure_env".into(), IrType::I64));
                     fb.value_types.insert(env_val, IrType::I64);
                     let v = lower_expr(&mut fb, other, &mut hoisted, ctx)?;
                     fb.set_terminator(Terminator::Return(v));
@@ -1640,7 +1710,9 @@ pub fn lower(typed: &TypedProgram<'_>) -> Result<IrModule, LowerError> {
             Decl::Use { path, .. } => {
                 module.imports.push(path.join("::").into());
             }
-            Decl::TypeAlias { name, id: decl_id, .. } => {
+            Decl::TypeAlias {
+                name, id: decl_id, ..
+            } => {
                 if let Some(mono) = typed.type_map.get(decl_id) {
                     module.decls.push(IrDecl::TypeAlias {
                         name: (*name).into(),

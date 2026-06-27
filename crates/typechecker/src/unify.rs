@@ -475,4 +475,39 @@ mod tests {
             Err(TypeError::UnificationFailed { .. })
         ));
     }
+
+    // -----------------------------------------------------------------------
+    // Record unification requires exactly equal field counts.  This is too
+    // strict: a record with MORE fields should unify with a record that has
+    // FEWER fields (row-polymorphic extension).  Without this, functions
+    // that access a subset of fields on a record argument cannot be called
+    // with records that have extra fields.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn unify_record_rejects_extra_fields() {
+        let mut sub = Substitution::new();
+        // { key: str }
+        let mut fewer_fields = BTreeMap::new();
+        fewer_fields.insert("key".into(), MonoType::Str);
+        let fewer = MonoType::Record(Rc::new(fewer_fields));
+        // { key: str, value: str }
+        let mut more_fields = BTreeMap::new();
+        more_fields.insert("key".into(), MonoType::Str);
+        more_fields.insert("value".into(), MonoType::Str);
+        let more = MonoType::Record(Rc::new(more_fields));
+
+        // A record with extra fields SHOULD unify: row-polymorphism allows
+        // a function expecting {key: str} to be called with {key: str, value: str}.
+        // But unify.rs:247 checks `af.len() != bf.len()` and rejects it.
+        let result = unify(&mut sub, &fewer, &more);
+        assert!(
+            result.is_ok(),
+            "Record unifier should accept extra fields (row-polymorphism), \
+             got: {:?}. Bug at unify.rs:247: equal field count check is \
+             too strict — it prevents extension, causing json-parser.pp \
+             to fail with 'field `value` not found on record'.",
+            result,
+        );
+    }
 }

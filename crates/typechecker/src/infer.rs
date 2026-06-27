@@ -1172,7 +1172,7 @@ pub fn infer_decl<'a>(env: &mut TypeEnv, decl: &Decl<'a>) -> Result<PolyType, Ty
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ast::ast::{Decl, Expr, NodeId};
+    use ast::ast::{Decl, Expr, NodeId, TypeExpr, TypeVariant};
     use ast::span::Span;
     use bumpalo::Bump;
 
@@ -1360,5 +1360,64 @@ mod tests {
         let mut env = TypeEnv::new();
         let expr = Expr::float("3.14", sp(), &bump);
         assert_eq!(infer_expr(&mut env, expr).unwrap(), MonoType::F64);
+    }
+
+    // -----------------------------------------------------------------------
+    // Self-referential (recursive) tag type aliases fail to typecheck.
+    //
+    // `type Expr = | Num(f64) | Add(Expr, Expr) | Neg(Expr)` defines a
+    // recursive sum type.  The typechecker at infer.rs:1098 resolves
+    // variant payload types BEFORE the type name is registered in the
+    // env (line 1139).  When a payload references the type itself (e.g.
+    // `Add(Expr, Expr)`), the lookup returns "unbound variable".
+    //
+    // This prevents expression-evaluator.pp and similar recursive ADTs
+    // from typechecking.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn recursive_tag_type_alias_fails_to_typecheck() {
+        let bump = Bump::new();
+
+        // Build `type Expr = | Num(f64) | Neg(Expr)`
+        let num_variant = TypeVariant {
+            name: "Num",
+            fields: bumpalo::collections::Vec::from_iter_in([TypeExpr::Named("f64", sp())], &bump),
+            span: sp(),
+        };
+        let neg_variant = TypeVariant {
+            name: "Neg",
+            fields: bumpalo::collections::Vec::from_iter_in([TypeExpr::Named("Expr", sp())], &bump),
+            span: sp(),
+        };
+        let sum_ty = TypeExpr::Sum {
+            variants: bumpalo::collections::Vec::from_iter_in([num_variant, neg_variant], &bump),
+            span: sp(),
+        };
+
+        let decl = Decl::TypeAlias {
+            id: NodeId(0),
+            name: "Expr",
+            params: bumpalo::collections::Vec::new_in(&bump),
+            rhs: &sum_ty,
+            span: sp(),
+        };
+
+        let mut env = TypeEnv::new();
+        let result = infer_decl(&mut env, &decl);
+
+        // The type alias SHOULD typecheck successfully, registering the
+        // recursive tag type in the env.  But infer.rs:1098 resolves
+        // variant fields before the name is inserted (line 1139), so
+        // `Neg(Expr)` fails with "UnboundVariable: Expr".
+        assert!(
+            result.is_ok(),
+            "Recursive type alias `type Expr = | Num(f64) | Neg(Expr)` \
+             should typecheck but got: {:?}. \
+             Bug: infer.rs:1098 resolves variant payloads before the \
+             type name is registered at line 1139, so self-referential \
+             tags fail with UnboundVariable.",
+            result,
+        );
     }
 }
