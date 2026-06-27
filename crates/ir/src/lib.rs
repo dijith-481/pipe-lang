@@ -828,13 +828,17 @@ pub fn lookup_type(types: &HashMap<ValueId, IrType>, value_id: ValueId) -> Optio
 /// they are not available through this API — the result is sufficient
 /// for storage-type dispatch (closure is always pointer-width).
 fn lookup_func_type(func_name: &str, fn_return_types: &HashMap<String, IrType>) -> FuncType {
-    let ret = fn_return_types
-        .get(func_name)
-        .cloned()
-        .unwrap_or(IrType::Unit);
-    FuncType {
-        params: vec![],
-        ret: Box::new(ret),
+    match fn_return_types.get(func_name) {
+        Some(IrType::Func(ft)) => ft.clone(),
+        Some(IrType::Closure(ft)) => ft.as_ref().clone(),
+        Some(ty) => FuncType {
+            params: vec![],
+            ret: Box::new(ty.clone()),
+        },
+        None => FuncType {
+            params: vec![],
+            ret: Box::new(IrType::Unit),
+        },
     }
 }
 
@@ -873,6 +877,21 @@ fn mono_type_to_ir(ty: &typechecker::MonoType, tag_variants: &typechecker::TagVa
                 .collect(),
         }),
         MonoType::Tag { name, payload: _ } => {
+            thread_local! {
+                static EXPANDING: std::cell::RefCell<std::collections::HashSet<SmolStr>> =
+                    std::cell::RefCell::new(std::collections::HashSet::new());
+            }
+
+            let is_expanding = EXPANDING.with(|cell| cell.borrow().contains(name));
+            if is_expanding {
+                return IrType::Tag(TagType {
+                    name: name.clone(),
+                    variants: vec![],
+                });
+            }
+
+            EXPANDING.with(|cell| cell.borrow_mut().insert(name.clone()));
+
             let variants: Vec<TagVariant> = tag_variants
                 .get(name.as_str())
                 .map(|vs| {
@@ -889,6 +908,9 @@ fn mono_type_to_ir(ty: &typechecker::MonoType, tag_variants: &typechecker::TagVa
                         .collect()
                 })
                 .unwrap_or_default();
+
+            EXPANDING.with(|cell| cell.borrow_mut().remove(name));
+
             IrType::Tag(TagType {
                 name: name.clone(),
                 variants,
@@ -983,13 +1005,20 @@ pub fn infer_instruction_type(
                     vlist
                         .iter()
                         .enumerate()
-                        .map(|(i, (vname, vtemplate))| TagVariant {
-                            name: vname.clone(),
-                            discriminant: i as u32,
-                            payload: vtemplate
-                                .iter()
-                                .map(|t| mono_type_to_ir(t, tag_variants))
-                                .collect(),
+                        .map(|(i, (vname, vtemplate))| {
+                            let payload = if vname == &data.variant {
+                                payload_types.clone()
+                            } else {
+                                vtemplate
+                                    .iter()
+                                    .map(|t| mono_type_to_ir(t, tag_variants))
+                                    .collect()
+                            };
+                            TagVariant {
+                                name: vname.clone(),
+                                discriminant: i as u32,
+                                payload,
+                            }
                         })
                         .collect()
                 } else {
@@ -1064,8 +1093,8 @@ pub fn infer_instruction_type(
         Instruction::ArrayConcat(a, _) => lookup_type(types, *a).cloned(),
         Instruction::RecordSet { .. } | Instruction::ArraySet { .. } => Some(IrType::Unit),
         Instruction::Retain(_) | Instruction::Release(_) => Some(IrType::Unit),
+        Instruction::Println(_) | Instruction::Panic { .. } => Some(IrType::Unit),
         Instruction::ClosureGet { ty, .. } => Some(ty.clone()),
-        _ => None,
     }
 }
 
@@ -1538,7 +1567,13 @@ mod tests {
         // function with known params (like I32 -> I32), the returned FuncType
         // has empty params.
         let mut fn_return_types: HashMap<String, IrType> = HashMap::new();
-        fn_return_types.insert("double".into(), IrType::I32);
+        fn_return_types.insert(
+            "double".into(),
+            IrType::Func(FuncType {
+                params: vec![IrType::I32],
+                ret: Box::new(IrType::I32),
+            }),
+        );
 
         let func_type = lookup_func_type("double", &fn_return_types);
 
@@ -1593,7 +1628,13 @@ mod tests {
         // The hoisted function "compose_lambda" has return type I32
         // but its declared params are NOT in fn_return_types.
         let mut fn_return_types: HashMap<String, IrType> = HashMap::new();
-        fn_return_types.insert("compose_lambda".into(), IrType::I32);
+        fn_return_types.insert(
+            "compose_lambda".into(),
+            IrType::Func(FuncType {
+                params: vec![IrType::I32],
+                ret: Box::new(IrType::I32),
+            }),
+        );
 
         let result = infer_instruction_type(
             &Instruction::MakeClosure(Box::new(MakeClosureData {

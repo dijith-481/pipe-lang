@@ -244,9 +244,6 @@ pub fn unify(sub: &mut Substitution, a: &MonoType, b: &MonoType) -> Result<(), T
         }
 
         (MonoType::Record(af), MonoType::Record(bf)) => {
-            if af.len() != bf.len() {
-                return Err(mismatch(&a, &b));
-            }
             for (name, a_ty) in af.iter() {
                 let b_ty = bf.get(name).ok_or_else(|| mismatch(&a, &b))?;
                 unify(sub, a_ty, b_ty)?;

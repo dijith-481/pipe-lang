@@ -712,7 +712,7 @@ fn infer_inner<'a>(
             let ta = sub.apply(&ty);
             match op {
                 UnaryOp::Neg => {
-                    if !ta.is_numeric() {
+                    if !ta.is_numeric() && !matches!(ta, MonoType::Var(_)) {
                         return Err(TypeError::UnificationFailed {
                             expected: MonoType::I32,
                             got: ta,
@@ -833,7 +833,7 @@ fn infer_inner<'a>(
             span,
             ..
         } => {
-            let raw_obj_ty = infer_inner(env, sub, type_map, object)?;
+            let raw_obj_ty = infer(env, sub, type_map, object)?;
             let oa = sub.apply(&raw_obj_ty);
             match &oa {
                 MonoType::Record(fields) => {
@@ -1089,7 +1089,17 @@ pub fn infer_decl_with_map<'a>(
 
             match rhs {
                 TypeExpr::Sum { variants, .. } => {
-                    // Register each variant as a constructor function
+                    // Pass 1: Resolve variant payload types to build the combined payloads list.
+                    // We first register a placeholder tag type in env so recursive references resolve.
+                    let placeholder_poly = PolyType::poly(
+                        param_vars.clone(),
+                        MonoType::Tag {
+                            name: SmolStr::from(*name),
+                            payload: Rc::from([]),
+                        },
+                    );
+                    env.insert(*name, placeholder_poly);
+
                     let mut tag_info = Vec::new();
                     for variant in variants {
                         let payload_tys: Result<Vec<MonoType>, _> = variant
@@ -1098,45 +1108,48 @@ pub fn infer_decl_with_map<'a>(
                             .map(|f| resolve_type_expr_with_env(env, f, &param_map))
                             .collect();
                         let payload_tys = payload_tys?;
+                        tag_info.push((SmolStr::from(variant.name), payload_tys));
+                    }
 
+                    let combined: Vec<MonoType> =
+                        tag_info.iter().flat_map(|(_, ptys)| ptys.clone()).collect();
+                    env.tag_variants.insert(SmolStr::from(*name), tag_info.clone());
+
+                    // Register the final tag type in env so constructors resolve to the full tag type.
+                    let poly = PolyType::poly(
+                        param_vars.clone(),
+                        MonoType::Tag {
+                            name: SmolStr::from(*name),
+                            payload: Rc::from(combined.clone()),
+                        },
+                    );
+                    env.insert(*name, poly.clone());
+
+                    // Pass 2: Register each variant constructor function returning the full tag type.
+                    for (variant_name, payload_tys) in tag_info {
                         let ctor_type = if payload_tys.is_empty() {
-                            // Nullary constructor: bare tag value
                             PolyType::poly(
                                 param_vars.clone(),
                                 MonoType::Tag {
                                     name: SmolStr::from(*name),
-                                    payload: Rc::from([]),
+                                    payload: Rc::from(combined.clone()),
                                 },
                             )
                         } else {
-                            // Constructor with payload: (T1, T2, ...) -> TagType
                             PolyType::poly(
                                 param_vars.clone(),
                                 MonoType::Func {
                                     params: Rc::from(payload_tys.clone()),
                                     ret: Rc::new(MonoType::Tag {
                                         name: SmolStr::from(*name),
-                                        payload: Rc::from(payload_tys.clone()),
+                                        payload: Rc::from(combined.clone()),
                                     }),
                                 },
                             )
                         };
-                        env.insert(variant.name, ctor_type);
-                        tag_info.push((SmolStr::from(variant.name), payload_tys));
+                        env.insert(variant_name.as_str(), ctor_type);
                     }
 
-                    let combined: Vec<MonoType> =
-                        tag_info.iter().flat_map(|(_, ptys)| ptys.clone()).collect();
-                    env.tag_variants.insert(SmolStr::from(*name), tag_info);
-
-                    let poly = PolyType::poly(
-                        param_vars,
-                        MonoType::Tag {
-                            name: SmolStr::from(*name),
-                            payload: Rc::from(combined),
-                        },
-                    );
-                    env.insert(*name, poly.clone());
                     type_map.insert(decl.id(), poly.body.clone());
                     Ok(poly)
                 }

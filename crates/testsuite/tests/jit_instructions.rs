@@ -976,10 +976,13 @@ fn jit_call_indirect_simple() {
     add_function(
         &mut module,
         "helper",
-        vec![(SmolStr::new("x"), IrType::I32)],
+        vec![
+            (SmolStr::new("closure_env"), IrType::I64),
+            (SmolStr::new("x"), IrType::I32),
+        ],
         IrType::I32,
         |func, entry| {
-            let x = ValueId(0); // first param has ValueId 0
+            let x = ValueId(1); // first explicit param after closure_env has ValueId 1
             let one = push_inst(func, entry, Instruction::ConstI32(1));
             let sum = push_inst(func, entry, Instruction::Add(x, one));
             entry.terminator = Terminator::Return(sum);
@@ -1023,13 +1026,18 @@ fn jit_call_indirect_with_capture() {
         &mut module,
         "helper",
         vec![
-            (SmolStr::new("cap"), IrType::I32),
+            (SmolStr::new("closure_env"), IrType::I64),
             (SmolStr::new("x"), IrType::I32),
         ],
         IrType::I32,
         |func, entry| {
-            let cap = ValueId(0);
+            let env = ValueId(0);
             let x = ValueId(1);
+            let cap = push_inst(func, entry, Instruction::ClosureGet {
+                env,
+                offset: 16,
+                ty: IrType::I32,
+            });
             let sum = push_inst(func, entry, Instruction::Add(x, cap));
             entry.terminator = Terminator::Return(sum);
             sum
@@ -1073,15 +1081,23 @@ fn jit_call_indirect_two_captures() {
         &mut module,
         "helper",
         vec![
-            (SmolStr::new("a"), IrType::I32),
-            (SmolStr::new("b"), IrType::I32),
+            (SmolStr::new("closure_env"), IrType::I64),
             (SmolStr::new("x"), IrType::I32),
         ],
         IrType::I32,
         |func, entry| {
-            let a = ValueId(0);
-            let b = ValueId(1);
-            let x = ValueId(2);
+            let env = ValueId(0);
+            let x = ValueId(1);
+            let a = push_inst(func, entry, Instruction::ClosureGet {
+                env,
+                offset: 16,
+                ty: IrType::I32,
+            });
+            let b = push_inst(func, entry, Instruction::ClosureGet {
+                env,
+                offset: 24,
+                ty: IrType::I32,
+            });
             let bx = push_inst(func, entry, Instruction::Mul(b, x));
             let sum = push_inst(func, entry, Instruction::Add(a, bx));
             entry.terminator = Terminator::Return(sum);

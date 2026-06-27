@@ -12,13 +12,13 @@ type Expr =
   | Neg(Expr)
 
 // -- Evaluation --
-let eval = (expr) => match expr {
+let eval: (Expr) -> Result<f64, str> = (expr) => match expr {
     Num(v)           => Ok(v)
-    Neg(val)         => eval(val).flatMap((v) => Ok(-v))
-    Add(left, right) => eval(left).flatMap((l) => eval(right).flatMap((r) => Ok(l + r)))
-    Sub(left, right) => eval(left).flatMap((l) => eval(right).flatMap((r) => Ok(l - r)))
-    Mul(left, right) => eval(left).flatMap((l) => eval(right).flatMap((r) => Ok(l * r)))
-    Div(left, right) => eval(left).flatMap((l) => eval(right).flatMap((r) =>
+    Neg(val)         => eval(val).flat_map((v) => Ok(-v))
+    Add(left, right) => eval(left).flat_map((l) => eval(right).flat_map((r) => Ok(l + r)))
+    Sub(left, right) => eval(left).flat_map((l) => eval(right).flat_map((r) => Ok(l - r)))
+    Mul(left, right) => eval(left).flat_map((l) => eval(right).flat_map((r) => Ok(l * r)))
+    Div(left, right) => eval(left).flat_map((l) => eval(right).flat_map((r) =>
         match r == 0.0 {
             true  => Err(`division by zero`)
             false => Ok(l / r)

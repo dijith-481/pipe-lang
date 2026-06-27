@@ -40,18 +40,31 @@ pub fn typecheck<'a>(ast: &'a Program<'a>) -> Result<TypedProgram<'a>, Vec<TypeE
     let mut env = TypeEnv::new();
     env.load_prelude();
 
-    // Forward-declare all top-level functions so recursive calls work.
-    // For each `let f = (params) => body`, insert `f` into the env with a
-    // partial function type built from parameter annotations (or fresh vars).
-    // The main inference pass then resolves everything through unification.
-    forward_declare_top_level(&mut env, ast);
-
     let mut errors = Vec::new();
     let mut type_map = HashMap::new();
 
+    // 1. Process all TypeAlias declarations first so they are available for function annotations.
     for decl in &ast.decls {
-        if let Err(e) = infer::infer_decl_with_map(&mut env, decl, &mut type_map) {
-            errors.push(e);
+        if let Decl::TypeAlias { .. } = decl {
+            if let Err(e) = infer::infer_decl_with_map(&mut env, decl, &mut type_map) {
+                errors.push(e);
+            }
+        }
+    }
+
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+
+    // 2. Forward-declare all top-level functions so recursive calls work.
+    forward_declare_top_level(&mut env, ast);
+
+    // 3. Process all remaining declarations (e.g. Bind, Use).
+    for decl in &ast.decls {
+        if !matches!(decl, Decl::TypeAlias { .. }) {
+            if let Err(e) = infer::infer_decl_with_map(&mut env, decl, &mut type_map) {
+                errors.push(e);
+            }
         }
     }
 

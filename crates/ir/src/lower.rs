@@ -69,7 +69,22 @@ fn mono_to_ir_inner(
             IrType::Effect(Box::new(mono_to_ir_inner(inner, tag_variants, type_args)))
         }
         MonoType::Tag { name, payload } => {
-            if let Some(variants) = tag_variants.and_then(|tv| tv.get(name.as_str())) {
+            thread_local! {
+                static EXPANDING: std::cell::RefCell<std::collections::HashSet<SmolStr>> =
+                    std::cell::RefCell::new(std::collections::HashSet::new());
+            }
+
+            let is_expanding = EXPANDING.with(|cell| cell.borrow().contains(name));
+            if is_expanding {
+                return IrType::Tag(TagType {
+                    name: name.clone(),
+                    variants: vec![],
+                });
+            }
+
+            EXPANDING.with(|cell| cell.borrow_mut().insert(name.clone()));
+
+            let res = if let Some(variants) = tag_variants.and_then(|tv| tv.get(name.as_str())) {
                 // Use the combined payload from tag_variants (which has all
                 // variant payloads flattened) instead of the MonoType payload
                 // (which only has the constructor's own payload).
@@ -125,7 +140,10 @@ fn mono_to_ir_inner(
                             .collect(),
                     }],
                 })
-            }
+            };
+
+            EXPANDING.with(|cell| cell.borrow_mut().remove(name));
+            res
         }
         MonoType::Var(id) | MonoType::IntVar(id) | MonoType::FloatVar(id) => {
             if let Some(concrete) = type_args.get(id) {
@@ -784,7 +802,10 @@ fn lower_expr<'src>(
                     .func
                     .blocks
                     .iter()
-                    .position(|b| b.instructions.iter().any(|(vid, _)| *vid == Some(subj_v)))
+                    .position(|b| {
+                        b.instructions.iter().any(|(vid, _)| *vid == Some(subj_v))
+                            || b.params.iter().any(|(vid, _)| *vid == subj_v)
+                    })
                     .unwrap_or(0);
                 fb.current_block = subject_block_idx;
                 let disc_v = fb.emit(Instruction::TagDiscriminant(subj_v));
@@ -854,7 +875,10 @@ fn lower_expr<'src>(
                     .func
                     .blocks
                     .iter()
-                    .position(|b| b.instructions.iter().any(|(vid, _)| *vid == Some(subj_v)))
+                    .position(|b| {
+                        b.instructions.iter().any(|(vid, _)| *vid == Some(subj_v))
+                            || b.params.iter().any(|(vid, _)| *vid == subj_v)
+                    })
                     .unwrap_or(0);
                 fb.current_block = subject_block_idx;
                 fb.set_terminator(Terminator::Jump {
@@ -926,7 +950,7 @@ fn lower_expr<'src>(
         Expr::FieldAccess { object, field, .. } => {
             let obj_v = lower_expr(fb, object, hoisted, ctx)?;
             // Compute the field index from the object's inferred record type.
-            let field_index = field_index_of(fb, object, field);
+            let field_index = field_index_of(fb, obj_v, object, field);
             let fv = fb.emit(Instruction::RecordGet {
                 record: obj_v,
                 field: (*field).into(),
@@ -1295,7 +1319,14 @@ fn find_tag_constructor<'a>(
 }
 
 /// Returns the field index of `field` in the record type of `object`.
-fn field_index_of(fb: &FunctionBuilder<'_>, object: &Expr<'_>, field: &str) -> u32 {
+fn field_index_of(fb: &FunctionBuilder<'_>, obj_v: ValueId, object: &Expr<'_>, field: &str) -> u32 {
+    if let Some(IrType::Record(rt)) = fb.value_types.get(&obj_v) {
+        return rt
+            .fields
+            .iter()
+            .position(|(k, _)| k.as_str() == field)
+            .unwrap_or(0) as u32;
+    }
     if let Some(obj_v) = resolve_ident_value_id(fb, object)
         && let Some(IrType::Record(rt)) = fb.value_types.get(&obj_v)
     {

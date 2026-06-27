@@ -763,6 +763,52 @@ impl TypeEnv {
                 },
             ),
         );
+        // Bare alias: unwrapOr(Option<a>, a) -> a
+        let uo_camel_a = self.fresh_var();
+        self.insert(
+            "unwrapOr",
+            PolyType::poly(
+                vec![uo_camel_a],
+                MonoType::Func {
+                    params: Rc::from([
+                        MonoType::Tag {
+                            name: "Option".into(),
+                            payload: Rc::from([MonoType::Var(uo_camel_a)]),
+                        },
+                        MonoType::Var(uo_camel_a),
+                    ]),
+                    ret: Rc::new(MonoType::Var(uo_camel_a)),
+                },
+            ),
+        );
+        // Bare alias: flatMap(Option<a>, (a) -> Option<b>) -> Option<b>
+        let fm_a = self.fresh_var();
+        let fm_b = self.fresh_var();
+        self.insert(
+            "flatMap",
+            PolyType::poly(
+                vec![fm_a, fm_b],
+                MonoType::Func {
+                    params: Rc::from([
+                        MonoType::Tag {
+                            name: "Option".into(),
+                            payload: Rc::from([MonoType::Var(fm_a)]),
+                        },
+                        MonoType::Func {
+                            params: Rc::from([MonoType::Var(fm_a)]),
+                            ret: Rc::new(MonoType::Tag {
+                                name: "Option".into(),
+                                payload: Rc::from([MonoType::Var(fm_b)]),
+                            }),
+                        },
+                    ]),
+                    ret: Rc::new(MonoType::Tag {
+                        name: "Option".into(),
+                        payload: Rc::from([MonoType::Var(fm_b)]),
+                    }),
+                },
+            ),
+        );
         // Option.unwrap_or : <a>(Option<a>, a) -> a (snake_case alias)
         let uo3_a = self.fresh_var();
         self.insert(

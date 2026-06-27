@@ -552,7 +552,14 @@ fn compile_function_body(
     // type inference and codegen can resolve call return types.
     let mut fn_return_types: HashMap<String, IrType> = HashMap::new();
     for (name, (_, ret_ty)) in params.name_to_func.iter() {
-        fn_return_types.insert(name.clone(), ret_ty.clone());
+        let param_tys = params.fn_param_types.get(name).cloned().unwrap_or_default();
+        fn_return_types.insert(
+            name.clone(),
+            IrType::Func(ir::FuncType {
+                params: param_tys,
+                ret: Box::new(ret_ty.clone()),
+            }),
+        );
     }
 
     // The ABI entry block unpacks function parameters, then jumps into
@@ -1457,12 +1464,17 @@ fn compile_call_named(
 
     // Try local function first.
     if let Some(func_ref) = ctx.callee_funcs.get(callee_name).copied() {
-        let ret_type = ctx.fn_return_types.get(callee_name).ok_or_else(|| {
+        let full_type = ctx.fn_return_types.get(callee_name).ok_or_else(|| {
             JitError::UnimplementedInstruction {
                 instruction: format!("CallNamed: no return type for {callee_name}"),
                 function: ctx.func_name.to_string(),
             }
         })?;
+        let ret_type = match full_type {
+            IrType::Func(ft) => &ft.ret,
+            IrType::Closure(ft) => &ft.ret,
+            ty => ty,
+        };
 
         let total_size: u32 = (data.args.len() as u32 + 1).max(1) * 8;
 
@@ -1749,6 +1761,10 @@ fn widen_to_i64(
     ty: &IrType,
     _func_name: &str,
 ) -> Result<Value, JitError> {
+    let val_type = builder.func.dfg.value_type(val);
+    if val_type == types::I64 {
+        return Ok(val);
+    }
     match ty {
         IrType::I8 => Ok(builder.ins().sextend(types::I64, val)),
         IrType::I16 => Ok(builder.ins().sextend(types::I64, val)),
@@ -1829,6 +1845,29 @@ fn compile_make_closure(
     let mut offset: i32 = 16;
     for capture_id in data.captures.iter() {
         let capture_val = lookup_value(values, *capture_id, ctx.func_name)?;
+        let ty = lookup_type(ctx.value_types, *capture_id, ctx.func_name)?;
+        if is_heap_type(ty) {
+            let args_slot =
+                builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 0));
+            let args_buf = builder.ins().stack_addr(types::I64, args_slot, 0);
+
+            let val_i64 = if builder.func.dfg.value_type(capture_val) == types::I64 {
+                capture_val
+            } else {
+                builder.ins().uextend(types::I64, capture_val)
+            };
+            builder
+                .ins()
+                .store(MemFlags::trusted(), val_i64, args_buf, 0);
+
+            let ret_slot =
+                builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 0));
+            let ret_buf = builder.ins().stack_addr(types::I64, ret_slot, 0);
+
+            builder
+                .ins()
+                .call_indirect(ctx.retain_sig, ctx.retain_fn_ptr, &[args_buf, ret_buf]);
+        }
         builder
             .ins()
             .store(MemFlags::trusted(), capture_val, content_buf, offset);
@@ -1938,7 +1977,7 @@ fn compile_call_indirect(
         .load(types::I64, MemFlags::trusted(), closure_val, 0);
 
     // Compute total args buffer size: closure_env (1 slot) + call args.
-    let args_buf_size = ((1 + call_arg_types.len()) * 8).max(1) as u32;
+    let args_buf_size = ((1 + call_arg_count) * 8).max(1) as u32;
     let arg_slot = builder.create_sized_stack_slot(StackSlotData::new(
         StackSlotKind::ExplicitSlot,
         args_buf_size,
@@ -1995,8 +2034,16 @@ fn compile_tail_call(
     values: &HashMap<ValueId, Value>,
 ) -> Result<(), JitError> {
     let closure_val = lookup_value(values, callee, ctx.func_name)?;
-    let _closure_type = lookup_type(ctx.value_types, callee, ctx.func_name)?;
-
+    let closure_type = lookup_type(ctx.value_types, callee, ctx.func_name)?;
+    let _func_type = match closure_type {
+        IrType::Closure(ft) => ft.as_ref().clone(),
+        _ => {
+            return Err(JitError::UnimplementedInstruction {
+                instruction: format!("TailCall: callee is not a closure, got {closure_type}"),
+                function: ctx.func_name.to_string(),
+            });
+        }
+    };
     let fn_ptr = builder
         .ins()
         .load(types::I64, MemFlags::trusted(), closure_val, 0);
@@ -2779,9 +2826,32 @@ fn compile_comparison(
             }
         }
         _ if is_integer(ty) => {
+            let l_type = builder.func.dfg.value_type(left_value);
+            let r_type = builder.func.dfg.value_type(right_value);
+            let (l_val, r_val) = if l_type != r_type {
+                let l_bits = l_type.bytes() * 8;
+                let r_bits = r_type.bytes() * 8;
+                if l_bits < r_bits {
+                    let cast = if is_unsigned_integer(ty) {
+                        builder.ins().uextend(r_type, left_value)
+                    } else {
+                        builder.ins().sextend(r_type, left_value)
+                    };
+                    (cast, right_value)
+                } else {
+                    let cast = if is_unsigned_integer(ty) {
+                        builder.ins().uextend(l_type, right_value)
+                    } else {
+                        builder.ins().sextend(l_type, right_value)
+                    };
+                    (left_value, cast)
+                }
+            } else {
+                (left_value, right_value)
+            };
             let cmp = builder
                 .ins()
-                .icmp(int_compare_code(op, ty), left_value, right_value);
+                .icmp(int_compare_code(op, ty), l_val, r_val);
             builder.ins().bitcast(
                 types::I8,
                 MemFlags::new().with_endianness(Endianness::Little),
@@ -3060,9 +3130,14 @@ fn infer_instruction_type(
             .get(data.func_name.as_str())
             .cloned()
             .unwrap_or(IrType::Unit);
+        let ret_ty = match ret {
+            IrType::Func(ft) => *ft.ret,
+            IrType::Closure(ft) => *ft.ret,
+            ty => ty,
+        };
         return Ok(IrType::Closure(Box::new(ir::FuncType {
             params,
-            ret: Box::new(ret),
+            ret: Box::new(ret_ty),
         })));
     }
     // Override CallNamed inference for closures: use fn_actual_return_types
@@ -4056,7 +4131,7 @@ unsafe extern "C" fn pipe_rt_box_value_jit(ptr: u64, desc_ptr: u64, _desc_len: u
                         let _tag = unsafe { desc_read_u32(desc, &mut current_offset) };
                         let total_bytes =
                             unsafe { desc_read_u32(desc, &mut current_offset) } as usize;
-                        current_offset += total_bytes - 8;
+                        current_offset += total_bytes.saturating_sub(8);
                     }
                 }
 
@@ -4102,7 +4177,7 @@ unsafe extern "C" fn pipe_rt_box_value_jit(ptr: u64, desc_ptr: u64, _desc_len: u
             _ => V::Unit,
         };
 
-        *offset = start + total_bytes - 8;
+        *offset = start + total_bytes.saturating_sub(8);
         result
     }
 
@@ -4278,7 +4353,7 @@ unsafe fn unbox_rec_heap(val: crate::value::Value, desc: *const u8, offset: &mut
                         let _size = unsafe { desc_read_u32(desc, offset) };
                         let _tag = unsafe { desc_read_u32(desc, offset) };
                         let total_bytes = unsafe { desc_read_u32(desc, offset) } as usize;
-                        *offset += total_bytes - 8;
+                        *offset += total_bytes.saturating_sub(8);
                     }
                 }
             }
@@ -5965,7 +6040,7 @@ mod tests {
                 let _size = desc_read_u32(desc_ptr, &mut offset);
                 let _tag = desc_read_u32(desc_ptr, &mut offset);
                 let total_bytes = desc_read_u32(desc_ptr, &mut offset) as usize;
-                offset += total_bytes - 8; // <-- BUG: underflow when total_bytes < 8
+                offset += total_bytes.saturating_sub(8); // <-- BUG: underflow when total_bytes < 8
             }
         }));
         assert!(
@@ -5995,7 +6070,7 @@ mod tests {
                 let _size = desc_read_u32(desc_ptr, &mut offset);
                 let _tag = desc_read_u32(desc_ptr, &mut offset);
                 let total_bytes = desc_read_u32(desc_ptr, &mut offset) as usize;
-                offset += total_bytes - 8; // <-- BUG: same underflow
+                offset += total_bytes.saturating_sub(8); // <-- BUG: same underflow
             }
         }));
         assert!(
