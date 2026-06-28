@@ -1,4 +1,5 @@
 add5(10) = 15
 add10(10) = 20
-applyTwice(double, 3) = 12
+apply_twice(double, 3) = 12
+compose_fn(increment, double)(5) = 11
 doubleThenIncrement(5) = 11

@@ -192,6 +192,7 @@ pub fn compile_ir(ir_module: &IrModule) -> Result<CompiledModule, JitError> {
         data.extend_from_slice(&u64::MAX.to_ne_bytes());
         data.extend_from_slice(&len.to_ne_bytes());
         data.extend_from_slice(bytes);
+        data_desc.set_align(8);
         data_desc.define(data.into_boxed_slice());
         module.define_data(data_id, &data_desc)?;
         string_data_ids.insert(s.clone(), data_id);
