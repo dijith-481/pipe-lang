@@ -68,9 +68,12 @@ pub fn prelude_builtins() -> Vec<Arc<dyn BuiltinFunction>> {
         Arc::new(option::OptionFlatMap),
         Arc::new(option::OptionUnwrapOr),
         Arc::new(option::UnwrapOr),
+        Arc::new(option::OptionUnwrapOrPanic),
+        Arc::new(option::UnwrapOrPanic),
         // Result combinators
         Arc::new(rslt::ResultMap),
         Arc::new(rslt::ResultFlatMap),
+        Arc::new(option::ResultUnwrapOrPanic),
         // Numeric conversions
         Arc::new(numeric::ToI64),
         Arc::new(numeric::ToI32),

@@ -92,8 +92,8 @@ mod tests {
         map.insert(
             SmolStr::new("Result"),
             vec![
-                (SmolStr::new("Ok"), vec![MonoType::I32]),
                 (SmolStr::new("Err"), vec![MonoType::Str]),
+                (SmolStr::new("Ok"), vec![MonoType::I32]),
             ],
         );
         map

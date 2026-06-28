@@ -4112,7 +4112,7 @@ unsafe extern "C" fn pipe_rt_box_value_jit(ptr: u64, desc_ptr: u64, _desc_len: u
                     ret_desc,
                 }))
             }
-            17 => {
+             17 => {
                 let variant_count = unsafe { desc_read_u32(desc, offset) } as usize;
                 let disc = unsafe { std::ptr::read_unaligned(ptr as *const i32) } as u32;
 

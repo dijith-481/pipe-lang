@@ -117,7 +117,8 @@ impl TypeEnv {
             vec![res_t, res_e],
             MonoType::Tag {
                 name: "Result".into(),
-                payload: Rc::from([MonoType::Var(res_t), MonoType::Var(res_e)]),
+                // Combined payload order: [e, t] (Err, Ok) matching tag_variants
+                payload: Rc::from([MonoType::Var(res_e), MonoType::Var(res_t)]),
             },
         );
         self.insert("Result", result_type);
@@ -149,7 +150,7 @@ impl TypeEnv {
         );
         self.insert("None", none_type);
 
-        // Ok : <a, b>(a) -> Result<a, b>
+        // Ok : <t, e>(t) -> Result<t, e>
         let ok_a = self.fresh_var();
         let ok_b = self.fresh_var();
         let ok_type = PolyType::poly(
@@ -158,13 +159,14 @@ impl TypeEnv {
                 params: Rc::from([MonoType::Var(ok_a)]),
                 ret: Rc::new(MonoType::Tag {
                     name: "Result".into(),
-                    payload: Rc::from([MonoType::Var(ok_a), MonoType::Var(ok_b)]),
+                    // Combined payload order: [e, t] (Err, Ok) to match tag_variants
+                    payload: Rc::from([MonoType::Var(ok_b), MonoType::Var(ok_a)]),
                 }),
             },
         );
         self.insert("Ok", ok_type);
 
-        // Err : <a, b>(b) -> Result<a, b>
+        // Err : <t, e>(e) -> Result<t, e>
         let err_a = self.fresh_var();
         let err_b = self.fresh_var();
         let err_type = PolyType::poly(
@@ -173,7 +175,8 @@ impl TypeEnv {
                 params: Rc::from([MonoType::Var(err_b)]),
                 ret: Rc::new(MonoType::Tag {
                     name: "Result".into(),
-                    payload: Rc::from([MonoType::Var(err_a), MonoType::Var(err_b)]),
+                    // Combined payload order: [e, t] (Err, Ok) to match tag_variants
+                    payload: Rc::from([MonoType::Var(err_b), MonoType::Var(err_a)]),
                 }),
             },
         );
@@ -190,8 +193,8 @@ impl TypeEnv {
         self.tag_variants.insert(
             "Result".into(),
             vec![
-                ("Ok".into(), vec![MonoType::Var(res_t)]),
                 ("Err".into(), vec![MonoType::Var(res_e)]),
+                ("Ok".into(), vec![MonoType::Var(res_t)]),
             ],
         );
 
@@ -350,6 +353,7 @@ impl TypeEnv {
                 params: Rc::from([MonoType::Str]),
                 ret: Rc::new(MonoType::Effect(Box::new(MonoType::Tag {
                     name: "Result".into(),
+                    // Combined payload order: [e, t] = [Str, Str] — same type, order irrelevant
                     payload: Rc::from([MonoType::Str, MonoType::Str]),
                 }))),
             }),
@@ -623,7 +627,8 @@ impl TypeEnv {
                 params: Rc::from([MonoType::Str]),
                 ret: Rc::new(MonoType::Tag {
                     name: "Result".into(),
-                    payload: Rc::from([MonoType::I32, MonoType::Str]),
+                    // Combined payload order: [e, t] = [str, i32]
+                    payload: Rc::from([MonoType::Str, MonoType::I32]),
                 }),
             }),
         );
@@ -634,7 +639,8 @@ impl TypeEnv {
                 params: Rc::from([MonoType::Str]),
                 ret: Rc::new(MonoType::Tag {
                     name: "Result".into(),
-                    payload: Rc::from([MonoType::I32, MonoType::Str]),
+                    // Combined payload order: [e, t] = [str, i32]
+                    payload: Rc::from([MonoType::Str, MonoType::I32]),
                 }),
             }),
         );
@@ -844,7 +850,7 @@ impl TypeEnv {
                     params: Rc::from([
                         MonoType::Tag {
                             name: "Result".into(),
-                            payload: Rc::from([MonoType::Var(rm_t), MonoType::Var(rm_e)]),
+                            payload: Rc::from([MonoType::Var(rm_e), MonoType::Var(rm_t)]),
                         },
                         MonoType::Func {
                             params: Rc::from([MonoType::Var(rm_t)]),
@@ -853,7 +859,7 @@ impl TypeEnv {
                     ]),
                     ret: Rc::new(MonoType::Tag {
                         name: "Result".into(),
-                        payload: Rc::from([MonoType::Var(rm_u), MonoType::Var(rm_e)]),
+                        payload: Rc::from([MonoType::Var(rm_e), MonoType::Var(rm_u)]),
                     }),
                 },
             ),
@@ -871,19 +877,19 @@ impl TypeEnv {
                     params: Rc::from([
                         MonoType::Tag {
                             name: "Result".into(),
-                            payload: Rc::from([MonoType::Var(rfm_t), MonoType::Var(rfm_e)]),
+                            payload: Rc::from([MonoType::Var(rfm_e), MonoType::Var(rfm_t)]),
                         },
                         MonoType::Func {
                             params: Rc::from([MonoType::Var(rfm_t)]),
                             ret: Rc::new(MonoType::Tag {
                                 name: "Result".into(),
-                                payload: Rc::from([MonoType::Var(rfm_u), MonoType::Var(rfm_e)]),
+                                payload: Rc::from([MonoType::Var(rfm_e), MonoType::Var(rfm_u)]),
                             }),
                         },
                     ]),
                     ret: Rc::new(MonoType::Tag {
                         name: "Result".into(),
-                        payload: Rc::from([MonoType::Var(rfm_u), MonoType::Var(rfm_e)]),
+                        payload: Rc::from([MonoType::Var(rfm_e), MonoType::Var(rfm_u)]),
                     }),
                 },
             ),
@@ -901,19 +907,19 @@ impl TypeEnv {
                     params: Rc::from([
                         MonoType::Tag {
                             name: "Result".into(),
-                            payload: Rc::from([MonoType::Var(rfm2_t), MonoType::Var(rfm2_e)]),
+                            payload: Rc::from([MonoType::Var(rfm2_e), MonoType::Var(rfm2_t)]),
                         },
                         MonoType::Func {
                             params: Rc::from([MonoType::Var(rfm2_t)]),
                             ret: Rc::new(MonoType::Tag {
                                 name: "Result".into(),
-                                payload: Rc::from([MonoType::Var(rfm2_u), MonoType::Var(rfm2_e)]),
+                                payload: Rc::from([MonoType::Var(rfm2_e), MonoType::Var(rfm2_u)]),
                             }),
                         },
                     ]),
                     ret: Rc::new(MonoType::Tag {
                         name: "Result".into(),
-                        payload: Rc::from([MonoType::Var(rfm2_u), MonoType::Var(rfm2_e)]),
+                        payload: Rc::from([MonoType::Var(rfm2_e), MonoType::Var(rfm2_u)]),
                     }),
                 },
             ),
@@ -930,7 +936,7 @@ impl TypeEnv {
                     params: Rc::from([
                         MonoType::Tag {
                             name: "Result".into(),
-                            payload: Rc::from([MonoType::Var(ru_t), MonoType::Var(ru_e)]),
+                            payload: Rc::from([MonoType::Var(ru_e), MonoType::Var(ru_t)]),
                         },
                         MonoType::Var(ru_t),
                     ]),
@@ -949,7 +955,7 @@ impl TypeEnv {
                     params: Rc::from([
                         MonoType::Tag {
                             name: "Result".into(),
-                            payload: Rc::from([MonoType::Var(ru2_t), MonoType::Var(ru2_e)]),
+                            payload: Rc::from([MonoType::Var(ru2_e), MonoType::Var(ru2_t)]),
                         },
                         MonoType::Var(ru2_t),
                     ]),

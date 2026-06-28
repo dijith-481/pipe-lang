@@ -145,6 +145,70 @@ impl BuiltinFunction for UnwrapOr {
     }
 }
 
+// ---------------------------------------------------------------------------
+// unwrap_or_panic: unwrap Option or Result, panic on None/Err
+// ---------------------------------------------------------------------------
+
+/// `Option.unwrap_or_panic(option)` — returns the payload if Some, panics if None.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct OptionUnwrapOrPanic;
+
+impl BuiltinFunction for OptionUnwrapOrPanic {
+    fn name(&self) -> &str {
+        "Option.unwrap_or_panic"
+    }
+
+    fn arity(&self) -> usize {
+        1
+    }
+
+    fn execute(&self, args: &[Value]) -> Result<Value, String> {
+        expect_arity(self.name(), args, self.arity())?;
+        match &args[0] {
+            Value::Tag { tag: 0, .. } => Err("unwrap_or_panic called on None".to_owned()),
+            Value::Tag { tag: 1, payload } if !payload.is_empty() => Ok(payload[0].clone()),
+            Value::Tag { tag: 1, .. } => Err("unwrap_or_panic called on Some with no payload".to_owned()),
+            other => Err(format!("`{}` expected Option or Result, got {other:?}", self.name())),
+        }
+    }
+}
+
+/// `unwrap_or_panic(value)` — bare alias for Option.unwrap_or_panic.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct UnwrapOrPanic;
+
+impl BuiltinFunction for UnwrapOrPanic {
+    fn name(&self) -> &str {
+        "unwrap_or_panic"
+    }
+
+    fn arity(&self) -> usize {
+        1
+    }
+
+    fn execute(&self, args: &[Value]) -> Result<Value, String> {
+        OptionUnwrapOrPanic.execute(args)
+    }
+}
+
+/// `Result.unwrap_or_panic(result)` — returns the payload if Ok, panics if Err.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ResultUnwrapOrPanic;
+
+impl BuiltinFunction for ResultUnwrapOrPanic {
+    fn name(&self) -> &str {
+        "Result.unwrap_or_panic"
+    }
+
+    fn arity(&self) -> usize {
+        1
+    }
+
+    fn execute(&self, args: &[Value]) -> Result<Value, String> {
+        OptionUnwrapOrPanic.execute(args)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
