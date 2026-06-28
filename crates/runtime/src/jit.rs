@@ -4085,8 +4085,7 @@ unsafe extern "C" fn pipe_rt_box_value_jit(ptr: u64, desc_ptr: u64, _desc_len: u
                         let mut temp_offset = p_desc_start + 4;
                         captures.push(unsafe { box_rec(actual_ptr, desc, &mut temp_offset) });
                         cap_ptr = unsafe { cap_ptr.add(8) }; // Each capture uses an 8-byte slot
-                    } else if i > capture_count {
-                        // True call params: skip closure_env at i==capture_count
+                    } else {
                         call_param_descs.push(p_desc);
                     }
                 }
