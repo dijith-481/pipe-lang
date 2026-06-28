@@ -117,8 +117,8 @@ impl TypeEnv {
             vec![res_t, res_e],
             MonoType::Tag {
                 name: "Result".into(),
-                // Combined payload order: [e, t] (Err, Ok) matching tag_variants
-                payload: Rc::from([MonoType::Var(res_e), MonoType::Var(res_t)]),
+                // Payload order: [t, e] = [Ok, Err] matching type param order
+                payload: Rc::from([MonoType::Var(res_t), MonoType::Var(res_e)]),
             },
         );
         self.insert("Result", result_type);
@@ -159,8 +159,8 @@ impl TypeEnv {
                 params: Rc::from([MonoType::Var(ok_a)]),
                 ret: Rc::new(MonoType::Tag {
                     name: "Result".into(),
-                    // Combined payload order: [e, t] (Err, Ok) to match tag_variants
-                    payload: Rc::from([MonoType::Var(ok_b), MonoType::Var(ok_a)]),
+                    // Payload order: [t, e] = [Ok, Err]
+                    payload: Rc::from([MonoType::Var(ok_a), MonoType::Var(ok_b)]),
                 }),
             },
         );
@@ -175,8 +175,10 @@ impl TypeEnv {
                 params: Rc::from([MonoType::Var(err_b)]),
                 ret: Rc::new(MonoType::Tag {
                     name: "Result".into(),
-                    // Combined payload order: [e, t] (Err, Ok) to match tag_variants
-                    payload: Rc::from([MonoType::Var(err_b), MonoType::Var(err_a)]),
+                    // Payload order: [t, e] = [Ok, Err] — Err variant payload is [e]
+                    // which occupies position 1 in the combined payload [t, e].
+                    // The tag_variants flattening handles the reordering automatically.
+                    payload: Rc::from([MonoType::Var(err_a), MonoType::Var(err_b)]),
                 }),
             },
         );
@@ -193,8 +195,8 @@ impl TypeEnv {
         self.tag_variants.insert(
             "Result".into(),
             vec![
-                ("Err".into(), vec![MonoType::Var(res_e)]),
                 ("Ok".into(), vec![MonoType::Var(res_t)]),
+                ("Err".into(), vec![MonoType::Var(res_e)]),
             ],
         );
 

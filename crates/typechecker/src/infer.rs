@@ -371,12 +371,12 @@ fn bind_pattern<'a>(
                     MonoType::Func { params, ret } => {
                         // Constructor takes params and returns parent type.
                         // Bind each pattern field to the corresponding param type.
-                        for (field_pat, param_ty) in fields.iter().zip(params.iter()) {
-                            let field_ty = bind_pattern(env, sub, field_pat)?;
-                            let param_applied = sub.apply(param_ty);
-                            let field_applied = sub.apply(&field_ty);
-                            unify(sub, &param_applied, &field_applied)?;
-                        }
+                for (field_pat, param_ty) in fields.iter().zip(params.iter()) {
+                    let field_ty = bind_pattern(env, sub, field_pat)?;
+                    let param_applied = sub.apply(param_ty);
+                    let field_applied = sub.apply(&field_ty);
+                    unify(sub, &param_applied, &field_applied)?;
+                }
                         Ok(ret.as_ref().clone())
                     }
                     MonoType::Tag { .. } => {

@@ -1388,7 +1388,10 @@ fn compile_instruction(
             compile_tag_discriminant(builder, ctx, *value_id, values)?
         }
 
-        ir::Instruction::TagGet(data) => compile_tag_get(builder, ctx, data, values)?,
+        ir::Instruction::TagGet(data) => {
+            tracing::warn!("TagGet MATCHED in instruction switch!");
+            compile_tag_get(builder, ctx, data, values)?
+        }
 
         ir::Instruction::RecordAlloc(data) => compile_record_alloc(builder, ctx, data, values)?,
 

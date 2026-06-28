@@ -1458,6 +1458,10 @@ fn lower_pattern<'src>(
         Pattern::Constructor { name, fields, .. } => {
             let disc = subj_tag_discriminant(fb, scrutinee, name);
             for (i, p) in fields.iter().enumerate() {
+                // Skip wildcard patterns — no TagGet needed
+                if matches!(p, Pattern::Wildcard(..)) {
+                    continue;
+                }
                 let fv = fb.emit(Instruction::TagGet(Box::new(TagGetData {
                     value: scrutinee,
                     index: i as u32,
@@ -1523,6 +1527,9 @@ fn bind_pattern_local<'src>(fb: &mut FunctionBuilder<'_>, pat: &Pattern<'src>, v
         Pattern::Constructor { name, fields, .. } => {
             let disc = subj_tag_discriminant(fb, v, name);
             for (i, p) in fields.iter().enumerate() {
+                if matches!(p, Pattern::Wildcard(..)) {
+                    continue;
+                }
                 let fv = fb.emit(Instruction::TagGet(Box::new(TagGetData {
                     value: v,
                     index: i as u32,

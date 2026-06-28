@@ -1,6 +1,6 @@
 // Expression Evaluator
 //
-// Demonstrates: ADTs, flat_map for error propagation
+// Demonstrates: ADTs, recursion, pattern matching
 
 type Expr =
   | Num(f64)
@@ -10,15 +10,14 @@ type Expr =
   | Div(Expr, Expr)
   | Neg(Expr)
 
-// Use if/else instead of match on Bool (pre-existing JIT bug)
-// Use flat_map instead of direct match on Result (avoids TagGet issue in recursive funcs)
+// Use Err(e) to preserve the error value, NOT x => x which causes type issues
 let eval: (Expr) -> Result<f64, str> = (expr) => match expr {
     Num(v) => Ok(v)
-    Neg(val) => eval(val).flat_map((v) => Ok(-v))
-    Add(l, r) => eval(l).flat_map((lv) => eval(r).flat_map((rv) => Ok(lv + rv)))
-    Sub(l, r) => eval(l).flat_map((lv) => eval(r).flat_map((rv) => Ok(lv - rv)))
-    Mul(l, r) => eval(l).flat_map((lv) => eval(r).flat_map((rv) => Ok(lv * rv)))
-    Div(l, r) => eval(l).flat_map((lv) => eval(r).flat_map((rv) => if rv == 0.0 { Err(`division by zero`) } else { Ok(lv / rv) }))
+    Neg(val) => { let r = eval(val); match r { Ok(v) => Ok(-v) Err(e) => Err(e) } }
+    Add(l, r) => { let lr = eval(l); match lr { Ok(lv) => { let rr = eval(r); match rr { Ok(rv) => Ok(lv + rv) Err(e) => Err(e) } } Err(e) => Err(e) } }
+    Sub(l, r) => { let lr = eval(l); match lr { Ok(lv) => { let rr = eval(r); match rr { Ok(rv) => Ok(lv - rv) Err(e) => Err(e) } } Err(e) => Err(e) } }
+    Mul(l, r) => { let lr = eval(l); match lr { Ok(lv) => { let rr = eval(r); match rr { Ok(rv) => Ok(lv * rv) Err(e) => Err(e) } } Err(e) => Err(e) } }
+    Div(l, r) => { let lr = eval(l); match lr { Ok(lv) => { let rr = eval(r); match rr { Ok(rv) => if rv == 0.0 { Err(`division by zero`) } else { Ok(lv / rv) } Err(e) => Err(e) } } Err(e) => Err(e) } }
 }
 
 let expr_to_str = (expr) => match expr { Num(v) => to_str(v) Add(l,r) => `(${expr_to_str(l)} + ${expr_to_str(r)})` Sub(l,r) => `(${expr_to_str(l)} - ${expr_to_str(r)})` Mul(l,r) => `(${expr_to_str(l)} * ${expr_to_str(r)})` Div(l,r) => `(${expr_to_str(l)} / ${expr_to_str(r)})` Neg(val) => `(-${expr_to_str(val)})` }
