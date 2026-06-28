@@ -4049,8 +4049,10 @@ unsafe extern "C" fn pipe_rt_box_value_jit(ptr: u64, desc_ptr: u64, _desc_len: u
                 let func_addr = unsafe { std::ptr::read_unaligned(ptr as *const u64) } as usize;
                 let capture_count =
                     unsafe { std::ptr::read_unaligned(ptr.add(8) as *const u64) } as usize;
-                // total_param_count is capture_count + call_param_count
-                let arity = total_param_count.saturating_sub(capture_count);
+                let call_param_count = total_param_count.saturating_sub(capture_count);
+                // The first non-capture param is ALWAYS `closure_env: I64`
+                // added by the lowerer. Subtract it to get the true arity.
+                let arity = call_param_count.saturating_sub(1);
 
                 let mut captures = Vec::with_capacity(capture_count);
                 let mut call_param_descs = Vec::with_capacity(arity);
@@ -4082,7 +4084,8 @@ unsafe extern "C" fn pipe_rt_box_value_jit(ptr: u64, desc_ptr: u64, _desc_len: u
                         let mut temp_offset = p_desc_start + 4;
                         captures.push(unsafe { box_rec(actual_ptr, desc, &mut temp_offset) });
                         cap_ptr = unsafe { cap_ptr.add(8) }; // Each capture uses an 8-byte slot
-                    } else {
+                    } else if i > capture_count {
+                        // True call params: skip closure_env at i==capture_count
                         call_param_descs.push(p_desc);
                     }
                 }
@@ -4204,11 +4207,64 @@ unsafe extern "C" fn pipe_rt_unbox_value_jit(ptr: u64, desc_ptr: u64, _desc_len:
     if ptr == 0 {
         return 0;
     }
+    use crate::value::FuncPtr as VFuncPtr;
     use crate::value::Value as V;
     let box_val = unsafe { *Box::from_raw(ptr as *mut V) };
+
+    // Detect builtin closures and extract metadata BEFORE unboxing,
+    // since the original Value will be consumed by unbox_rec_heap.
+    let builtin_info = if let V::Closure(c) = &box_val {
+        if matches!(c.func, VFuncPtr::Builtin(_)) {
+            let desc = desc_ptr as *const u8;
+            let mut offset = 0usize;
+            let _tag = unsafe { desc_read_u32(desc, &mut offset) };
+            let _total_bytes = unsafe { desc_read_u32(desc, &mut offset) } as usize;
+            let total_param_count = unsafe { desc_read_u32(desc, &mut offset) } as usize;
+            let capture_count = c.captures.len();
+
+            let mut call_param_descs = Vec::new();
+            for i in 0..total_param_count {
+                let p_start = offset;
+                let _p_size = unsafe { desc_read_u32(desc, &mut offset) } as usize;
+                let _p_tag = unsafe { desc_read_u32(desc, &mut offset) };
+                let p_total = unsafe { desc_read_u32(desc, &mut offset) } as usize;
+                offset = p_start + 4 + p_total;
+                if i >= capture_count {
+                    let bytes = unsafe {
+                        std::slice::from_raw_parts(desc.add(p_start + 4), p_total)
+                    };
+                    call_param_descs.push(bytes.to_vec());
+                }
+            }
+            let r_start = offset;
+            let _r_tag = unsafe { desc_read_u32(desc, &mut offset) };
+            let r_total = unsafe { desc_read_u32(desc, &mut offset) } as usize;
+            let ret_desc = unsafe {
+                std::slice::from_raw_parts(desc.add(r_start), r_total)
+            }.to_vec();
+
+            Some(BuiltinClosureInfo {
+                closure_data: std::sync::Arc::clone(c),
+                call_param_descs,
+                ret_desc,
+            })
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     let desc = desc_ptr as *const u8;
     let mut offset = 0usize;
-    unsafe { unbox_rec_heap(box_val, desc, &mut offset) }
+    let result = unsafe { unbox_rec_heap(box_val, desc, &mut offset) };
+
+    // Register builtin closure metadata keyed by buffer address
+    if let Some(info) = builtin_info {
+        register_builtin_closure(result, info);
+    }
+
+    result
 }
 
 unsafe fn unbox_rec_heap(val: crate::value::Value, desc: *const u8, offset: &mut usize) -> u64 {
@@ -4282,45 +4338,77 @@ unsafe fn unbox_rec_heap(val: crate::value::Value, desc: *const u8, offset: &mut
         16 => {
             // Closure
             let total_param_count = unsafe { desc_read_u32(desc, offset) } as usize;
-            let (func_addr, captures) = match val {
+            let (func_addr, captures, is_builtin) = match val {
                 crate::value::Value::Closure(c) => {
-                    let addr = match c.func {
-                        crate::value::FuncPtr::Jit { address, .. } => address,
-                        crate::value::FuncPtr::Builtin(_) => 0,
+                    let (addr, is_b) = match c.func {
+                        crate::value::FuncPtr::Jit { address, .. } => (address, false),
+                        crate::value::FuncPtr::Builtin(_) => (0, true),
                     };
-                    (addr, c.captures.to_vec())
+                    (addr, c.captures.to_vec(), is_b)
                 }
-                _ => (0, Vec::new()),
+                _ => (0, Vec::new(), false),
             };
 
-            let capture_count = captures.len();
+            if is_builtin {
+                // Builtin closures are handled by pipe_rt_unbox_value_jit
+                // which registers metadata in the global table BEFORE
+                // calling unbox_rec_heap. Here we only need to create a
+                // standard JIT buffer with capture_count=0.
+                //
+                // Buffer: [trampoline_addr(8)][capture_count=0(8)] = 16 bytes
+                let trampoline_addr =
+                    pipe_rt_trampoline_dispatch_builtin as *const () as u64;
+                let mut buf = Vec::with_capacity(16);
+                buf.extend_from_slice(&trampoline_addr.to_le_bytes());
+                buf.extend_from_slice(&0u64.to_le_bytes()); // capture_count = 0
 
-            let mut buf = Vec::with_capacity(16);
-            buf.extend_from_slice(&(func_addr as u64).to_le_bytes());
-            buf.extend_from_slice(&(capture_count as u64).to_le_bytes());
-
-            for i in 0..total_param_count {
-                if i < capture_count {
-                    let cap_val = captures
-                        .get(i)
-                        .cloned()
-                        .unwrap_or(crate::value::Value::Unit);
-                    let cap_bytes = unsafe { unbox_rec_inline(cap_val, desc, offset) };
-                    buf.extend_from_slice(&cap_bytes);
-                } else {
-                    // Skip the type descriptor for explicit call arguments
-                    let _tag = unsafe { desc_read_u32(desc, offset) };
-                    let total_bytes = unsafe { desc_read_u32(desc, offset) } as usize;
-                    *offset += total_bytes.saturating_sub(8);
+                // Skip the type descriptor params and ret_desc
+                for _ in 0..total_param_count {
+                    let p_start = *offset;
+                    let _p_size = unsafe { desc_read_u32(desc, offset) } as usize;
+                    let _p_tag = unsafe { desc_read_u32(desc, offset) };
+                    let p_total = unsafe { desc_read_u32(desc, offset) } as usize;
+                    *offset = p_start + 4 + p_total;
                 }
+                let r_start = *offset;
+                let _r_tag = unsafe { desc_read_u32(desc, offset) };
+                let r_total = unsafe { desc_read_u32(desc, offset) } as usize;
+                *offset = r_start + 4 + r_total;
+
+                buf
+            } else {
+                let capture_count = captures.len();
+                let mut buf = Vec::with_capacity(16);
+                buf.extend_from_slice(&(func_addr as u64).to_le_bytes());
+                buf.extend_from_slice(&(capture_count as u64).to_le_bytes());
+
+                for i in 0..total_param_count {
+                    if i < capture_count {
+                        let cap_val = captures
+                            .get(i)
+                            .cloned()
+                            .unwrap_or(crate::value::Value::Unit);
+                        let cap_bytes = unsafe { unbox_rec_inline(cap_val, desc, offset) };
+                        buf.extend_from_slice(&cap_bytes);
+                    } else {
+                        let p_start = *offset;
+                        let _p_size = unsafe { desc_read_u32(desc, offset) } as usize;
+                        let _p_tag = unsafe { desc_read_u32(desc, offset) };
+                        let p_total = unsafe { desc_read_u32(desc, offset) } as usize;
+                        *offset = p_start + 4 + p_total;
+                    }
+                }
+
+                // Skip ret_desc
+                {
+                    let r_start = *offset;
+                    let _r_tag = unsafe { desc_read_u32(desc, offset) };
+                    let r_total = unsafe { desc_read_u32(desc, offset) } as usize;
+                    *offset = r_start + 4 + r_total;
+                }
+
+                buf
             }
-
-            // Skip ret_desc
-            let _ret_tag = unsafe { desc_read_u32(desc, offset) };
-            let ret_total_bytes = unsafe { desc_read_u32(desc, offset) } as usize;
-            *offset += ret_total_bytes.saturating_sub(8);
-
-            buf
         }
         17 => {
             // Tag
@@ -4478,6 +4566,224 @@ fn is_tag_heap_type(tag: u32) -> bool {
     matches!(tag, 11 | 13 | 14 | 15 | 16 | 17)
 }
 
+// ---------------------------------------------------------------------------
+// Builtin closure dispatch via global registry
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+struct BuiltinClosureInfo {
+    closure_data: std::sync::Arc<crate::value::ClosureData>,
+    call_param_descs: Vec<Vec<u8>>,
+    ret_desc: Vec<u8>,
+}
+
+static BUILTIN_CLOSURES: std::sync::RwLock<Option<std::collections::HashMap<u64, BuiltinClosureInfo>>> =
+    std::sync::RwLock::new(None);
+
+fn register_builtin_closure(ptr: u64, info: BuiltinClosureInfo) {
+    if let Ok(mut guard) = BUILTIN_CLOSURES.write() {
+        let map = guard.get_or_insert_with(Default::default);
+        map.insert(ptr, info);
+    }
+}
+
+fn unregister_builtin_closure(ptr: u64) -> Option<BuiltinClosureInfo> {
+    BUILTIN_CLOSURES.write().ok().and_then(|mut guard| {
+        guard.as_mut().and_then(|map| map.remove(&ptr))
+    })
+}
+
+fn lookup_builtin_closure(ptr: u64) -> Option<BuiltinClosureInfo> {
+    BUILTIN_CLOSURES.read().ok().and_then(|guard| {
+        guard.as_ref().and_then(|map| map.get(&ptr).cloned())
+    })
+}
+
+/// Trampoline for calling a builtin closure from JIT-land.
+///
+/// The JIT's `compile_call_indirect` loads the function pointer from
+/// a closure buffer and calls it via `call_indirect`. For builtin
+/// closures (those with `FuncPtr::Builtin`), there is no native
+/// function pointer. This trampoline is stored as the function pointer
+/// instead, and the closure buffer contains the `Arc<ClosureData>`
+/// plus type descriptors needed to decode call arguments and encode
+/// the return value.
+///
+/// # Buffer layout (at the pointer, skipping the refcount)
+///
+/// ```text
+/// offset  0: trampoline_addr (u64) — this function's address
+/// offset  8: data_header_size (u64) — 16
+/// offset 16: closure_arc_ptr (u64)  — raw pointer from Arc::into_raw
+/// offset 24: call_param_count (u32)
+/// offset 28: ret_desc_len (u32)
+/// offset 32: ret_desc bytes (padded to 4)
+/// then call-param descriptors (each prefixed by u32 length, padded to 4)
+/// ```
+///
+/// # Safety
+///
+/// `args` and `ret` follow the pipe-lang JIT ABI.
+#[unsafe(no_mangle)]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn pipe_rt_trampoline_dispatch_builtin(
+    args: *const u8,
+    ret: *mut u8,
+) -> i32 {
+    use crate::value::{ClosureData, FuncPtr, Value};
+
+    if args.is_null() {
+        return 1;
+    }
+    let closure_env = unsafe { std::ptr::read_unaligned(args as *const u64) };
+    if closure_env < 0x1000 {
+        return 1;
+    }
+    // Look up the metadata in the global register (created by
+    // pipe_rt_unbox_value_jit when the buffer was allocated).
+    let info = match lookup_builtin_closure(closure_env) {
+        Some(info) => info,
+        None => {
+            tracing::error!("missing builtin closure registry entry");
+            return 1;
+        }
+    };
+    let closure_ref: &ClosureData = &info.closure_data;
+    let call_param_count = info.call_param_descs.len();
+    let ret_desc = &info.ret_desc;
+
+    // Decode call arguments
+    let mut values = Vec::with_capacity(call_param_count);
+    for i in 0..call_param_count {
+        let pd = &info.call_param_descs[i];
+        let arg_ptr = unsafe { args.add(8 + i * 8) };
+        let boxed = unsafe {
+            pipe_rt_box_value_jit(arg_ptr as u64, pd.as_ptr() as u64, pd.len() as u32)
+        };
+        let value: Value = if boxed != 0 {
+            unsafe { *std::boxed::Box::from_raw(boxed as *mut Value) }
+        } else {
+            Value::Unit
+        };
+        values.push(value);
+    }
+
+    // Call the builtin closure via direct reference borrow —
+    // no refcount manipulation needed.
+    let result = match &closure_ref.func {
+        FuncPtr::Builtin(function) => function.execute(&values),
+        FuncPtr::Jit { .. } => {
+            return 1;
+        }
+    };
+
+    match result {
+        Ok(value) => {
+            unsafe { encode_value_to_ret_buf(value, ret, ret_desc) };
+            0
+        }
+        Err(msg) => {
+            unsafe {
+                std::ptr::write_unaligned(ret as *mut u64, 0u64);
+                std::ptr::write_unaligned(ret.add(8) as *mut u32, 0u32);
+            }
+            tracing::error!("builtin closure dispatch failed: {msg}");
+            1
+        }
+    }
+}
+
+/// Encode a [`Value`] into the JIT return buffer format.
+///
+/// For primitives, writes the raw bytes directly. For heap types,
+/// allocates a JIT buffer via `unbox_rec_heap` and writes the pointer.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn encode_value_to_ret_buf(value: crate::value::Value, ret: *mut u8, ret_desc: &[u8]) {
+    use crate::value::Value;
+    if ret_desc.len() < 4 {
+        return;
+    }
+    let tag = u32::from_le_bytes(ret_desc[0..4].try_into().unwrap_or([0; 4]));
+
+    match tag {
+        0 | 1 => {
+            // I8/I16
+            let n = match &value {
+                Value::I32(n) => *n,
+                Value::I64(n) => *n as i32,
+                _ => 0,
+            };
+            if tag == 0 {
+                unsafe { std::ptr::write_unaligned(ret as *mut u8, n as u8) };
+            } else {
+                unsafe { std::ptr::write_unaligned(ret as *mut i16, n as i16) };
+            }
+        }
+        2 => {
+            let n = match &value {
+                Value::I32(n) => *n,
+                Value::I64(n) => *n as i32,
+                _ => 0,
+            };
+            unsafe { std::ptr::write_unaligned(ret as *mut i32, n) };
+        }
+        3 | 7 => {
+            let n = match &value {
+                Value::I32(n) => *n as i64,
+                Value::I64(n) => *n,
+                Value::Usize(n) => *n as i64,
+                _ => 0,
+            };
+            unsafe { std::ptr::write_unaligned(ret as *mut i64, n) };
+        }
+        4 | 5 | 6 => {
+            // U8, U16, U32
+            let n = match &value {
+                Value::I32(n) => *n,
+                _ => 0,
+            };
+            if tag == 4 {
+                unsafe { std::ptr::write_unaligned(ret as *mut u8, n as u8) };
+            } else if tag == 5 {
+                unsafe { std::ptr::write_unaligned(ret as *mut u16, n as u16) };
+            } else {
+                unsafe { std::ptr::write_unaligned(ret as *mut u32, n as u32) };
+            }
+        }
+        8 => {
+            let f = match &value {
+                Value::F64(f) => *f as f32,
+                _ => 0.0,
+            };
+            unsafe { std::ptr::write_unaligned(ret as *mut u32, f.to_bits()) };
+        }
+        9 => {
+            let f = match &value {
+                Value::F64(f) => *f,
+                _ => 0.0,
+            };
+            unsafe { std::ptr::write_unaligned(ret as *mut u64, f.to_bits()) };
+        }
+        10 => {
+            let b = match &value {
+                Value::Bool(b) => *b,
+                _ => false,
+            };
+            unsafe { std::ptr::write_unaligned(ret as *mut u8, b as u8) };
+        }
+        12 => {
+            // Unit: 4 zero bytes
+            unsafe { std::ptr::write_unaligned(ret as *mut u32, 0u32) };
+        }
+        _ => {
+            // Heap types: allocate JIT buffer via unbox_rec_heap
+            let mut offset = 0usize;
+            let jit_ptr = unsafe { unbox_rec_heap(value, ret_desc.as_ptr(), &mut offset) };
+            unsafe { std::ptr::write_unaligned(ret as *mut u64, jit_ptr) };
+        }
+    }
+}
+
 unsafe fn pipe_rt_release_ptr(ptr: u64, type_desc: *const u8) {
     unsafe {
         if ptr < 0x1000 || type_desc.is_null() {
@@ -4586,9 +4892,15 @@ unsafe fn pipe_rt_free_value(ptr: u64, type_desc: *const u8) {
                 let slice = std::slice::from_raw_parts_mut(original_alloc, 16);
                 let _ = Box::from_raw(slice);
             }
-            16 => {
+             16 => {
                 // Closure
                 let capture_count = std::ptr::read_unaligned((ptr + 8) as *const u64) as usize;
+
+                // Clean up global builtin closure registry entry
+                if capture_count == 0 {
+                    unregister_builtin_closure(ptr);
+                }
+
                 let mut desc_offset = 12;
                 let mut capture_offset = 16; // skip func_ptr + capture_count
 
