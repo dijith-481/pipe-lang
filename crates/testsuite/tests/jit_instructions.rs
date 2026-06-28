@@ -19,7 +19,7 @@ use std::sync::Arc;
 use ast::SmolStr;
 use ir::{
     BasicBlock, CallIndirectData, Instruction, IrDecl, IrFunction, IrModule, IrType,
-    MakeClosureData, RecordAllocData, TagConstructData, Terminator, ValueId,
+    MakeClosureData, RecordAllocData, TagConstructData, TagGetData, Terminator, ValueId,
 };
 use runtime::compile_ir;
 
@@ -754,10 +754,11 @@ fn jit_tag_get_payload() {
         push_inst(
             func,
             entry,
-            Instruction::TagGet {
+            Instruction::TagGet(Box::new(TagGetData {
                 value: tag,
                 index: 0,
-            },
+                discriminant: 1,
+            })),
         )
     });
     let compiled = compile_ir(&module).expect("TagGet should compile");
@@ -1033,11 +1034,15 @@ fn jit_call_indirect_with_capture() {
         |func, entry| {
             let env = ValueId(0);
             let x = ValueId(1);
-            let cap = push_inst(func, entry, Instruction::ClosureGet {
-                env,
-                offset: 16,
-                ty: IrType::I32,
-            });
+            let cap = push_inst(
+                func,
+                entry,
+                Instruction::ClosureGet {
+                    env,
+                    offset: 16,
+                    ty: IrType::I32,
+                },
+            );
             let sum = push_inst(func, entry, Instruction::Add(x, cap));
             entry.terminator = Terminator::Return(sum);
             sum
@@ -1088,16 +1093,24 @@ fn jit_call_indirect_two_captures() {
         |func, entry| {
             let env = ValueId(0);
             let x = ValueId(1);
-            let a = push_inst(func, entry, Instruction::ClosureGet {
-                env,
-                offset: 16,
-                ty: IrType::I32,
-            });
-            let b = push_inst(func, entry, Instruction::ClosureGet {
-                env,
-                offset: 24,
-                ty: IrType::I32,
-            });
+            let a = push_inst(
+                func,
+                entry,
+                Instruction::ClosureGet {
+                    env,
+                    offset: 16,
+                    ty: IrType::I32,
+                },
+            );
+            let b = push_inst(
+                func,
+                entry,
+                Instruction::ClosureGet {
+                    env,
+                    offset: 24,
+                    ty: IrType::I32,
+                },
+            );
             let bx = push_inst(func, entry, Instruction::Mul(b, x));
             let sum = push_inst(func, entry, Instruction::Add(a, bx));
             entry.terminator = Terminator::Return(sum);
@@ -1269,10 +1282,11 @@ fn fix_tag_get_non_first_variant() {
     let extracted = push_inst(
         &mut func,
         &mut entry,
-        Instruction::TagGet {
+        Instruction::TagGet(Box::new(TagGetData {
             value: tag,
             index: 0,
-        },
+            discriminant: 1,
+        })),
     );
     entry.terminator = Terminator::Return(extracted);
     func.blocks.push(entry);
@@ -1741,7 +1755,7 @@ let main = 42
 // Regression tests for builtin closure dispatch (trampoline + registry)
 // ---------------------------------------------------------------------------
 
-use runtime::bridge::{BuiltinRegistry, init_global_registry, clear_global_registry};
+use runtime::bridge::{BuiltinRegistry, clear_global_registry, init_global_registry};
 
 /// Helper: register all prelude builtins, compile, run, return I32 result.
 fn e2e_main_i32_with_builtins(src: &str) -> i32 {
@@ -1760,9 +1774,7 @@ fn e2e_builtin_compose() {
     // compose(f, g)(x) = f(g(x))
     // Uses the BUILTIN compose, not a lambda-defined one.
     assert_eq!(
-        e2e_main_i32_with_builtins(
-            "let main = compose((n)=>n+1, (n)=>n*2)(5)"
-        ),
+        e2e_main_i32_with_builtins("let main = compose((n)=>n+1, (n)=>n*2)(5)"),
         11
     );
 }
@@ -1782,9 +1794,7 @@ fn e2e_compose_with_captures() {
 fn e2e_pipe_builtin() {
     // pipe(f, g)(x) = g(f(x))
     assert_eq!(
-        e2e_main_i32_with_builtins(
-            "let main = pipe((n)=>n+1, (n)=>n*2)(5)"
-        ),
+        e2e_main_i32_with_builtins("let main = pipe((n)=>n+1, (n)=>n*2)(5)"),
         12
     );
 }
@@ -1804,8 +1814,6 @@ fn e2e_string_through_builtin_bridge() {
     // .unwrap_or() returns a string; but main's return type must be
     // i32 for call_main. We just verify compilation succeeds without
     // crashing — the alignment fix is in the JIT codegen, not the result.
-    let compiled = lower_and_compile(
-        "let main = 42"
-    );
+    let compiled = lower_and_compile("let main = 42");
     assert_eq!(compiled.call_main().expect("main should run"), 42);
 }

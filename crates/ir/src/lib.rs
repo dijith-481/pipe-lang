@@ -240,6 +240,13 @@ pub struct TagConstructData {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TagGetData {
+    pub value: ValueId,
+    pub index: u32,
+    pub discriminant: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MakeClosureData {
     pub func_name: SmolStr,
     pub captures: Vec<ValueId>,
@@ -351,12 +358,13 @@ pub enum Instruction {
     TagConstruct(Box<TagConstructData>),
     /// Extract the discriminant of a tag value. Returns U32.
     TagDiscriminant(ValueId),
-    /// Extract the `index`-th payload field. Returns the field's
-    /// declared type.
-    TagGet {
-        value: ValueId,
-        index: u32,
-    },
+    /// Extract the `index`-th payload field from the variant with the
+    /// given `discriminant`. Returns the field's declared type.
+    /// The discriminant is always known statically at lowering time
+    /// (we are inside a match arm or let-destructuring for a specific
+    /// variant). This mirrors Rust's MIR `Downcast(VariantIdx) + Field`
+    /// two-phase projection.
+    TagGet(Box<TagGetData>),
 
     // -- Closures --
     /// Wrap a function pointer plus its captured environment into a
@@ -477,7 +485,7 @@ impl fmt::Display for Instruction {
                 write!(f, ")")
             }
             Instruction::TagDiscriminant(v) => write!(f, "tag_discriminant {v}"),
-            Instruction::TagGet { value, index } => write!(f, "tag_get {value}.{index}"),
+            Instruction::TagGet(data) => write!(f, "tag_get {}.{}", data.value, data.index),
             Instruction::MakeClosure(data) => {
                 write!(f, "closure {}(", data.func_name)?;
                 for (i, v) in data.captures.iter().enumerate() {
@@ -1034,26 +1042,14 @@ pub fn infer_instruction_type(
             }))
         }
         Instruction::TagDiscriminant(_) => Some(IrType::U32),
-        Instruction::TagGet { value, index } => {
-            lookup_type(types, *value).and_then(|ty| match ty {
-                IrType::Tag(tag_type) => tag_type
-                    .variants
-                    .iter()
-                    .find_map(|v| v.payload.get(*index as usize).cloned())
-                    .or_else(|| {
-                        tag_variants
-                            .get(tag_type.name.as_str())
-                            .and_then(|variants| {
-                                variants.iter().find_map(|(_, payload)| {
-                                    payload
-                                        .get(*index as usize)
-                                        .map(|t| mono_type_to_ir(t, tag_variants))
-                                })
-                            })
-                    }),
-                _ => None,
-            })
-        }
+        Instruction::TagGet(data) => lookup_type(types, data.value).and_then(|ty| match ty {
+            IrType::Tag(tag_type) => tag_type
+                .variants
+                .iter()
+                .find(|v| v.discriminant == data.discriminant)
+                .and_then(|v| v.payload.get(data.index as usize).cloned()),
+            _ => None,
+        }),
         Instruction::RecordAlloc(data) => {
             let field_types: Vec<IrType> = data
                 .fields
@@ -1457,10 +1453,11 @@ mod tests {
         let mut types = std::collections::HashMap::new();
         types.insert(some_val, buggy_tag_type);
 
-        let tag_get = Instruction::TagGet {
+        let tag_get = Instruction::TagGet(Box::new(TagGetData {
             value: some_val,
             index: 0,
-        };
+            discriminant: 1,
+        }));
         let result = infer_instruction_type(&tag_get, &types, &HashMap::new(), &tv);
 
         // With the buggy TagType, TagGet returns I32 (the wrong type).

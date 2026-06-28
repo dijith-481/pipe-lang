@@ -1113,7 +1113,8 @@ pub fn infer_decl_with_map<'a>(
 
                     let combined: Vec<MonoType> =
                         tag_info.iter().flat_map(|(_, ptys)| ptys.clone()).collect();
-                    env.tag_variants.insert(SmolStr::from(*name), tag_info.clone());
+                    env.tag_variants
+                        .insert(SmolStr::from(*name), tag_info.clone());
 
                     // Register the final tag type in env so constructors resolve to the full tag type.
                     let poly = PolyType::poly(

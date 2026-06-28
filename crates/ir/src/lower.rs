@@ -7,8 +7,8 @@ use typechecker::{MonoType, PolyType, TagVariants, TypedProgram};
 
 use crate::{
     BasicBlock, BlockId, FuncType, Instruction, IrDecl, IrFunction, IrModule, IrType,
-    MakeClosureData, RecordAllocData, TagConstructData, TagType, TagVariant, Terminator, ValueId,
-    infer_instruction_type,
+    MakeClosureData, RecordAllocData, TagConstructData, TagGetData, TagType, TagVariant,
+    Terminator, ValueId, infer_instruction_type,
 };
 
 // ---------------------------------------------------------------------------
@@ -1411,21 +1411,24 @@ fn lower_pattern<'src>(
             fb.bind((*name).into(), scrutinee);
         }
         Pattern::Wildcard(_, _) | Pattern::Literal(_, _, _) => {}
-        Pattern::Constructor { fields, .. } => {
+        Pattern::Constructor { name, fields, .. } => {
+            let disc = subj_tag_discriminant(fb, scrutinee, name);
             for (i, p) in fields.iter().enumerate() {
-                let fv = fb.emit(Instruction::TagGet {
+                let fv = fb.emit(Instruction::TagGet(Box::new(TagGetData {
                     value: scrutinee,
                     index: i as u32,
-                });
+                    discriminant: disc,
+                })));
                 lower_pattern(fb, p, fv)?;
             }
         }
         Pattern::Tuple { patterns, .. } => {
             for (i, p) in patterns.iter().enumerate() {
-                let fv = fb.emit(Instruction::TagGet {
+                let fv = fb.emit(Instruction::TagGet(Box::new(TagGetData {
                     value: scrutinee,
                     index: i as u32,
-                });
+                    discriminant: 0,
+                })));
                 lower_pattern(fb, p, fv)?;
             }
         }
@@ -1465,19 +1468,22 @@ fn bind_pattern_local<'src>(fb: &mut FunctionBuilder<'_>, pat: &Pattern<'src>, v
         Pattern::Wildcard(..) | Pattern::Literal(..) => {}
         Pattern::Tuple { patterns, .. } => {
             for (i, p) in patterns.iter().enumerate() {
-                let fv = fb.emit(Instruction::TagGet {
+                let fv = fb.emit(Instruction::TagGet(Box::new(TagGetData {
                     value: v,
                     index: i as u32,
-                });
+                    discriminant: 0,
+                })));
                 bind_pattern_local(fb, p, fv);
             }
         }
-        Pattern::Constructor { fields, .. } => {
+        Pattern::Constructor { name, fields, .. } => {
+            let disc = subj_tag_discriminant(fb, v, name);
             for (i, p) in fields.iter().enumerate() {
-                let fv = fb.emit(Instruction::TagGet {
+                let fv = fb.emit(Instruction::TagGet(Box::new(TagGetData {
                     value: v,
                     index: i as u32,
-                });
+                    discriminant: disc,
+                })));
                 bind_pattern_local(fb, p, fv);
             }
         }

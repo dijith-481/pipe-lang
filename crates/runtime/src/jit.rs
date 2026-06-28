@@ -1388,9 +1388,7 @@ fn compile_instruction(
             compile_tag_discriminant(builder, ctx, *value_id, values)?
         }
 
-        ir::Instruction::TagGet { value, index } => {
-            compile_tag_get(builder, ctx, *value, *index, values)?
-        }
+        ir::Instruction::TagGet(data) => compile_tag_get(builder, ctx, data, values)?,
 
         ir::Instruction::RecordAlloc(data) => compile_record_alloc(builder, ctx, data, values)?,
 
@@ -1848,8 +1846,11 @@ fn compile_make_closure(
         let capture_val = lookup_value(values, *capture_id, ctx.func_name)?;
         let ty = lookup_type(ctx.value_types, *capture_id, ctx.func_name)?;
         if is_heap_type(ty) {
-            let args_slot =
-                builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 0));
+            let args_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                8,
+                0,
+            ));
             let args_buf = builder.ins().stack_addr(types::I64, args_slot, 0);
 
             let val_i64 = if builder.func.dfg.value_type(capture_val) == types::I64 {
@@ -1861,8 +1862,11 @@ fn compile_make_closure(
                 .ins()
                 .store(MemFlags::trusted(), val_i64, args_buf, 0);
 
-            let ret_slot =
-                builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 0));
+            let ret_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                8,
+                0,
+            ));
             let ret_buf = builder.ins().stack_addr(types::I64, ret_slot, 0);
 
             builder
@@ -2177,32 +2181,35 @@ fn compile_tag_discriminant(
 fn compile_tag_get(
     builder: &mut FunctionBuilder,
     ctx: &BlockContext,
-    value_id: ValueId,
-    index: u32,
+    data: &ir::TagGetData,
     values: &HashMap<ValueId, Value>,
 ) -> Result<Value, JitError> {
-    let tag_val = lookup_value(values, value_id, ctx.func_name)?;
-    let tag_ty = lookup_type(ctx.value_types, value_id, ctx.func_name)?;
+    let tag_val = lookup_value(values, data.value, ctx.func_name)?;
+    let tag_ty = lookup_type(ctx.value_types, data.value, ctx.func_name)?;
     let tag_type = match tag_ty {
         IrType::Tag(tt) => tt.clone(),
         _ => return Err(unsupported_type(ctx.func_name, tag_ty)),
     };
 
-    // Search all variants for one that has a payload field at `index`.
-    // The typechecker ensures all variants sharing an index have the same
-    // field type, so any matching variant gives the correct layout.
+    // Use the static discriminant to find the correct variant.
+    // This mirrors Rust's MIR Downcast(VariantIdx) + Field two-phase
+    // projection: the variant is always known at compile time.
     let variant = tag_type
         .variants
         .iter()
-        .find(|v| (index as usize) < v.payload.len())
+        .find(|v| v.discriminant == data.discriminant)
         .ok_or_else(|| JitError::UnimplementedInstruction {
-            instruction: format!("TagGet: index {index} out of bounds in all variants"),
+            instruction: format!(
+                "TagGet: discriminant {} not found among {} variants",
+                data.discriminant,
+                tag_type.variants.len()
+            ),
             function: ctx.func_name.to_string(),
         })?;
-    let field_type = &variant.payload[index as usize];
+    let field_type = &variant.payload[data.index as usize];
 
     let mut offset: i32 = 4;
-    for i in 0..index as usize {
+    for i in 0..data.index as usize {
         offset += storage_size(&variant.payload[i], ctx.func_name)?;
     }
 
@@ -2850,9 +2857,7 @@ fn compile_comparison(
             } else {
                 (left_value, right_value)
             };
-            let cmp = builder
-                .ins()
-                .icmp(int_compare_code(op, ty), l_val, r_val);
+            let cmp = builder.ins().icmp(int_compare_code(op, ty), l_val, r_val);
             builder.ins().bitcast(
                 types::I8,
                 MemFlags::new().with_endianness(Endianness::Little),
@@ -4111,7 +4116,7 @@ unsafe extern "C" fn pipe_rt_box_value_jit(ptr: u64, desc_ptr: u64, _desc_len: u
                     ret_desc,
                 }))
             }
-             17 => {
+            17 => {
                 let variant_count = unsafe { desc_read_u32(desc, offset) } as usize;
                 let disc = unsafe { std::ptr::read_unaligned(ptr as *const i32) } as u32;
 
@@ -4230,18 +4235,16 @@ unsafe extern "C" fn pipe_rt_unbox_value_jit(ptr: u64, desc_ptr: u64, _desc_len:
                 let p_total = unsafe { desc_read_u32(desc, &mut offset) } as usize;
                 offset = p_start + 4 + p_total;
                 if i >= capture_count {
-                    let bytes = unsafe {
-                        std::slice::from_raw_parts(desc.add(p_start + 4), p_total)
-                    };
+                    let bytes =
+                        unsafe { std::slice::from_raw_parts(desc.add(p_start + 4), p_total) };
                     call_param_descs.push(bytes.to_vec());
                 }
             }
             let r_start = offset;
             let _r_tag = unsafe { desc_read_u32(desc, &mut offset) };
             let r_total = unsafe { desc_read_u32(desc, &mut offset) } as usize;
-            let ret_desc = unsafe {
-                std::slice::from_raw_parts(desc.add(r_start), r_total)
-            }.to_vec();
+            let ret_desc =
+                unsafe { std::slice::from_raw_parts(desc.add(r_start), r_total) }.to_vec();
 
             Some(BuiltinClosureInfo {
                 closure_data: std::sync::Arc::clone(c),
@@ -4356,8 +4359,7 @@ unsafe fn unbox_rec_heap(val: crate::value::Value, desc: *const u8, offset: &mut
                 // standard JIT buffer with capture_count=0.
                 //
                 // Buffer: [trampoline_addr(8)][capture_count=0(8)] = 16 bytes
-                let trampoline_addr =
-                    pipe_rt_trampoline_dispatch_builtin as *const () as u64;
+                let trampoline_addr = pipe_rt_trampoline_dispatch_builtin as *const () as u64;
                 let mut buf = Vec::with_capacity(16);
                 buf.extend_from_slice(&trampoline_addr.to_le_bytes());
                 buf.extend_from_slice(&0u64.to_le_bytes()); // capture_count = 0
@@ -4580,8 +4582,9 @@ struct BuiltinClosureInfo {
     ret_desc: Vec<u8>,
 }
 
-static BUILTIN_CLOSURES: std::sync::RwLock<Option<std::collections::HashMap<u64, BuiltinClosureInfo>>> =
-    std::sync::RwLock::new(None);
+static BUILTIN_CLOSURES: std::sync::RwLock<
+    Option<std::collections::HashMap<u64, BuiltinClosureInfo>>,
+> = std::sync::RwLock::new(None);
 
 fn register_builtin_closure(ptr: u64, info: BuiltinClosureInfo) {
     if let Ok(mut guard) = BUILTIN_CLOSURES.write() {
@@ -4591,15 +4594,17 @@ fn register_builtin_closure(ptr: u64, info: BuiltinClosureInfo) {
 }
 
 fn unregister_builtin_closure(ptr: u64) -> Option<BuiltinClosureInfo> {
-    BUILTIN_CLOSURES.write().ok().and_then(|mut guard| {
-        guard.as_mut().and_then(|map| map.remove(&ptr))
-    })
+    BUILTIN_CLOSURES
+        .write()
+        .ok()
+        .and_then(|mut guard| guard.as_mut().and_then(|map| map.remove(&ptr)))
 }
 
 fn lookup_builtin_closure(ptr: u64) -> Option<BuiltinClosureInfo> {
-    BUILTIN_CLOSURES.read().ok().and_then(|guard| {
-        guard.as_ref().and_then(|map| map.get(&ptr).cloned())
-    })
+    BUILTIN_CLOSURES
+        .read()
+        .ok()
+        .and_then(|guard| guard.as_ref().and_then(|map| map.get(&ptr).cloned()))
 }
 
 /// Trampoline for calling a builtin closure from JIT-land.
@@ -4629,10 +4634,7 @@ fn lookup_builtin_closure(ptr: u64) -> Option<BuiltinClosureInfo> {
 /// `args` and `ret` follow the pipe-lang JIT ABI.
 #[unsafe(no_mangle)]
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn pipe_rt_trampoline_dispatch_builtin(
-    args: *const u8,
-    ret: *mut u8,
-) -> i32 {
+unsafe extern "C" fn pipe_rt_trampoline_dispatch_builtin(args: *const u8, ret: *mut u8) -> i32 {
     use crate::value::{ClosureData, FuncPtr, Value};
 
     if args.is_null() {
@@ -4660,9 +4662,8 @@ unsafe extern "C" fn pipe_rt_trampoline_dispatch_builtin(
     for i in 0..call_param_count {
         let pd = &info.call_param_descs[i];
         let arg_ptr = unsafe { args.add(8 + i * 8) };
-        let boxed = unsafe {
-            pipe_rt_box_value_jit(arg_ptr as u64, pd.as_ptr() as u64, pd.len() as u32)
-        };
+        let boxed =
+            unsafe { pipe_rt_box_value_jit(arg_ptr as u64, pd.as_ptr() as u64, pd.len() as u32) };
         let value: Value = if boxed != 0 {
             unsafe { *std::boxed::Box::from_raw(boxed as *mut Value) }
         } else {
@@ -4895,7 +4896,7 @@ unsafe fn pipe_rt_free_value(ptr: u64, type_desc: *const u8) {
                 let slice = std::slice::from_raw_parts_mut(original_alloc, 16);
                 let _ = Box::from_raw(slice);
             }
-             16 => {
+            16 => {
                 // Closure
                 let capture_count = std::ptr::read_unaligned((ptr + 8) as *const u64) as usize;
 
