@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 use ast::SmolStr;
@@ -540,6 +541,27 @@ fn resolve_and_queue_global<'src>(
         name.to_string()
     }
 }
+
+/// Qualify method names for Option/Result/Effect builtins.
+/// Method calls are desugared to bare names by the parser (e.g. `option.map(f)`
+/// becomes `map(option, f)`), but the runtime registers them with qualified
+/// names (`"Option.map"`, `"Result.map"`, `"Effect.map"`).  The lowerer uses
+/// the receiver's type from the type map to emit the correct qualified name.
+fn qualify_method_name<'a>(name: &'a str, receiver_type: Option<&MonoType>) -> Cow<'a, str> {
+    match (name, receiver_type) {
+        ("map" | "flat_map", Some(MonoType::Tag { name: type_name, .. })) => {
+            let qualified = match type_name.as_str() {
+                "Option" => Cow::Owned(format!("Option.{name}")),
+                "Result" => Cow::Owned(format!("Result.{name}")),
+                "Effect" => Cow::Owned(format!("Effect.{name}")),
+                _ => return Cow::Borrowed(name),
+            };
+            qualified
+        }
+        _ => Cow::Borrowed(name),
+    }
+}
+
 fn lower_expr<'src>(
     fb: &mut FunctionBuilder<'_>,
     expr: &Expr<'src>,
@@ -609,7 +631,22 @@ fn lower_expr<'src>(
             let lv = lower_expr(fb, left, hoisted, ctx)?;
             let rv = lower_expr(fb, right, hoisted, ctx)?;
             let inst = match op {
-                BinOp::Add => Instruction::Add(lv, rv),
+                BinOp::Add => {
+                    // String concatenation: str + str → Str.concat(lv, rv)
+                    if let Some(ty) = fb.value_types.get(&lv)
+                        && matches!(ty, IrType::Str)
+                    {
+                        let ret_ty = fb.expr_type(expr.id());
+                        return Ok(fb.emit(Instruction::CallNamed(Box::new(
+                            crate::CallNamedData {
+                                name: "Str.concat".into(),
+                                args: vec![lv, rv],
+                                return_type: ret_ty,
+                            },
+                        ))));
+                    }
+                    Instruction::Add(lv, rv)
+                }
                 BinOp::Sub => Instruction::Sub(lv, rv),
                 BinOp::Mul => Instruction::Mul(lv, rv),
                 BinOp::Div => Instruction::Div(lv, rv),
@@ -1180,7 +1217,11 @@ fn lower_expr<'src>(
                         }
                         Ok(ret_v)
                     } else {
-                        let mangled = resolve_and_queue_global(name, func.id(), fb, ctx);
+                        let qualified = qualify_method_name(
+                            name,
+                            args.first().and_then(|a| fb.type_map.get(&a.id())),
+                        );
+                        let mangled = resolve_and_queue_global(&qualified, func.id(), fb, ctx);
                         let ret_v =
                             fb.emit(Instruction::CallNamed(Box::new(crate::CallNamedData {
                                 name: mangled.into(),

@@ -113,6 +113,10 @@ impl BuiltinFunction for ToStr {
             Value::F64(n) => Ok(Value::str(n.to_string())),
             Value::Bool(b) => Ok(Value::str(b.to_string())),
             Value::Str(s) => Ok(Value::str(s.to_string())),
+            Value::Array(a) => {
+                let parts: Vec<String> = a.iter().map(|v| v.to_string()).collect();
+                Ok(Value::str(format!("[{}]", parts.join(", "))))
+            }
             actual => Err(format!(
                 "`{}` expected primitive, got {actual:?}",
                 self.name()

@@ -67,6 +67,14 @@ fn serialize_value_to_jit_arg(val: &Value, desc: &[u8], tag: u32) -> Vec<u8> {
             })
             .to_le_bytes()
             .to_vec(),
+            18 => (match val {
+                Value::Usize(n) => *n,
+                Value::I32(n) => *n as usize,
+                Value::I64(n) => *n as usize,
+                _ => 0,
+            })
+            .to_le_bytes()
+            .to_vec(),
             8 => (match val {
                 Value::F64(f) => *f as f32,
                 _ => 0.0,
@@ -219,6 +227,7 @@ fn call_jit_fn(
             9 => Ok(Value::F64(f64::from_bits(raw_val))),
             10 => Ok(Value::Bool(raw_val != 0)),
             12 => Ok(Value::Unit),
+            18 => Ok(Value::Usize(raw_val as usize)),
             _ => Ok(Value::Unit),
         }
     }

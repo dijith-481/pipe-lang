@@ -3339,7 +3339,16 @@ unsafe extern "C" fn __pipe_println(args: *const u8, ret: *mut u8) -> i32 {
             s.to_string()
         }
         12 => "()".to_string(),
-        13 => "<array>".to_string(),
+        13 => {
+            let ptr = raw as *const u8;
+            if ptr.is_null() || (raw as u64) < 0x1000 {
+                "<array>".to_string()
+            } else {
+                let len = unsafe { std::ptr::read_unaligned(ptr as *const u64) };
+                format!("[{} elements]", len)
+            }
+        },
+        18 => format!("{}", raw as u64),
         14 => "<record>".to_string(),
         15 => "<effect>".to_string(),
         16 => "<closure>".to_string(),
@@ -3395,7 +3404,16 @@ unsafe extern "C" fn pipe_rt_str_concat(args: *const u8, ret: *mut u8) -> i32 {
                 result.push_str(s);
             }
             12 => result.push_str("()"),
-            13 => result.push_str("<array>"),
+            13 => {
+                let ptr = raw as *const u8;
+                if ptr.is_null() || (raw as u64) < 0x1000 {
+                    result.push_str("<array>");
+                } else {
+                    let len = unsafe { std::ptr::read_unaligned(ptr as *const u64) };
+                    result.push_str(&format!("[{} elements]", len));
+                }
+            }
+            18 => result.push_str(&format!("{}", raw as u64)),
             14 => result.push_str("<record>"),
             15 => result.push_str("<effect>"),
             16 => result.push_str("<closure>"),
@@ -3794,7 +3812,8 @@ fn ir_type_tag(ty: &IrType) -> Option<u32> {
         IrType::I8 => Some(0),
         IrType::I16 => Some(1),
         IrType::I32 => Some(2),
-        IrType::I64 | IrType::Usize => Some(3),
+        IrType::I64 => Some(3),
+        IrType::Usize => Some(18),
         IrType::U8 => Some(4),
         IrType::U16 => Some(5),
         IrType::U32 => Some(6),
@@ -3848,6 +3867,7 @@ unsafe extern "C" fn pipe_rt_call_builtin(args: *const u8, ret: *mut u8) -> i32 
             0..=2 => RuntimeValue::I32(raw as i32),
             3 => RuntimeValue::I64(raw),
             4..=5 => RuntimeValue::I32(raw as i32),
+            18 => RuntimeValue::Usize(raw as u64 as usize),
             6 => RuntimeValue::I64(i64::from(raw as u32)),
             7 => RuntimeValue::I64(raw),
             8 => RuntimeValue::F64(f64::from(f32::from_bits(raw as u32))),
@@ -3903,7 +3923,7 @@ fn value_to_ret_buf(value: crate::value::Value, ret: *mut u8) {
     let (raw, tag): (i64, u32) = match value {
         RuntimeValue::I32(n) => (n as i64, 2),
         RuntimeValue::I64(n) => (n, 3),
-        RuntimeValue::Usize(n) => (n as i64, 3),
+        RuntimeValue::Usize(n) => (n as i64, 18),
         RuntimeValue::F64(f) => (f.to_bits() as i64, 9),
         RuntimeValue::Bool(b) => (i64::from(b), 10),
         RuntimeValue::Unit => (0, 12),
@@ -3984,6 +4004,7 @@ unsafe extern "C" fn pipe_rt_box_value_jit(ptr: u64, desc_ptr: u64, _desc_len: u
             0 | 1 => V::I32(unsafe { desc_read_u32(ptr, &mut 0usize) } as i32),
             2 => V::I32(unsafe { std::ptr::read_unaligned(ptr as *const i32) }),
             3 | 7 => V::I64(unsafe { std::ptr::read_unaligned(ptr as *const i64) }),
+            18 => V::Usize(unsafe { std::ptr::read_unaligned(ptr as *const u64) } as usize),
             4 => V::I32(i32::from(unsafe { std::ptr::read_unaligned(ptr) })),
             5 => V::I32(i32::from(unsafe {
                 std::ptr::read_unaligned(ptr as *const u16)
@@ -4517,6 +4538,15 @@ unsafe fn unbox_rec_inline(
                     crate::value::Value::I32(n) => n as i64,
                     crate::value::Value::I64(n) => n,
                     crate::value::Value::Usize(n) => n as i64,
+                    _ => 0,
+                };
+                n.to_le_bytes().to_vec()
+            }
+            18 => {
+                let n = match val {
+                    crate::value::Value::Usize(n) => n,
+                    crate::value::Value::I32(n) => n as usize,
+                    crate::value::Value::I64(n) => n as usize,
                     _ => 0,
                 };
                 n.to_le_bytes().to_vec()

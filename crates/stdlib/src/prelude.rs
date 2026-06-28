@@ -348,8 +348,9 @@ impl BuiltinFunction for Take {
         };
         let n = match &args[1] {
             Value::I32(n) => *n as usize,
+            Value::I64(n) => *n as usize,
             Value::Usize(n) => *n,
-            other => return Err(format!("`take` expected I32 or Usize, got {other:?}")),
+            other => return Err(format!("`take` expected I32, I64, or Usize, got {other:?}")),
         };
         let n = n.min(arr.len());
         Ok(Value::array(arr[..n].to_vec()))

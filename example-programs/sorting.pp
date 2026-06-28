@@ -16,11 +16,13 @@ let quicksort : (Array<i32>) -> Array<i32> = (arr) => match arr.len() {
     }
 }
 
-// Merge: combine two sorted arrays
-let merge : (Array<i32>, Array<i32>) -> Array<i32> = (a, b) => match (a.len(), b.len()) {
-    (0usize, _) => b
-    (_, 0usize) => a
-    _ => {
+// Merge: combine two sorted arrays (workaround: if/else instead of match on tuple of .len())
+let merge : (Array<i32>, Array<i32>) -> Array<i32> = (a, b) => {
+    let alen = a.len()
+    let blen = b.len()
+    if alen == 0usize { b }
+    else if blen == 0usize { a }
+    else {
         let a_head = match a.head() { Some(v) => v _ => 0 }
         let b_head = match b.head() { Some(v) => v _ => 0 }
         if a_head <= b_head {

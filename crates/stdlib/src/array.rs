@@ -252,9 +252,11 @@ impl BuiltinFunction for ArrayDrop {
         let array = expect_array(self.name(), &args[0])?;
         let n: usize = match &args[1] {
             Value::I32(n) => (*n).max(0) as usize,
+            Value::I64(n) => (*n).max(0) as usize,
+            Value::Usize(n) => *n,
             actual => {
                 return Err(format!(
-                    "`{}` expected I32 for count, got {actual:?}",
+                    "`{}` expected I32, I64, or Usize for count, got {actual:?}",
                     self.name()
                 ));
             }
@@ -278,9 +280,11 @@ impl BuiltinFunction for ArrayTake {
         let array = expect_array(self.name(), &args[0])?;
         let n: usize = match &args[1] {
             Value::I32(n) => (*n).max(0) as usize,
+            Value::I64(n) => (*n).max(0) as usize,
+            Value::Usize(n) => *n,
             actual => {
                 return Err(format!(
-                    "`{}` expected I32 for count, got {actual:?}",
+                    "`{}` expected I32, I64, or Usize for count, got {actual:?}",
                     self.name()
                 ));
             }
