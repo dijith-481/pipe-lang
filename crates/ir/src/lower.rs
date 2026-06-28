@@ -907,7 +907,10 @@ fn lower_expr<'src>(
                 return_type,
             })));
             for elem in &elem_vals {
-                if let Some(ty) = fb.value_types.get(elem)
+                // Skip values bound by `let` — the block cleanup handles
+                // their Release and emitting another would double-free.
+                if !fb.locals.values().any(|v| v == elem)
+                    && let Some(ty) = fb.value_types.get(elem)
                     && ty.is_heap_type()
                 {
                     fb.emit(Instruction::Release(*elem));

@@ -1621,8 +1621,11 @@ fn compile_builtin_call(
     }
 
     // Allocate 12-byte return buffer [val: i64, tag: u32].
+    // Use alignment of 16 to prevent Cranelift from merging this slot
+    // with other slots (which can cause UB when the slot holds a pointer
+    // to a heap value that is also referenced by other code).
     let ret_slot =
-        builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 12, 0));
+        builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 12, 16));
     let ret_buf = builder.ins().stack_addr(types::I64, ret_slot, 0);
 
     let inst = builder.ins().call_indirect(
@@ -3123,15 +3126,25 @@ fn infer_instruction_type(
     fn_actual_return_types: &HashMap<String, IrType>,
     tag_variants: &typechecker::TagVariants,
 ) -> Result<IrType, JitError> {
-    // Override MakeClosure inference: use fn_param_types which already
-    // includes both capture types (first) and declared param types (after),
-    // matching the lowered IrFunction param order. This lets
-    // compile_call_indirect correctly separate captures from call args.
+    // Override MakeClosure inference: prepend capture types before the
+    // function's own params ([closure_env, call_args...]) so the type
+    // descriptor that gets serialized includes capture entries:
+    //   [capture_types..., closure_env, call_arg_types...].
+    // pipe_rt_box_value_jit uses capture_count to split them during
+    // deserialization, and call_jit_fn uses them to serialize captures
+    // into the synthesized JIT closure buffer.
     if let ir::Instruction::MakeClosure(data) = inst {
-        let params = fn_param_types
+        let mut params = fn_param_types
             .get(data.func_name.as_str())
             .cloned()
             .unwrap_or_default();
+        let mut capture_types: Vec<IrType> = data
+            .captures
+            .iter()
+            .filter_map(|cap_id| types.get(cap_id).cloned())
+            .collect();
+        capture_types.append(&mut params);
+        params = capture_types;
         let ret = fn_return_types
             .get(data.func_name.as_str())
             .cloned()
@@ -4055,13 +4068,13 @@ unsafe extern "C" fn pipe_rt_box_value_jit(ptr: u64, desc_ptr: u64, _desc_len: u
                 let func_addr = unsafe { std::ptr::read_unaligned(ptr as *const u64) } as usize;
                 let capture_count =
                     unsafe { std::ptr::read_unaligned(ptr.add(8) as *const u64) } as usize;
-                let call_param_count = total_param_count.saturating_sub(capture_count);
-                // The first non-capture param is ALWAYS `closure_env: I64`
-                // added by the lowerer. Subtract it to get the true arity.
-                let arity = call_param_count.saturating_sub(1);
+                // arity = total params - captures - 1 (closure_env)
+                let arity = total_param_count
+                    .saturating_sub(capture_count)
+                    .saturating_sub(1);
 
                 let mut captures = Vec::with_capacity(capture_count);
-                let mut call_param_descs = Vec::with_capacity(arity);
+                let mut call_param_descs = Vec::with_capacity(total_param_count);
                 let mut cap_ptr = unsafe { ptr.add(16) };
 
                 for i in 0..total_param_count {
@@ -4090,9 +4103,12 @@ unsafe extern "C" fn pipe_rt_box_value_jit(ptr: u64, desc_ptr: u64, _desc_len: u
                         let mut temp_offset = p_desc_start + 4;
                         captures.push(unsafe { box_rec(actual_ptr, desc, &mut temp_offset) });
                         cap_ptr = unsafe { cap_ptr.add(8) }; // Each capture uses an 8-byte slot
-                    } else {
-                        call_param_descs.push(p_desc);
                     }
+                    // Push ALL descriptors (captures, closure_env, call args) into
+                    // param_descs so call_jit_fn can correctly index into them:
+                    //   param_descs[i]                   = capture i's descriptor
+                    //   param_descs[captures.len()+1+i]  = call arg i's descriptor
+                    call_param_descs.push(p_desc);
                 }
 
                 let ret_desc_start = *offset;

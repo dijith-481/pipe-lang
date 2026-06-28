@@ -60,15 +60,21 @@ let avg_prc = (rows) => match to_f64(rows.len()) > 0.0 {
 let unique = (rows, f) =>
     rows.fold([], (acc, r) => {
         let val = f(r)
-        match acc.filter((x) => x == val).len() > 0usize {
-            true  => acc
-            false => acc.concat([val])
+        // to_str creates a fresh string copy, avoiding a JIT bug where
+        // TagGet results are corrupted when passed to array_literal.
+        let fresh = to_str(val)
+        if acc.filter((x) => x == fresh).len() > 0usize {
+            acc
+        } else {
+            acc.concat([fresh])
         }
     })
 
-// Top N by price
+// Top N by price (workaround: fold instead of take, which has a pre-existing bug)
 let top_n = (rows, n) =>
-    rows.fold([], (acc, r) => [r].concat(acc)).take(n)
+    rows.fold([], (acc, r) => [r].concat(acc)).fold([], (acc2, r) => {
+        if acc2.len() < n { acc2.concat([r]) } else { acc2 }
+    })
 
 // Format helpers
 let print_title = (t) => { println(``); println(`=== ${t} ===`) }

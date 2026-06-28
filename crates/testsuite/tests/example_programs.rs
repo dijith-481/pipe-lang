@@ -166,11 +166,20 @@ fn e2e_map_strings() {
 }
 
 // ---------------------------------------------------------------------------
+// Capturing closures (regression: call_jit_fn + param_descs mismatches)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn e2e_capturing_closures() {
+    assert_fixture_ok("capturing-closures");
+}
+
+// ---------------------------------------------------------------------------
 // Smoke: fixture infrastructure loads all programs
 // ---------------------------------------------------------------------------
 
 #[test]
 fn e2e_discover_all_programs() {
     let fixtures = discover_fixtures(&examples_dir()).expect("discover");
-    assert_eq!(fixtures.len(), 21, "expected 21 example programs");
+    assert_eq!(fixtures.len(), 22, "expected 22 example programs");
 }
