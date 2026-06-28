@@ -151,7 +151,7 @@ fn call_jit_fn(
     offset = 8;
 
     for (i, arg) in call_args.iter().enumerate() {
-        let desc_idx = captures.len() + i;
+        let desc_idx = captures.len() + 1 + i; // +1 to skip closure_env param
         if desc_idx < param_descs.len() {
             let desc = &param_descs[desc_idx];
             let tag = u32::from_le_bytes(desc[0..4].try_into().unwrap());

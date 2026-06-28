@@ -157,11 +157,20 @@ fn e2e_markdown_renderer() {
 }
 
 // ---------------------------------------------------------------------------
+// String map (regression: call_jit_fn desc_idx off-by-one)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn e2e_map_strings() {
+    assert_fixture_ok("map-strings");
+}
+
+// ---------------------------------------------------------------------------
 // Smoke: fixture infrastructure loads all programs
 // ---------------------------------------------------------------------------
 
 #[test]
-fn e2e_discover_all_20_programs() {
+fn e2e_discover_all_programs() {
     let fixtures = discover_fixtures(&examples_dir()).expect("discover");
-    assert_eq!(fixtures.len(), 20, "expected 20 example programs");
+    assert_eq!(fixtures.len(), 21, "expected 21 example programs");
 }
