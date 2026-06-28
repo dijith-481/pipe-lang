@@ -2703,22 +2703,19 @@ fn gen_cmp_values(
     right_val: Value,
     ty: &IrType,
 ) -> Result<Value, JitError> {
+    fn bool_to_i8(builder: &mut FunctionBuilder, cond: Value) -> Value {
+        let one = builder.ins().iconst(types::I8, 1);
+        let zero = builder.ins().iconst(types::I8, 0);
+        builder.ins().select(cond, one, zero)
+    }
     match ty {
         IrType::F32 | IrType::F64 => {
             let cmp = builder.ins().fcmp(FloatCC::Equal, left_val, right_val);
-            Ok(builder.ins().bitcast(
-                types::I8,
-                MemFlags::new().with_endianness(Endianness::Little),
-                cmp,
-            ))
+            Ok(bool_to_i8(builder, cmp))
         }
         IrType::Bool => {
             let cmp = builder.ins().icmp(IntCC::Equal, left_val, right_val);
-            Ok(builder.ins().bitcast(
-                types::I8,
-                MemFlags::new().with_endianness(Endianness::Little),
-                cmp,
-            ))
+            Ok(bool_to_i8(builder, cmp))
         }
         IrType::Str => {
             let inst = builder.ins().call_indirect(
@@ -2731,21 +2728,13 @@ fn gen_cmp_values(
         }
         _ if is_integer(ty) => {
             let cmp = builder.ins().icmp(IntCC::Equal, left_val, right_val);
-            Ok(builder.ins().bitcast(
-                types::I8,
-                MemFlags::new().with_endianness(Endianness::Little),
-                cmp,
-            ))
+            Ok(bool_to_i8(builder, cmp))
         }
         // Heap-allocated types (Array, Record, Tag, Closure):
         // pointer comparison (identity).
         _ => {
             let cmp = builder.ins().icmp(IntCC::Equal, left_val, right_val);
-            Ok(builder.ins().bitcast(
-                types::I8,
-                MemFlags::new().with_endianness(Endianness::Little),
-                cmp,
-            ))
+            Ok(bool_to_i8(builder, cmp))
         }
     }
 }

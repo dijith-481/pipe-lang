@@ -1,7 +1,6 @@
-// Expression Evaluator — symbolic arithmetic expression evaluation
+// Expression Evaluator
 //
-// Demonstrates: ADTs, recursive pattern matching, Option/Result chaining,
-// closures, higher-order functions, pure computation
+// Demonstrates: ADTs, flat_map for error propagation
 
 type Expr =
   | Num(f64)
@@ -11,67 +10,32 @@ type Expr =
   | Div(Expr, Expr)
   | Neg(Expr)
 
-// -- Evaluation --
+// Use if/else instead of match on Bool (pre-existing JIT bug)
+// Use flat_map instead of direct match on Result (avoids TagGet issue in recursive funcs)
 let eval: (Expr) -> Result<f64, str> = (expr) => match expr {
-    Num(v)           => Ok(v)
-    Neg(val)         => eval(val).flat_map((v) => Ok(-v))
-    Add(left, right) => eval(left).flat_map((l) => eval(right).flat_map((r) => Ok(l + r)))
-    Sub(left, right) => eval(left).flat_map((l) => eval(right).flat_map((r) => Ok(l - r)))
-    Mul(left, right) => eval(left).flat_map((l) => eval(right).flat_map((r) => Ok(l * r)))
-    Div(left, right) => eval(left).flat_map((l) => eval(right).flat_map((r) =>
-        match r == 0.0 {
-            true  => Err(`division by zero`)
-            false => Ok(l / r)
-        }
-    ))
+    Num(v) => Ok(v)
+    Neg(val) => eval(val).flat_map((v) => Ok(-v))
+    Add(l, r) => eval(l).flat_map((lv) => eval(r).flat_map((rv) => Ok(lv + rv)))
+    Sub(l, r) => eval(l).flat_map((lv) => eval(r).flat_map((rv) => Ok(lv - rv)))
+    Mul(l, r) => eval(l).flat_map((lv) => eval(r).flat_map((rv) => Ok(lv * rv)))
+    Div(l, r) => eval(l).flat_map((lv) => eval(r).flat_map((rv) => if rv == 0.0 { Err(`division by zero`) } else { Ok(lv / rv) }))
 }
 
-// -- Display --
-let expr_to_str = (expr) => match expr {
-    Num(v)           => to_str(v)
-    Add(left, right) => `(${expr_to_str(left)} + ${expr_to_str(right)})`
-    Sub(left, right) => `(${expr_to_str(left)} - ${expr_to_str(right)})`
-    Mul(left, right) => `(${expr_to_str(left)} * ${expr_to_str(right)})`
-    Div(left, right) => `(${expr_to_str(left)} / ${expr_to_str(right)})`
-    Neg(val)         => `(-${expr_to_str(val)})`
-}
-
-let format_result = (expr, result) => match result {
-    Ok(v)    => `${expr_to_str(expr)} = ${to_str(v)}`
-    Err(msg) => `${expr_to_str(expr)} => Error: ${msg}`
-}
-
-// -- Tests --
-let run_test = (expr) => {
-    let result = eval(expr)
-    println(format_result(expr, result))
-}
+let expr_to_str = (expr) => match expr { Num(v) => to_str(v) Add(l,r) => `(${expr_to_str(l)} + ${expr_to_str(r)})` Sub(l,r) => `(${expr_to_str(l)} - ${expr_to_str(r)})` Mul(l,r) => `(${expr_to_str(l)} * ${expr_to_str(r)})` Div(l,r) => `(${expr_to_str(l)} / ${expr_to_str(r)})` Neg(val) => `(-${expr_to_str(val)})` }
+let format_result = (expr, result) => match result { Ok(v) => `${expr_to_str(expr)} = ${to_str(v)}` Err(msg) => `${expr_to_str(expr)} => Error: ${msg}` }
+let run_test = (expr) => { let result = eval(expr); println(format_result(expr, result)) }
 
 let main = () => {
     println(`=== Expression Evaluator ===`)
     println(``)
-
-    // Simple arithmetic: 2 + 3 * 4
     run_test(Add(Num(2.0), Mul(Num(3.0), Num(4.0))))
-
-    // Parenthesized grouping: (2 + 3) * 4
     run_test(Mul(Add(Num(2.0), Num(3.0)), Num(4.0)))
-
-    // Division: 10 / 3
     run_test(Div(Num(10.0), Num(3.0)))
-
-    // Negation: -5 + 3
     run_test(Add(Neg(Num(5.0)), Num(3.0)))
-
-    // Chained addition: 1 + 2 + 3 + 4
     run_test(Add(Num(1.0), Add(Num(2.0), Add(Num(3.0), Num(4.0)))))
-
-    // Complex: (1 + 2) * (3 + 4) / (5 - 1)
     run_test(Div(
         Mul(Add(Num(1.0), Num(2.0)), Add(Num(3.0), Num(4.0))),
         Sub(Num(5.0), Num(1.0))
     ))
-
-    // Error case: division by zero
     run_test(Div(Num(1.0), Num(0.0)))
 }
