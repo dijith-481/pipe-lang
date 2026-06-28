@@ -4429,6 +4429,9 @@ unsafe fn unbox_rec_heap(val: crate::value::Value, desc: *const u8, offset: &mut
 
                 if var_disc == disc {
                     for (p_idx, _) in (0..payload_count).enumerate() {
+                        // Skip the `size: u32` field (unbox_rec_inline
+                        // expects the descriptor to start with tag)
+                        let _field_size = unsafe { desc_read_u32(desc, offset) } as usize;
                         let field_val = payload_fields
                             .get(p_idx)
                             .cloned()
