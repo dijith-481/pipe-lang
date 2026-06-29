@@ -3,6 +3,14 @@ use bumpalo::collections::Vec;
 
 use crate::span::Span;
 
+/// A stable, parse-order identity for every AST node.
+///
+/// Assigned by the parser in a monotonically increasing sequence. Used as
+/// the key in the typechecker's `type_map` (replacing `Span`, which is not
+/// unique when two nodes occupy the same source location).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct NodeId(pub u32);
+
 /// A complete program consisting of top-level declarations.
 #[derive(Debug, Clone)]
 pub struct Program<'a> {
@@ -14,6 +22,7 @@ pub struct Program<'a> {
 pub enum Decl<'a> {
     /// A value binding: `let name [: Type] = expr`
     Bind {
+        id: NodeId,
         name: &'a str,
         ty: Option<&'a TypeExpr<'a>>,
         value: &'a Expr<'a>,
@@ -21,35 +30,61 @@ pub enum Decl<'a> {
     },
     /// A type alias: `type Name = TypeExpr`
     TypeAlias {
+        id: NodeId,
         name: &'a str,
         params: Vec<'a, &'a str>,
         rhs: &'a TypeExpr<'a>,
         span: Span,
     },
     /// A use declaration: `use stdlib::io`
-    Use { path: Vec<'a, &'a str>, span: Span },
+    Use {
+        id: NodeId,
+        path: Vec<'a, &'a str>,
+        span: Span,
+    },
+}
+
+impl<'a> Decl<'a> {
+    /// Returns the stable identity of this declaration.
+    #[must_use]
+    pub fn id(&self) -> NodeId {
+        match self {
+            Decl::Bind { id, .. } | Decl::TypeAlias { id, .. } | Decl::Use { id, .. } => *id,
+        }
+    }
+
+    /// Returns the span of this declaration.
+    #[must_use]
+    pub fn span(&self) -> Span {
+        match self {
+            Decl::Bind { span, .. } | Decl::TypeAlias { span, .. } | Decl::Use { span, .. } => {
+                *span
+            }
+        }
+    }
 }
 
 /// Expressions in the language.
 #[derive(Debug, Clone)]
 pub enum Expr<'a> {
     /// Integer literal: `42`, `42i32`, `255u8`
-    IntLiteral(&'a str, Span),
+    IntLiteral(NodeId, &'a str, Span),
     /// Float literal: `3.14`, `3.14f64`
-    FloatLiteral(&'a str, Span),
+    FloatLiteral(NodeId, &'a str, Span),
 
     // -- Other primitives --
     /// String literal: `"hello"`
-    Str(&'a str, Span),
+    Str(NodeId, &'a str, Span),
     /// Boolean literal: `true` / `false`
-    Bool(bool, Span),
+    Bool(NodeId, bool, Span),
 
     // -- Composite --
     /// Identifier: `x`, `add`, `user.name`
-    Ident(&'a str, Span),
+    Ident(NodeId, &'a str, Span),
 
     /// Function application: `f(x, y)` or desugared method call
     Application {
+        id: NodeId,
         func: &'a Expr<'a>,
         args: Vec<'a, &'a Expr<'a>>,
         span: Span,
@@ -57,6 +92,7 @@ pub enum Expr<'a> {
 
     /// Lambda expression: `(a:i32, b:i32):i64 => a + b` or `(x) => x + 1`
     Lambda {
+        id: NodeId,
         params: Vec<'a, Param<'a>>,
         return_type: Option<&'a TypeExpr<'a>>,
         body: &'a Expr<'a>,
@@ -65,6 +101,7 @@ pub enum Expr<'a> {
 
     /// Binary operation: `a + b`, `a == b`
     Binary {
+        id: NodeId,
         op: BinOp,
         left: &'a Expr<'a>,
         right: &'a Expr<'a>,
@@ -73,6 +110,7 @@ pub enum Expr<'a> {
 
     /// Unary operation: `!x`, `-x`
     Unary {
+        id: NodeId,
         op: UnaryOp,
         operand: &'a Expr<'a>,
         span: Span,
@@ -80,6 +118,7 @@ pub enum Expr<'a> {
 
     /// Match expression: `match subject { pattern => arm, ... }`
     Match {
+        id: NodeId,
         subject: &'a Expr<'a>,
         arms: Vec<'a, MatchArm<'a>>,
         span: Span,
@@ -87,6 +126,7 @@ pub enum Expr<'a> {
 
     /// Block expression: `{ stmts; expr }`
     Block {
+        id: NodeId,
         stmts: Vec<'a, Stmt<'a>>,
         result: &'a Expr<'a>,
         span: Span,
@@ -94,12 +134,14 @@ pub enum Expr<'a> {
 
     /// Record literal: `{ name: "Alice", age: 30 }`
     Record {
+        id: NodeId,
         fields: Vec<'a, RecordField<'a>>,
         span: Span,
     },
 
     /// Record field access: `user.name`
     FieldAccess {
+        id: NodeId,
         object: &'a Expr<'a>,
         field: &'a str,
         span: Span,
@@ -107,12 +149,14 @@ pub enum Expr<'a> {
 
     /// Tuple literal: `(a, b, c)`
     Tuple {
+        id: NodeId,
         elems: Vec<'a, &'a Expr<'a>>,
         span: Span,
     },
 
     /// If expression: `if cond { then } else { else }`
     If {
+        id: NodeId,
         condition: &'a Expr<'a>,
         then_branch: &'a Expr<'a>,
         else_branch: &'a Expr<'a>,
@@ -121,18 +165,21 @@ pub enum Expr<'a> {
 
     /// Array literal: `[1, 2, 3]`
     Array {
+        id: NodeId,
         elems: Vec<'a, &'a Expr<'a>>,
         span: Span,
     },
 
     /// A template literal: `` `Hello, ${name}!` ``
     Template {
+        id: NodeId,
         parts: Vec<'a, TemplatePart<'a>>,
         span: Span,
     },
 
     /// Array indexing: `arr[idx]`
     Index {
+        id: NodeId,
         array: &'a Expr<'a>,
         index: &'a Expr<'a>,
         span: Span,
@@ -185,29 +232,32 @@ pub struct RecordField<'a> {
 #[derive(Debug, Clone)]
 pub enum Pattern<'a> {
     /// Wildcard: `_`
-    Wildcard(Span),
+    Wildcard(NodeId, Span),
 
     /// Literal pattern: `42`, `"hello"`, `true`
-    Literal(LiteralPattern<'a>, Span),
+    Literal(NodeId, LiteralPattern<'a>, Span),
 
     /// Constructor pattern: `Some(x)`, `None`, `Ok(val)`
     Constructor {
+        id: NodeId,
         name: &'a str,
         fields: Vec<'a, Pattern<'a>>,
         span: Span,
     },
 
     /// Binding pattern: `x` (binds the matched value)
-    Binding(&'a str, Span),
+    Binding(NodeId, &'a str, Span),
 
     /// Tuple pattern: `(a, b)`
     Tuple {
+        id: NodeId,
         patterns: Vec<'a, Pattern<'a>>,
         span: Span,
     },
 
     /// Record pattern: `{ name, age }`
     Record {
+        id: NodeId,
         fields: Vec<'a, RecordPatternField<'a>>,
         span: Span,
     },
@@ -314,23 +364,23 @@ pub enum UnaryOp {
 
 impl<'a> Expr<'a> {
     pub fn int(text: &'a str, span: Span, arena: &'a Bump) -> &'a Self {
-        arena.alloc(Expr::IntLiteral(text, span))
+        arena.alloc(Expr::IntLiteral(NodeId(0), text, span))
     }
 
     pub fn float(text: &'a str, span: Span, arena: &'a Bump) -> &'a Self {
-        arena.alloc(Expr::FloatLiteral(text, span))
+        arena.alloc(Expr::FloatLiteral(NodeId(0), text, span))
     }
 
     pub fn str(val: &'a str, span: Span, arena: &'a Bump) -> &'a Self {
-        arena.alloc(Expr::Str(val, span))
+        arena.alloc(Expr::Str(NodeId(0), val, span))
     }
 
     pub fn bool(val: bool, span: Span, arena: &'a Bump) -> &'a Self {
-        arena.alloc(Expr::Bool(val, span))
+        arena.alloc(Expr::Bool(NodeId(0), val, span))
     }
 
     pub fn ident(name: &'a str, span: Span, arena: &'a Bump) -> &'a Self {
-        arena.alloc(Expr::Ident(name, span))
+        arena.alloc(Expr::Ident(NodeId(0), name, span))
     }
 
     pub fn binary(
@@ -341,6 +391,7 @@ impl<'a> Expr<'a> {
         arena: &'a Bump,
     ) -> &'a Self {
         arena.alloc(Expr::Binary {
+            id: NodeId(0),
             op,
             left,
             right,
@@ -355,6 +406,7 @@ impl<'a> Expr<'a> {
         arena: &'a Bump,
     ) -> &'a Self {
         arena.alloc(Expr::FieldAccess {
+            id: NodeId(0),
             object,
             field,
             span,
@@ -362,7 +414,11 @@ impl<'a> Expr<'a> {
     }
 
     pub fn record(fields: Vec<'a, RecordField<'a>>, span: Span, arena: &'a Bump) -> &'a Self {
-        arena.alloc(Expr::Record { fields, span })
+        arena.alloc(Expr::Record {
+            id: NodeId(0),
+            fields,
+            span,
+        })
     }
 
     pub fn app(
@@ -371,7 +427,12 @@ impl<'a> Expr<'a> {
         span: Span,
         arena: &'a Bump,
     ) -> &'a Self {
-        arena.alloc(Expr::Application { func, args, span })
+        arena.alloc(Expr::Application {
+            id: NodeId(0),
+            func,
+            args,
+            span,
+        })
     }
 
     /// Returns true if this expression is a numeric literal of any type.
@@ -380,15 +441,40 @@ impl<'a> Expr<'a> {
         matches!(self, Expr::IntLiteral(..) | Expr::FloatLiteral(..))
     }
 
+    /// Returns the stable node identity of this expression.
+    #[must_use]
+    pub fn id(&self) -> NodeId {
+        match self {
+            Expr::IntLiteral(id, ..)
+            | Expr::FloatLiteral(id, ..)
+            | Expr::Str(id, ..)
+            | Expr::Bool(id, ..)
+            | Expr::Ident(id, ..)
+            | Expr::Application { id, .. }
+            | Expr::Lambda { id, .. }
+            | Expr::Binary { id, .. }
+            | Expr::Unary { id, .. }
+            | Expr::Match { id, .. }
+            | Expr::Block { id, .. }
+            | Expr::Record { id, .. }
+            | Expr::FieldAccess { id, .. }
+            | Expr::Tuple { id, .. }
+            | Expr::If { id, .. }
+            | Expr::Array { id, .. }
+            | Expr::Template { id, .. }
+            | Expr::Index { id, .. } => *id,
+        }
+    }
+
     /// Returns the span of this expression.
     #[must_use]
     pub fn span(&self) -> Span {
         match self {
-            Expr::IntLiteral(_, span)
-            | Expr::FloatLiteral(_, span)
-            | Expr::Str(_, span)
-            | Expr::Bool(_, span)
-            | Expr::Ident(_, span)
+            Expr::IntLiteral(_, _, span)
+            | Expr::FloatLiteral(_, _, span)
+            | Expr::Str(_, _, span)
+            | Expr::Bool(_, _, span)
+            | Expr::Ident(_, _, span)
             | Expr::Application { span, .. }
             | Expr::Lambda { span, .. }
             | Expr::Binary { span, .. }
@@ -422,14 +508,27 @@ impl<'a> TypeExpr<'a> {
 }
 
 impl<'a> Pattern<'a> {
+    /// Returns the stable node identity of this pattern.
+    #[must_use]
+    pub fn id(&self) -> NodeId {
+        match self {
+            Pattern::Wildcard(id, _)
+            | Pattern::Literal(id, _, _)
+            | Pattern::Binding(id, _, _)
+            | Pattern::Constructor { id, .. }
+            | Pattern::Tuple { id, .. }
+            | Pattern::Record { id, .. } => *id,
+        }
+    }
+
     /// Returns the span of this pattern.
     #[must_use]
     pub fn span(&self) -> Span {
         match self {
-            Pattern::Wildcard(span)
-            | Pattern::Literal(_, span)
+            Pattern::Wildcard(_, span)
+            | Pattern::Literal(_, _, span)
+            | Pattern::Binding(_, _, span)
             | Pattern::Constructor { span, .. }
-            | Pattern::Binding(_, span)
             | Pattern::Tuple { span, .. }
             | Pattern::Record { span, .. } => *span,
         }
@@ -446,6 +545,10 @@ mod tests {
 
     fn sp(s: usize, e: usize) -> Span {
         Span::new(s, e)
+    }
+
+    fn nid(n: u32) -> NodeId {
+        NodeId(n)
     }
 
     #[test]
@@ -475,6 +578,7 @@ mod tests {
         );
 
         let lambda = Expr::Lambda {
+            id: nid(3),
             params,
             return_type: Some(ty_i64),
             body,
@@ -482,6 +586,7 @@ mod tests {
         };
 
         let decl = Decl::Bind {
+            id: nid(4),
             name: "add",
             ty: None,
             value: &lambda,
@@ -520,6 +625,7 @@ mod tests {
         let bump = Bump::new();
         let val = Expr::int("42", sp(13, 15), &bump);
         let decl = Decl::Bind {
+            id: nid(1),
             name: "x",
             ty: None,
             value: val,
@@ -528,7 +634,7 @@ mod tests {
         match decl {
             Decl::Bind { name, value, .. } => {
                 assert_eq!(name, "x");
-                assert!(matches!(value, Expr::IntLiteral("42", _)));
+                assert!(matches!(value, Expr::IntLiteral(_, "42", _)));
             }
             _ => panic!("expected Bind"),
         }
@@ -540,6 +646,7 @@ mod tests {
         let bump = Bump::new();
         let val = Expr::float("3.14", sp(13, 17), &bump);
         let decl = Decl::Bind {
+            id: nid(1),
             name: "pi",
             ty: None,
             value: val,
@@ -548,7 +655,7 @@ mod tests {
         match decl {
             Decl::Bind { name, value, .. } => {
                 assert_eq!(name, "pi");
-                assert!(matches!(value, Expr::FloatLiteral("3.14", _)));
+                assert!(matches!(value, Expr::FloatLiteral(_, "3.14", _)));
             }
             _ => panic!("expected Bind"),
         }
@@ -556,9 +663,9 @@ mod tests {
 
     #[test]
     fn pattern_literal_int() {
-        let p = Pattern::Literal(LiteralPattern::Int("42"), sp(0, 2));
+        let p = Pattern::Literal(nid(0), LiteralPattern::Int("42"), sp(0, 2));
         match p {
-            Pattern::Literal(LiteralPattern::Int(v), _) => assert_eq!(v, "42"),
+            Pattern::Literal(_, LiteralPattern::Int(v), _) => assert_eq!(v, "42"),
             _ => panic!("expected Int literal pattern"),
         }
     }

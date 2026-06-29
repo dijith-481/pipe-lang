@@ -16,9 +16,9 @@ Keyboard | Electronics | $100 | 20 | Boston
 Mouse | Electronics | $40 | 35 | Chicago
 
 === Revenue by category ===
-  Electronics: $36500
-  Clothing: $4800
-  Furniture: $5800
+  Electronics: $26100
+  Clothing: $4600
+  Furniture: $4550
 
 === Average price by category ===
   Electronics: $515
@@ -29,8 +29,8 @@ Mouse | Electronics | $40 | 35 | Chicago
   Mouse: $40 (Chicago)
   Keyboard: $100 (Boston)
   Monitor: $500 (New York)
-  Desk: $350 (New York)
   Lamp: $60 (Chicago)
+  Chair: $200 (Boston)
 
 === Electronics in New York ===
   Laptop: $1200 x 5
@@ -38,8 +38,8 @@ Mouse | Electronics | $40 | 35 | Chicago
   Monitor: $500 x 7
 
 === City breakdown ===
-  New York: 4 items, $27700 revenue
-  Boston: 4 items, $6100 revenue
-  Chicago: 4 items, $4300 revenue
+  New York: 4 items, $20150 revenue
+  Boston: 4 items, $9400 revenue
+  Chicago: 4 items, $5700 revenue
 
 Processed 12 rows across 3 categories.

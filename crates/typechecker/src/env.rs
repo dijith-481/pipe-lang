@@ -117,6 +117,7 @@ impl TypeEnv {
             vec![res_t, res_e],
             MonoType::Tag {
                 name: "Result".into(),
+                // Payload order: [t, e] = [Ok, Err] matching type param order
                 payload: Rc::from([MonoType::Var(res_t), MonoType::Var(res_e)]),
             },
         );
@@ -149,7 +150,7 @@ impl TypeEnv {
         );
         self.insert("None", none_type);
 
-        // Ok : <a, b>(a) -> Result<a, b>
+        // Ok : <t, e>(t) -> Result<t, e>
         let ok_a = self.fresh_var();
         let ok_b = self.fresh_var();
         let ok_type = PolyType::poly(
@@ -158,13 +159,14 @@ impl TypeEnv {
                 params: Rc::from([MonoType::Var(ok_a)]),
                 ret: Rc::new(MonoType::Tag {
                     name: "Result".into(),
+                    // Payload order: [t, e] = [Ok, Err]
                     payload: Rc::from([MonoType::Var(ok_a), MonoType::Var(ok_b)]),
                 }),
             },
         );
         self.insert("Ok", ok_type);
 
-        // Err : <a, b>(b) -> Result<a, b>
+        // Err : <t, e>(e) -> Result<t, e>
         let err_a = self.fresh_var();
         let err_b = self.fresh_var();
         let err_type = PolyType::poly(
@@ -173,6 +175,9 @@ impl TypeEnv {
                 params: Rc::from([MonoType::Var(err_b)]),
                 ret: Rc::new(MonoType::Tag {
                     name: "Result".into(),
+                    // Payload order: [t, e] = [Ok, Err] — Err variant payload is [e]
+                    // which occupies position 1 in the combined payload [t, e].
+                    // The tag_variants flattening handles the reordering automatically.
                     payload: Rc::from([MonoType::Var(err_a), MonoType::Var(err_b)]),
                 }),
             },
@@ -350,6 +355,7 @@ impl TypeEnv {
                 params: Rc::from([MonoType::Str]),
                 ret: Rc::new(MonoType::Effect(Box::new(MonoType::Tag {
                     name: "Result".into(),
+                    // Combined payload order: [e, t] = [Str, Str] — same type, order irrelevant
                     payload: Rc::from([MonoType::Str, MonoType::Str]),
                 }))),
             }),
@@ -623,7 +629,8 @@ impl TypeEnv {
                 params: Rc::from([MonoType::Str]),
                 ret: Rc::new(MonoType::Tag {
                     name: "Result".into(),
-                    payload: Rc::from([MonoType::I32, MonoType::Str]),
+                    // Combined payload order: [e, t] = [str, i32]
+                    payload: Rc::from([MonoType::Str, MonoType::I32]),
                 }),
             }),
         );
@@ -634,7 +641,8 @@ impl TypeEnv {
                 params: Rc::from([MonoType::Str]),
                 ret: Rc::new(MonoType::Tag {
                     name: "Result".into(),
-                    payload: Rc::from([MonoType::I32, MonoType::Str]),
+                    // Combined payload order: [e, t] = [str, i32]
+                    payload: Rc::from([MonoType::Str, MonoType::I32]),
                 }),
             }),
         );
@@ -698,10 +706,39 @@ impl TypeEnv {
             ),
         );
 
-        // Option.unwrap_or : <a>(Option<a>, a) -> a
+        // Option.flatMap : <a, b>(Option<a>, (a) -> Option<b>) -> Option<b>
+        let ofm_a2 = self.fresh_var();
+        let ofm_b2 = self.fresh_var();
+        self.insert(
+            "Option.flatMap",
+            PolyType::poly(
+                vec![ofm_a2, ofm_b2],
+                MonoType::Func {
+                    params: Rc::from([
+                        MonoType::Tag {
+                            name: "Option".into(),
+                            payload: Rc::from([MonoType::Var(ofm_a2)]),
+                        },
+                        MonoType::Func {
+                            params: Rc::from([MonoType::Var(ofm_a2)]),
+                            ret: Rc::new(MonoType::Tag {
+                                name: "Option".into(),
+                                payload: Rc::from([MonoType::Var(ofm_b2)]),
+                            }),
+                        },
+                    ]),
+                    ret: Rc::new(MonoType::Tag {
+                        name: "Option".into(),
+                        payload: Rc::from([MonoType::Var(ofm_b2)]),
+                    }),
+                },
+            ),
+        );
+
+        // Option.unwrapOr : <a>(Option<a>, a) -> a
         let uo_a = self.fresh_var();
         self.insert(
-            "Option.unwrap_or",
+            "Option.unwrapOr",
             PolyType::poly(
                 vec![uo_a],
                 MonoType::Func {
@@ -731,6 +768,52 @@ impl TypeEnv {
                         MonoType::Var(uo2_a),
                     ]),
                     ret: Rc::new(MonoType::Var(uo2_a)),
+                },
+            ),
+        );
+        // Bare alias: unwrapOr(Option<a>, a) -> a
+        let uo_camel_a = self.fresh_var();
+        self.insert(
+            "unwrapOr",
+            PolyType::poly(
+                vec![uo_camel_a],
+                MonoType::Func {
+                    params: Rc::from([
+                        MonoType::Tag {
+                            name: "Option".into(),
+                            payload: Rc::from([MonoType::Var(uo_camel_a)]),
+                        },
+                        MonoType::Var(uo_camel_a),
+                    ]),
+                    ret: Rc::new(MonoType::Var(uo_camel_a)),
+                },
+            ),
+        );
+        // Bare alias: flatMap(Option<a>, (a) -> Option<b>) -> Option<b>
+        let fm_a = self.fresh_var();
+        let fm_b = self.fresh_var();
+        self.insert(
+            "flatMap",
+            PolyType::poly(
+                vec![fm_a, fm_b],
+                MonoType::Func {
+                    params: Rc::from([
+                        MonoType::Tag {
+                            name: "Option".into(),
+                            payload: Rc::from([MonoType::Var(fm_a)]),
+                        },
+                        MonoType::Func {
+                            params: Rc::from([MonoType::Var(fm_a)]),
+                            ret: Rc::new(MonoType::Tag {
+                                name: "Option".into(),
+                                payload: Rc::from([MonoType::Var(fm_b)]),
+                            }),
+                        },
+                    ]),
+                    ret: Rc::new(MonoType::Tag {
+                        name: "Option".into(),
+                        payload: Rc::from([MonoType::Var(fm_b)]),
+                    }),
                 },
             ),
         );
@@ -769,7 +852,7 @@ impl TypeEnv {
                     params: Rc::from([
                         MonoType::Tag {
                             name: "Result".into(),
-                            payload: Rc::from([MonoType::Var(rm_t), MonoType::Var(rm_e)]),
+                            payload: Rc::from([MonoType::Var(rm_e), MonoType::Var(rm_t)]),
                         },
                         MonoType::Func {
                             params: Rc::from([MonoType::Var(rm_t)]),
@@ -778,7 +861,7 @@ impl TypeEnv {
                     ]),
                     ret: Rc::new(MonoType::Tag {
                         name: "Result".into(),
-                        payload: Rc::from([MonoType::Var(rm_u), MonoType::Var(rm_e)]),
+                        payload: Rc::from([MonoType::Var(rm_e), MonoType::Var(rm_u)]),
                     }),
                 },
             ),
@@ -796,19 +879,49 @@ impl TypeEnv {
                     params: Rc::from([
                         MonoType::Tag {
                             name: "Result".into(),
-                            payload: Rc::from([MonoType::Var(rfm_t), MonoType::Var(rfm_e)]),
+                            payload: Rc::from([MonoType::Var(rfm_e), MonoType::Var(rfm_t)]),
                         },
                         MonoType::Func {
                             params: Rc::from([MonoType::Var(rfm_t)]),
                             ret: Rc::new(MonoType::Tag {
                                 name: "Result".into(),
-                                payload: Rc::from([MonoType::Var(rfm_u), MonoType::Var(rfm_e)]),
+                                payload: Rc::from([MonoType::Var(rfm_e), MonoType::Var(rfm_u)]),
                             }),
                         },
                     ]),
                     ret: Rc::new(MonoType::Tag {
                         name: "Result".into(),
-                        payload: Rc::from([MonoType::Var(rfm_u), MonoType::Var(rfm_e)]),
+                        payload: Rc::from([MonoType::Var(rfm_e), MonoType::Var(rfm_u)]),
+                    }),
+                },
+            ),
+        );
+
+        // Result.flatMap : <t, e, u>(Result<t, e>, (t) -> Result<u, e>) -> Result<u, e>
+        let rfm2_t = self.fresh_var();
+        let rfm2_e = self.fresh_var();
+        let rfm2_u = self.fresh_var();
+        self.insert(
+            "Result.flatMap",
+            PolyType::poly(
+                vec![rfm2_t, rfm2_e, rfm2_u],
+                MonoType::Func {
+                    params: Rc::from([
+                        MonoType::Tag {
+                            name: "Result".into(),
+                            payload: Rc::from([MonoType::Var(rfm2_e), MonoType::Var(rfm2_t)]),
+                        },
+                        MonoType::Func {
+                            params: Rc::from([MonoType::Var(rfm2_t)]),
+                            ret: Rc::new(MonoType::Tag {
+                                name: "Result".into(),
+                                payload: Rc::from([MonoType::Var(rfm2_e), MonoType::Var(rfm2_u)]),
+                            }),
+                        },
+                    ]),
+                    ret: Rc::new(MonoType::Tag {
+                        name: "Result".into(),
+                        payload: Rc::from([MonoType::Var(rfm2_e), MonoType::Var(rfm2_u)]),
                     }),
                 },
             ),
@@ -825,7 +938,7 @@ impl TypeEnv {
                     params: Rc::from([
                         MonoType::Tag {
                             name: "Result".into(),
-                            payload: Rc::from([MonoType::Var(ru_t), MonoType::Var(ru_e)]),
+                            payload: Rc::from([MonoType::Var(ru_e), MonoType::Var(ru_t)]),
                         },
                         MonoType::Var(ru_t),
                     ]),
@@ -844,7 +957,7 @@ impl TypeEnv {
                     params: Rc::from([
                         MonoType::Tag {
                             name: "Result".into(),
-                            payload: Rc::from([MonoType::Var(ru2_t), MonoType::Var(ru2_e)]),
+                            payload: Rc::from([MonoType::Var(ru2_e), MonoType::Var(ru2_t)]),
                         },
                         MonoType::Var(ru2_t),
                     ]),

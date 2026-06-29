@@ -31,8 +31,9 @@ let main = () => {
     println(`add10(10) = ${add10(10)}`)
     println(`apply_twice(double, 3) = ${apply_twice(double, 3)}`)
     // Function composition (defined inline to work around top-level
-    // compose + thunk interaction).
-    let compose = (f, g) => (x) => f(g(x))
-    let dbl_then_inc = compose(increment, double)
+    // compose_fn + thunk interaction).
+    let compose_fn = (f, g) => (x) => f(g(x))
+    println(`compose_fn(increment, double)(5) = ${compose(increment, double)(5)}`)
+    let dbl_then_inc = compose_fn(increment, double)
     println(`doubleThenIncrement(5) = ${dbl_then_inc(5)}`)
 }

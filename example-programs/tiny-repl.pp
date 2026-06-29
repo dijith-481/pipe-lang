@@ -25,7 +25,7 @@ let eval_line = (line) => {
         line => {
             let parts = trimmed.split(`+`)
             match parts.len() {
-                2 => {
+                2usize => {
                     let l = match parts[0].trim().parse_i32() { Ok(n) => to_f64(n) _ => 0.0 }
                     let r = match parts[1].trim().parse_i32() { Ok(n) => to_f64(n) _ => 0.0 }
                     Ok(l + r)
@@ -49,18 +49,14 @@ let process_line = (line) => {
     }
 }
 
-// Helper: get nth element using fold
-let nth = (arr, n) =>
-    arr.fold({ idx: 0, result: `` }, (acc, elem) =>
-        if acc.idx == n { { idx: acc.idx + 1, result: elem } }
-        else { idx: acc.idx + 1, result: acc.result }
-    ).result
+// Helper: get nth element
+let nth = (arr, n) => arr[n]
 
 // REPL loop (top-level recursion)
 let repl_loop = (count) => {
     println(`[${to_str(count)}] > `)
     let inputs = [`42`, `3 + 4`, `10 + 20`, `exit`]
-    match count < inputs.len() {
+    match count < inputs.len().to_i32() {
         true => {
             let input = nth(inputs, count)
             println(input)

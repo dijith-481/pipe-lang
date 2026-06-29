@@ -16,7 +16,6 @@
 //! individual test functions verify only the loader and diffing
 //! logic; the end-to-end test is added on Day 10.
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// A single test fixture: source file + expected stdout.
@@ -121,40 +120,41 @@ pub struct RunResult {
 ///
 /// Panics if reading the fixture source fails.
 pub fn run_fixture(fixture: &Fixture) -> RunResult {
-    let source = fixture
-        .read_source()
-        .expect("fixture source should be readable");
+    // Spawn a subprocess to ensure full isolation — global state (JITModule,
+    // builtin registry, capture buffer) is process-scoped and leaks between
+    // tests when they share a process.
+    let binary = {
+        let me = std::env::current_exe().unwrap();
+        // The test binary is in target/debug/deps/; pipe-lang is in target/debug/
+        let mut dir = me.parent().unwrap().parent().unwrap().to_path_buf();
+        dir.push("pipe-lang");
+        if !dir.exists() {
+            // Try CARGO_MANIFEST_DIR or fallback
+            dir = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default())
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("target")
+                .join("debug")
+                .join("pipe-lang");
+        }
+        dir
+    };
+    let output = std::process::Command::new(&binary)
+        .arg("run")
+        .arg(&fixture.source)
+        .output()
+        .unwrap_or_else(|e| panic!("failed to spawn {binary:?}: {e}"));
 
-    // Enable global output capture in the runtime. Builtins like `println`
-    // will append to this buffer instead of writing to fd 1.
-    runtime::enable_capture();
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let exit_code = output.status.code().unwrap_or(1);
 
-    // Run the pipeline.
-    let config = crate::session::SessionConfig::new(fixture.source.clone())
-        .with_mode(crate::session::CompileMode::Run);
-    let mut session_handle = crate::session::CompilerSession::new(config);
-    session_handle.set_source(source);
-
-    // Flush stdout before running so libtest's buffered output doesn't
-    // get mixed with ours. This is harmless — we already enabled capture.
-    let _ = std::io::stdout().flush();
-
-    let result = session_handle.run_pipeline();
-
-    // Disable capture and retrieve the accumulated output.
-    let stdout_output = runtime::disable_capture();
-
-    match result {
-        Ok(res) => RunResult {
-            stdout: stdout_output,
-            stderr: String::new(),
-            exit_code: res.exit_code,
-        },
-        Err(diag) => RunResult {
-            stdout: stdout_output,
-            stderr: format!("{diag:?}"),
-            exit_code: 1,
-        },
+    RunResult {
+        stdout,
+        stderr,
+        exit_code,
     }
 }
 
@@ -236,10 +236,10 @@ mod tests {
     }
 
     #[test]
-    fn discover_fixtures_finds_20_example_programs() {
+    fn discover_fixtures_finds_22_example_programs() {
         let fixtures = discover_fixtures(&examples_dir()).expect("discover");
         let names: Vec<_> = fixtures.iter().map(|f| f.name.clone()).collect();
-        assert_eq!(fixtures.len(), 20, "found: {names:?}");
+        assert_eq!(fixtures.len(), 22, "found: {names:?}");
         assert!(names.contains(&"hello".to_string()));
         assert!(names.contains(&"factorial".to_string()));
         assert!(names.contains(&"io-effects".to_string()));

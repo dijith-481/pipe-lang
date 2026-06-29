@@ -91,6 +91,16 @@ impl Substitution {
                 Some(resolved) => self.apply(&resolved.clone()),
                 None => ty.clone(),
             },
+            // Constrained integer variable: defaults to i32 if still unresolved after inference.
+            MonoType::IntVar(id) => match self.lookup(*id) {
+                Some(resolved) => self.apply(&resolved.clone()),
+                None => MonoType::I32,
+            },
+            // Constrained float variable: defaults to f64 if still unresolved after inference.
+            MonoType::FloatVar(id) => match self.lookup(*id) {
+                Some(resolved) => self.apply(&resolved.clone()),
+                None => MonoType::F64,
+            },
             MonoType::Array(inner) => MonoType::Array(Rc::new(self.apply(inner))),
             MonoType::Func { params, ret } => {
                 let params: Vec<_> = params.iter().map(|p| self.apply(p)).collect();
@@ -126,7 +136,7 @@ impl Substitution {
 
 fn occurs_in(sub: &mut Substitution, var: TypeId, ty: &MonoType) -> bool {
     match ty {
-        MonoType::Var(id) => {
+        MonoType::Var(id) | MonoType::IntVar(id) | MonoType::FloatVar(id) => {
             sub.ensure_key(*id);
             match sub.table.probe_value(*id).0 {
                 Some(resolved) => {
@@ -168,6 +178,28 @@ pub fn unify(sub: &mut Substitution, a: &MonoType, b: &MonoType) -> Result<(), T
 
     match (&a, &b) {
         _ if a == b => Ok(()),
+
+        // Constrained integer variable: unifies only with concrete integers, Var, or another IntVar.
+        (MonoType::IntVar(id), ty) | (ty, MonoType::IntVar(id)) => match ty {
+            MonoType::I8
+            | MonoType::I16
+            | MonoType::I32
+            | MonoType::I64
+            | MonoType::U8
+            | MonoType::U16
+            | MonoType::U32
+            | MonoType::U64
+            | MonoType::Usize => bind(sub, *id, ty),
+            MonoType::IntVar(_) | MonoType::Var(_) => bind(sub, *id, ty),
+            _ => Err(mismatch(&a, &b)),
+        },
+
+        // Constrained float variable: unifies only with concrete floats, Var, or another FloatVar.
+        (MonoType::FloatVar(id), ty) | (ty, MonoType::FloatVar(id)) => match ty {
+            MonoType::F32 | MonoType::F64 => bind(sub, *id, ty),
+            MonoType::FloatVar(_) | MonoType::Var(_) => bind(sub, *id, ty),
+            _ => Err(mismatch(&a, &b)),
+        },
 
         (MonoType::Var(id), _) => bind(sub, *id, &b),
         (_, MonoType::Var(id)) => bind(sub, *id, &a),
@@ -212,9 +244,6 @@ pub fn unify(sub: &mut Substitution, a: &MonoType, b: &MonoType) -> Result<(), T
         }
 
         (MonoType::Record(af), MonoType::Record(bf)) => {
-            if af.len() != bf.len() { 
-                return Err(mismatch(&a, &b));
-            }
             for (name, a_ty) in af.iter() {
                 let b_ty = bf.get(name).ok_or_else(|| mismatch(&a, &b))?;
                 unify(sub, a_ty, b_ty)?;
@@ -442,5 +471,40 @@ mod tests {
             unify(&mut sub, &a, &b),
             Err(TypeError::UnificationFailed { .. })
         ));
+    }
+
+    // -----------------------------------------------------------------------
+    // Record unification requires exactly equal field counts.  This is too
+    // strict: a record with MORE fields should unify with a record that has
+    // FEWER fields (row-polymorphic extension).  Without this, functions
+    // that access a subset of fields on a record argument cannot be called
+    // with records that have extra fields.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn unify_record_rejects_extra_fields() {
+        let mut sub = Substitution::new();
+        // { key: str }
+        let mut fewer_fields = BTreeMap::new();
+        fewer_fields.insert("key".into(), MonoType::Str);
+        let fewer = MonoType::Record(Rc::new(fewer_fields));
+        // { key: str, value: str }
+        let mut more_fields = BTreeMap::new();
+        more_fields.insert("key".into(), MonoType::Str);
+        more_fields.insert("value".into(), MonoType::Str);
+        let more = MonoType::Record(Rc::new(more_fields));
+
+        // A record with extra fields SHOULD unify: row-polymorphism allows
+        // a function expecting {key: str} to be called with {key: str, value: str}.
+        // But unify.rs:247 checks `af.len() != bf.len()` and rejects it.
+        let result = unify(&mut sub, &fewer, &more);
+        assert!(
+            result.is_ok(),
+            "Record unifier should accept extra fields (row-polymorphism), \
+             got: {:?}. Bug at unify.rs:247: equal field count check is \
+             too strict — it prevents extension, causing json-parser.pp \
+             to fail with 'field `value` not found on record'.",
+            result,
+        );
     }
 }

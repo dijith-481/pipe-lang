@@ -157,11 +157,29 @@ fn e2e_markdown_renderer() {
 }
 
 // ---------------------------------------------------------------------------
+// String map (regression: call_jit_fn desc_idx off-by-one)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn e2e_map_strings() {
+    assert_fixture_ok("map-strings");
+}
+
+// ---------------------------------------------------------------------------
+// Capturing closures (regression: call_jit_fn + param_descs mismatches)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn e2e_capturing_closures() {
+    assert_fixture_ok("capturing-closures");
+}
+
+// ---------------------------------------------------------------------------
 // Smoke: fixture infrastructure loads all programs
 // ---------------------------------------------------------------------------
 
 #[test]
-fn e2e_discover_all_20_programs() {
+fn e2e_discover_all_programs() {
     let fixtures = discover_fixtures(&examples_dir()).expect("discover");
-    assert_eq!(fixtures.len(), 20, "expected 20 example programs");
+    assert_eq!(fixtures.len(), 22, "expected 22 example programs");
 }

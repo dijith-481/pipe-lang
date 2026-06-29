@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 
 use ast::SmolStr;
+use ast::ast::NodeId;
 use ast::ast::{BinOp, Decl, Expr, LiteralPattern, MatchArm, Pattern, Stmt, TypeExpr, UnaryOp};
 use ast::span::Span;
 
@@ -17,7 +18,8 @@ use crate::unify::{Substitution, unify};
 
 fn free_vars_mono(ty: &MonoType, out: &mut HashSet<TypeId>) {
     match ty {
-        MonoType::Var(id) => {
+        // Both unconstrained and constrained vars are free until resolved.
+        MonoType::Var(id) | MonoType::IntVar(id) | MonoType::FloatVar(id) => {
             out.insert(*id);
         }
         MonoType::Array(inner) => free_vars_mono(inner, out),
@@ -76,6 +78,9 @@ pub fn instantiate(env: &mut TypeEnv, sub: &mut Substitution, poly: &PolyType) -
 fn apply_mapping(ty: &MonoType, m: &HashMap<TypeId, MonoType>) -> MonoType {
     match ty {
         MonoType::Var(id) => m.get(id).cloned().unwrap_or_else(|| ty.clone()),
+        // Preserve the constraint kind (Int/Float) when mapping quantified variables.
+        MonoType::IntVar(id) => m.get(id).cloned().unwrap_or_else(|| ty.clone()),
+        MonoType::FloatVar(id) => m.get(id).cloned().unwrap_or_else(|| ty.clone()),
         MonoType::Array(inner) => MonoType::Array(Rc::new(apply_mapping(inner, m))),
         MonoType::Func { params, ret } => MonoType::Func {
             params: params.iter().map(|p| apply_mapping(p, m)).collect(),
@@ -293,21 +298,42 @@ fn bind_pattern<'a>(
     pat: &Pattern<'a>,
 ) -> Result<MonoType, TypeError> {
     match pat {
-        Pattern::Wildcard(_) => {
+        Pattern::Wildcard(_, _) => {
             let v = env.fresh_var();
             sub.ensure_key(v);
             Ok(MonoType::Var(v))
         }
-        Pattern::Binding(name, _) => {
+        Pattern::Binding(_, name, _) => {
             let v = env.fresh_var();
             sub.ensure_key(v);
             let ty = MonoType::Var(v);
             env.insert(*name, PolyType::mono(ty.clone()));
             Ok(ty)
         }
-        Pattern::Literal(lit, _span) => match lit {
-            LiteralPattern::Int(text) => Ok(int_literal_type(text)),
-            LiteralPattern::Float(_) => Ok(MonoType::F64),
+        Pattern::Literal(_, lit, _span) => match lit {
+            LiteralPattern::Int(text) => {
+                // Use a constrained integer variable so the pattern type unifies
+                // with the subject — if the subject is u8, the pattern becomes u8.
+                let resolved = int_literal_type(text);
+                if matches!(resolved, MonoType::I32) && !text.ends_with("i32") {
+                    // Un-suffixed integer literal in a pattern: emit IntVar.
+                    let id = env.fresh_var();
+                    sub.ensure_key(id);
+                    Ok(MonoType::IntVar(id))
+                } else {
+                    Ok(resolved)
+                }
+            }
+            LiteralPattern::Float(text) => {
+                let resolved = float_literal_type(text);
+                if matches!(resolved, MonoType::F64) && !text.ends_with("f64") {
+                    let id = env.fresh_var();
+                    sub.ensure_key(id);
+                    Ok(MonoType::FloatVar(id))
+                } else {
+                    Ok(resolved)
+                }
+            }
             LiteralPattern::Str(_) => Ok(MonoType::Str),
             LiteralPattern::Bool(_) => Ok(MonoType::Bool),
         },
@@ -345,12 +371,12 @@ fn bind_pattern<'a>(
                     MonoType::Func { params, ret } => {
                         // Constructor takes params and returns parent type.
                         // Bind each pattern field to the corresponding param type.
-                        for (field_pat, param_ty) in fields.iter().zip(params.iter()) {
-                            let field_ty = bind_pattern(env, sub, field_pat)?;
-                            let param_applied = sub.apply(param_ty);
-                            let field_applied = sub.apply(&field_ty);
-                            unify(sub, &param_applied, &field_applied)?;
-                        }
+                for (field_pat, param_ty) in fields.iter().zip(params.iter()) {
+                    let field_ty = bind_pattern(env, sub, field_pat)?;
+                    let param_applied = sub.apply(param_ty);
+                    let field_applied = sub.apply(&field_ty);
+                    unify(sub, &param_applied, &field_applied)?;
+                }
                         Ok(ret.as_ref().clone())
                     }
                     MonoType::Tag { .. } => {
@@ -454,9 +480,9 @@ fn float_literal_type(text: &str) -> MonoType {
 
 /// Infers the type of `expr`, recording sub-expression types in `type_map`.
 ///
-/// Every expression's fully-resolved span→type is inserted into `type_map`
+/// Every expression's fully-resolved id→type is inserted into `type_map`
 /// before returning, enabling the IR lowerer to look up any sub-expression's
-/// type without a second traversal.
+/// type by [`NodeId`] without a second traversal.
 ///
 /// # Errors
 ///
@@ -464,32 +490,51 @@ fn float_literal_type(text: &str) -> MonoType {
 pub fn infer<'a>(
     env: &mut TypeEnv,
     sub: &mut Substitution,
-    type_map: &mut HashMap<Span, MonoType>,
+    type_map: &mut HashMap<NodeId, MonoType>,
     expr: &Expr<'a>,
 ) -> Result<MonoType, TypeError> {
     let result = infer_inner(env, sub, type_map, expr)?;
     let resolved = sub.apply(&result);
-    type_map.insert(expr.span(), resolved.clone());
+    type_map.insert(expr.id(), resolved.clone());
     Ok(resolved)
 }
 
 fn infer_inner<'a>(
     env: &mut TypeEnv,
     sub: &mut Substitution,
-    type_map: &mut HashMap<Span, MonoType>,
+    type_map: &mut HashMap<NodeId, MonoType>,
     expr: &Expr<'a>,
 ) -> Result<MonoType, TypeError> {
     match expr {
-        Expr::IntLiteral(text, span) => {
-            let ty = int_literal_type(text);
-            check_int_overflow(text, &ty, *span)?;
-            Ok(ty)
+        Expr::IntLiteral(_, text, span) => {
+            let resolved = int_literal_type(text);
+            if matches!(resolved, MonoType::I32) && !text.ends_with("i32") {
+                // Un-suffixed integer literal: emit a constrained IntVar so the
+                // type can be narrowed by an annotation (e.g. `let x: u8 = 42`).
+                check_int_overflow(text, &MonoType::I32, *span)?;
+                let id = env.fresh_var();
+                sub.ensure_key(id);
+                Ok(MonoType::IntVar(id))
+            } else {
+                check_int_overflow(text, &resolved, *span)?;
+                Ok(resolved)
+            }
         }
-        Expr::FloatLiteral(text, _) => Ok(float_literal_type(text)),
-        Expr::Bool(_, _) => Ok(MonoType::Bool),
-        Expr::Str(_, _) => Ok(MonoType::Str),
+        Expr::FloatLiteral(_, text, _) => {
+            let resolved = float_literal_type(text);
+            if matches!(resolved, MonoType::F64) && !text.ends_with("f64") {
+                // Un-suffixed float literal: emit FloatVar so annotations can narrow it.
+                let id = env.fresh_var();
+                sub.ensure_key(id);
+                Ok(MonoType::FloatVar(id))
+            } else {
+                Ok(resolved)
+            }
+        }
+        Expr::Bool(_, _, _) => Ok(MonoType::Bool),
+        Expr::Str(_, _, _) => Ok(MonoType::Str),
 
-        Expr::Ident(name, span) => {
+        Expr::Ident(_, name, span) => {
             let poly = env
                 .lookup(name)
                 .ok_or_else(|| TypeError::UnboundVariable {
@@ -541,7 +586,9 @@ fn infer_inner<'a>(
             })
         }
 
-        Expr::Application { func, args, span } => {
+        Expr::Application {
+            func, args, span, ..
+        } => {
             let mut func_ty = infer(env, sub, type_map, func)?;
             let arg_tys: Vec<MonoType> = args
                 .iter()
@@ -550,7 +597,7 @@ fn infer_inner<'a>(
 
             // Method dispatch: if the function is a bare name and the first arg
             // is a Tag type, try the qualified method name (e.g. Option.map).
-            if let Expr::Ident(name, _) = *func
+            if let Expr::Ident(_, name, _) = *func
                 && !args.is_empty()
             {
                 let first_arg_ty = sub.apply(&arg_tys[0]);
@@ -607,8 +654,8 @@ fn infer_inner<'a>(
             // variables.  Re-resolve and re-insert now that the function
             // signature has been unified.
             for arg in args {
-                if let Some(ty) = type_map.get(&arg.span()) {
-                    type_map.insert(arg.span(), sub.apply(ty));
+                if let Some(ty) = type_map.get(&arg.id()) {
+                    type_map.insert(arg.id(), sub.apply(ty));
                 }
             }
             Ok(sub.apply(&ret_ty))
@@ -619,6 +666,7 @@ fn infer_inner<'a>(
             left,
             right,
             span,
+            ..
         } => {
             let lt = infer(env, sub, type_map, left)?;
             let rt = infer(env, sub, type_map, right)?;
@@ -657,12 +705,14 @@ fn infer_inner<'a>(
             }
         }
 
-        Expr::Unary { op, operand, span } => {
+        Expr::Unary {
+            op, operand, span, ..
+        } => {
             let ty = infer(env, sub, type_map, operand)?;
             let ta = sub.apply(&ty);
             match op {
                 UnaryOp::Neg => {
-                    if !ta.is_numeric() {
+                    if !ta.is_numeric() && !matches!(ta, MonoType::Var(_)) {
                         return Err(TypeError::UnificationFailed {
                             expected: MonoType::I32,
                             got: ta,
@@ -687,6 +737,7 @@ fn infer_inner<'a>(
             then_branch,
             else_branch,
             span,
+            ..
         } => {
             let ct = infer(env, sub, type_map, condition)?;
             let ca = sub.apply(&ct);
@@ -721,6 +772,7 @@ fn infer_inner<'a>(
             subject,
             arms,
             span,
+            ..
         } => {
             if arms.is_empty() {
                 return Err(TypeError::NonExhaustiveMatch { span: *span });
@@ -735,7 +787,7 @@ fn infer_inner<'a>(
             Ok(sub.apply(result_ty.as_ref().unwrap()))
         }
 
-        Expr::Array { elems, span } => {
+        Expr::Array { elems, span, .. } => {
             let elem_var = env.fresh_var();
             sub.ensure_key(elem_var);
             let elem_ty = MonoType::Var(elem_var);
@@ -779,8 +831,9 @@ fn infer_inner<'a>(
             object,
             field,
             span,
+            ..
         } => {
-            let raw_obj_ty = infer_inner(env, sub, type_map, object)?;
+            let raw_obj_ty = infer(env, sub, type_map, object)?;
             let oa = sub.apply(&raw_obj_ty);
             match &oa {
                 MonoType::Record(fields) => {
@@ -837,7 +890,9 @@ fn infer_inner<'a>(
             Ok(MonoType::Str)
         }
 
-        Expr::Index { array, index, span } => {
+        Expr::Index {
+            array, index, span, ..
+        } => {
             let arr_ty = infer(env, sub, type_map, array)?;
             let idx_ty = infer(env, sub, type_map, index)?;
             let ia = sub.apply(&idx_ty);
@@ -866,7 +921,7 @@ fn infer_inner<'a>(
 fn infer_stmt<'a>(
     env: &mut TypeEnv,
     sub: &mut Substitution,
-    type_map: &mut HashMap<Span, MonoType>,
+    type_map: &mut HashMap<NodeId, MonoType>,
     stmt: &Stmt<'a>,
 ) -> Result<(), TypeError> {
     match stmt {
@@ -890,8 +945,8 @@ fn bind_stmt_pattern<'a>(
     poly: PolyType,
 ) -> Result<(), TypeError> {
     match pat {
-        Pattern::Binding(name, _) => env.insert(*name, poly),
-        Pattern::Wildcard(_) => {}
+        Pattern::Binding(_, name, _) => env.insert(*name, poly),
+        Pattern::Wildcard(_, _) => {}
         _ => {
             bind_pattern(env, sub, pat)?;
         }
@@ -902,7 +957,7 @@ fn bind_stmt_pattern<'a>(
 fn infer_arm<'a>(
     env: &mut TypeEnv,
     sub: &mut Substitution,
-    type_map: &mut HashMap<Span, MonoType>,
+    type_map: &mut HashMap<NodeId, MonoType>,
     arm: &MatchArm<'a>,
     subj_ty: &MonoType,
     span: &Span,
@@ -977,7 +1032,7 @@ pub fn infer_expr<'a>(env: &mut TypeEnv, expr: &Expr<'a>) -> Result<MonoType, Ty
 pub fn infer_decl_with_map<'a>(
     env: &mut TypeEnv,
     decl: &Decl<'a>,
-    type_map: &mut HashMap<Span, MonoType>,
+    type_map: &mut HashMap<NodeId, MonoType>,
 ) -> Result<PolyType, TypeError> {
     match decl {
         Decl::Bind {
@@ -985,6 +1040,7 @@ pub fn infer_decl_with_map<'a>(
             ty: annotation,
             value,
             span,
+            id: decl_id,
         } => {
             let mut sub = Substitution::new();
             let inferred = infer(env, &mut sub, type_map, value)?;
@@ -1000,33 +1056,28 @@ pub fn infer_decl_with_map<'a>(
                 })?;
                 let final_ty = sub.apply(&inferred);
                 // Refresh all type_map entries: resolve type variables that
-                // were bound after the entry was first recorded (e.g. match
-                // subject types resolved through arm pattern unification).
+                // were bound after the entry was first recorded.
                 for (_, ty) in type_map.iter_mut() {
                     *ty = sub.apply(ty);
                 }
                 let poly = generalize(env, &mut sub, &final_ty);
                 env.insert(*name, poly.clone());
-                type_map.insert(*span, poly.body.clone());
+                type_map.insert(*decl_id, poly.body.clone());
                 return Ok(poly);
             }
 
-            // Refresh all type_map entries (same reason as above).
+            // Refresh all type_map entries.
             for (_, ty) in type_map.iter_mut() {
                 *ty = sub.apply(ty);
             }
             let poly = generalize(env, &mut sub, &inferred);
             env.insert(*name, poly.clone());
-            type_map.insert(*span, poly.body.clone());
+            type_map.insert(*decl_id, poly.body.clone());
             Ok(poly)
         }
 
         Decl::TypeAlias {
-            name,
-            params,
-            rhs,
-            span,
-            ..
+            name, params, rhs, ..
         } => {
             // Create fresh type variables for generic params
             let param_vars: Vec<TypeId> = params.iter().map(|_| env.fresh_var()).collect();
@@ -1038,7 +1089,17 @@ pub fn infer_decl_with_map<'a>(
 
             match rhs {
                 TypeExpr::Sum { variants, .. } => {
-                    // Register each variant as a constructor function
+                    // Pass 1: Resolve variant payload types to build the combined payloads list.
+                    // We first register a placeholder tag type in env so recursive references resolve.
+                    let placeholder_poly = PolyType::poly(
+                        param_vars.clone(),
+                        MonoType::Tag {
+                            name: SmolStr::from(*name),
+                            payload: Rc::from([]),
+                        },
+                    );
+                    env.insert(*name, placeholder_poly);
+
                     let mut tag_info = Vec::new();
                     for variant in variants {
                         let payload_tys: Result<Vec<MonoType>, _> = variant
@@ -1047,46 +1108,50 @@ pub fn infer_decl_with_map<'a>(
                             .map(|f| resolve_type_expr_with_env(env, f, &param_map))
                             .collect();
                         let payload_tys = payload_tys?;
+                        tag_info.push((SmolStr::from(variant.name), payload_tys));
+                    }
 
+                    let combined: Vec<MonoType> =
+                        tag_info.iter().flat_map(|(_, ptys)| ptys.clone()).collect();
+                    env.tag_variants
+                        .insert(SmolStr::from(*name), tag_info.clone());
+
+                    // Register the final tag type in env so constructors resolve to the full tag type.
+                    let poly = PolyType::poly(
+                        param_vars.clone(),
+                        MonoType::Tag {
+                            name: SmolStr::from(*name),
+                            payload: Rc::from(combined.clone()),
+                        },
+                    );
+                    env.insert(*name, poly.clone());
+
+                    // Pass 2: Register each variant constructor function returning the full tag type.
+                    for (variant_name, payload_tys) in tag_info {
                         let ctor_type = if payload_tys.is_empty() {
-                            // Nullary constructor: bare tag value
                             PolyType::poly(
                                 param_vars.clone(),
                                 MonoType::Tag {
                                     name: SmolStr::from(*name),
-                                    payload: Rc::from([]),
+                                    payload: Rc::from(combined.clone()),
                                 },
                             )
                         } else {
-                            // Constructor with payload: (T1, T2, ...) -> TagType
                             PolyType::poly(
                                 param_vars.clone(),
                                 MonoType::Func {
                                     params: Rc::from(payload_tys.clone()),
                                     ret: Rc::new(MonoType::Tag {
                                         name: SmolStr::from(*name),
-                                        payload: Rc::from(payload_tys.clone()),
+                                        payload: Rc::from(combined.clone()),
                                     }),
                                 },
                             )
                         };
-                        env.insert(variant.name, ctor_type);
-                        tag_info.push((SmolStr::from(variant.name), payload_tys));
+                        env.insert(variant_name.as_str(), ctor_type);
                     }
 
-                    let combined: Vec<MonoType> =
-                        tag_info.iter().flat_map(|(_, ptys)| ptys.clone()).collect();
-                    env.tag_variants.insert(SmolStr::from(*name), tag_info);
-
-                    let poly = PolyType::poly(
-                        param_vars,
-                        MonoType::Tag {
-                            name: SmolStr::from(*name),
-                            payload: Rc::from(combined),
-                        },
-                    );
-                    env.insert(*name, poly.clone());
-                    type_map.insert(*span, poly.body.clone());
+                    type_map.insert(decl.id(), poly.body.clone());
                     Ok(poly)
                 }
                 _ => {
@@ -1094,7 +1159,7 @@ pub fn infer_decl_with_map<'a>(
                     let resolved = resolve_type_expr_with_env(env, rhs, &param_map)?;
                     let poly = PolyType::poly(param_vars, resolved);
                     env.insert(*name, poly.clone());
-                    type_map.insert(*span, poly.body.clone());
+                    type_map.insert(decl.id(), poly.body.clone());
                     Ok(poly)
                 }
             }
@@ -1121,7 +1186,7 @@ pub fn infer_decl<'a>(env: &mut TypeEnv, decl: &Decl<'a>) -> Result<PolyType, Ty
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ast::ast::{Decl, Expr};
+    use ast::ast::{Decl, Expr, NodeId, TypeExpr, TypeVariant};
     use ast::span::Span;
     use bumpalo::Bump;
 
@@ -1133,9 +1198,30 @@ mod tests {
     fn infer_i32_literal() {
         let bump = Bump::new();
         let mut env = TypeEnv::new();
+        // Un-suffixed int defaults to I32.
         assert_eq!(
             infer_expr(&mut env, Expr::int("42", sp(), &bump)).unwrap(),
             MonoType::I32
+        );
+    }
+
+    #[test]
+    fn infer_suffixed_i64_literal() {
+        let bump = Bump::new();
+        let mut env = TypeEnv::new();
+        assert_eq!(
+            infer_expr(&mut env, Expr::int("42i64", sp(), &bump)).unwrap(),
+            MonoType::I64
+        );
+    }
+
+    #[test]
+    fn infer_suffixed_u8_literal() {
+        let bump = Bump::new();
+        let mut env = TypeEnv::new();
+        assert_eq!(
+            infer_expr(&mut env, Expr::int("255u8", sp(), &bump)).unwrap(),
+            MonoType::U8
         );
     }
 
@@ -1163,9 +1249,20 @@ mod tests {
     fn infer_f64_literal() {
         let bump = Bump::new();
         let mut env = TypeEnv::new();
+        // Un-suffixed float defaults to F64.
         assert_eq!(
             infer_expr(&mut env, Expr::float("3.14", sp(), &bump)).unwrap(),
             MonoType::F64
+        );
+    }
+
+    #[test]
+    fn infer_suffixed_f32_literal() {
+        let bump = Bump::new();
+        let mut env = TypeEnv::new();
+        assert_eq!(
+            infer_expr(&mut env, Expr::float("3.14f32", sp(), &bump)).unwrap(),
+            MonoType::F32
         );
     }
 
@@ -1204,6 +1301,7 @@ mod tests {
         let bump = Bump::new();
         let val = Expr::int("42", sp(), &bump);
         let decl = Decl::Bind {
+            id: NodeId(0),
             name: "x",
             ty: None,
             value: val,
@@ -1219,6 +1317,7 @@ mod tests {
     fn infer_decl_use_stdlib_io() {
         let bump = Bump::new();
         let decl = Decl::Use {
+            id: NodeId(0),
             path: bumpalo::collections::Vec::from_iter_in(["stdlib", "io"], &bump),
             span: sp(),
         };
@@ -1240,22 +1339,99 @@ mod tests {
 
     #[test]
     fn type_map_records_sub_expression_types() {
-        // The if-expression span should map to its result type in the map.
+        // The if-expression id should map to its result type in the map.
         let bump = Bump::new();
         let mut env = TypeEnv::new();
-        let cond = Expr::bool(true, Span::new(3, 7), &bump);
-        let then_b = Expr::float("1.0", Span::new(10, 13), &bump);
-        let else_b = Expr::float("2.0", Span::new(22, 25), &bump);
-        let if_span = Span::new(0, 26);
+        let cond = bump.alloc(Expr::Bool(NodeId(0), true, Span::new(3, 7)));
+        let then_b = bump.alloc(Expr::FloatLiteral(NodeId(1), "1.0", Span::new(10, 13)));
+        let else_b = bump.alloc(Expr::FloatLiteral(NodeId(2), "2.0", Span::new(22, 25)));
+        let if_id = NodeId(3);
         let expr = bump.alloc(Expr::If {
+            id: if_id,
             condition: cond,
             then_branch: then_b,
             else_branch: else_b,
-            span: if_span,
+            span: Span::new(0, 26),
         });
         let mut sub = Substitution::new();
         let mut map = HashMap::new();
         infer(&mut env, &mut sub, &mut map, expr).unwrap();
-        assert_eq!(map.get(&if_span), Some(&MonoType::F64));
+        assert_eq!(map.get(&if_id), Some(&MonoType::F64));
+    }
+
+    #[test]
+    fn intvar_defaults_to_i32() {
+        let bump = Bump::new();
+        let mut env = TypeEnv::new();
+        // `42` with no annotation should default to I32.
+        let expr = Expr::int("42", sp(), &bump);
+        assert_eq!(infer_expr(&mut env, expr).unwrap(), MonoType::I32);
+    }
+
+    #[test]
+    fn floatvar_defaults_to_f64() {
+        let bump = Bump::new();
+        let mut env = TypeEnv::new();
+        let expr = Expr::float("3.14", sp(), &bump);
+        assert_eq!(infer_expr(&mut env, expr).unwrap(), MonoType::F64);
+    }
+
+    // -----------------------------------------------------------------------
+    // Self-referential (recursive) tag type aliases fail to typecheck.
+    //
+    // `type Expr = | Num(f64) | Add(Expr, Expr) | Neg(Expr)` defines a
+    // recursive sum type.  The typechecker at infer.rs:1098 resolves
+    // variant payload types BEFORE the type name is registered in the
+    // env (line 1139).  When a payload references the type itself (e.g.
+    // `Add(Expr, Expr)`), the lookup returns "unbound variable".
+    //
+    // This prevents expression-evaluator.pp and similar recursive ADTs
+    // from typechecking.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn recursive_tag_type_alias_fails_to_typecheck() {
+        let bump = Bump::new();
+
+        // Build `type Expr = | Num(f64) | Neg(Expr)`
+        let num_variant = TypeVariant {
+            name: "Num",
+            fields: bumpalo::collections::Vec::from_iter_in([TypeExpr::Named("f64", sp())], &bump),
+            span: sp(),
+        };
+        let neg_variant = TypeVariant {
+            name: "Neg",
+            fields: bumpalo::collections::Vec::from_iter_in([TypeExpr::Named("Expr", sp())], &bump),
+            span: sp(),
+        };
+        let sum_ty = TypeExpr::Sum {
+            variants: bumpalo::collections::Vec::from_iter_in([num_variant, neg_variant], &bump),
+            span: sp(),
+        };
+
+        let decl = Decl::TypeAlias {
+            id: NodeId(0),
+            name: "Expr",
+            params: bumpalo::collections::Vec::new_in(&bump),
+            rhs: &sum_ty,
+            span: sp(),
+        };
+
+        let mut env = TypeEnv::new();
+        let result = infer_decl(&mut env, &decl);
+
+        // The type alias SHOULD typecheck successfully, registering the
+        // recursive tag type in the env.  But infer.rs:1098 resolves
+        // variant fields before the name is inserted (line 1139), so
+        // `Neg(Expr)` fails with "UnboundVariable: Expr".
+        assert!(
+            result.is_ok(),
+            "Recursive type alias `type Expr = | Num(f64) | Neg(Expr)` \
+             should typecheck but got: {:?}. \
+             Bug: infer.rs:1098 resolves variant payloads before the \
+             type name is registered at line 1139, so self-referential \
+             tags fail with UnboundVariable.",
+            result,
+        );
     }
 }

@@ -61,6 +61,12 @@ pub enum MonoType {
 
     // -- Type variable (unresolved) --
     Var(TypeId),
+
+    // -- Constrained numeric type variables --
+    /// An integer type variable: resolves only to integer types; defaults to `i32`.
+    IntVar(TypeId),
+    /// A float type variable: resolves only to float types; defaults to `f64`.
+    FloatVar(TypeId),
 }
 
 impl fmt::Display for MonoType {
@@ -82,6 +88,8 @@ impl fmt::Display for MonoType {
             MonoType::Unit => write!(f, "()"),
             MonoType::Effect(inner) => write!(f, "Effect<{inner}>"),
             MonoType::Var(id) => write!(f, "{id}"),
+            MonoType::IntVar(id) => write!(f, "int?{}", id.0),
+            MonoType::FloatVar(id) => write!(f, "float?{}", id.0),
             MonoType::Array(inner) => write!(f, "[{inner}]"),
             MonoType::Func { params, ret } => {
                 write!(f, "(")?;
@@ -126,7 +134,8 @@ impl MonoType {
     #[must_use]
     pub fn is_concrete(&self) -> bool {
         match self {
-            MonoType::Var(_) => false,
+            // Unconstrained and constrained type vars are not yet concrete.
+            MonoType::Var(_) | MonoType::IntVar(_) | MonoType::FloatVar(_) => false,
             MonoType::Array(inner) => inner.is_concrete(),
             MonoType::Func { params, ret } => {
                 params.iter().all(|p| p.is_concrete()) && ret.is_concrete()
@@ -154,7 +163,33 @@ impl MonoType {
                 | MonoType::Usize
                 | MonoType::F32
                 | MonoType::F64
+                | MonoType::IntVar(_)
+                | MonoType::FloatVar(_)
         )
+    }
+
+    /// Returns true if this type is or could be an integer (including constrained variables).
+    #[must_use]
+    pub fn is_int_compatible(&self) -> bool {
+        matches!(
+            self,
+            MonoType::I8
+                | MonoType::I16
+                | MonoType::I32
+                | MonoType::I64
+                | MonoType::U8
+                | MonoType::U16
+                | MonoType::U32
+                | MonoType::U64
+                | MonoType::Usize
+                | MonoType::IntVar(_)
+        )
+    }
+
+    /// Returns true if this type is or could be a float (including constrained variables).
+    #[must_use]
+    pub fn is_float_compatible(&self) -> bool {
+        matches!(self, MonoType::F32 | MonoType::F64 | MonoType::FloatVar(_))
     }
 }
 

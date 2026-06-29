@@ -4,14 +4,12 @@ pub mod jit;
 pub mod value;
 
 pub use crate::bridge::{
-    BuiltinFunction, BuiltinRegistry, expect_arity, global_registry, init_global_registry,
+    BuiltinFunction, BuiltinRegistry, clear_global_registry, execute_builtin, expect_arity,
+    init_global_registry,
 };
 pub use crate::error::RuntimeError;
 pub use crate::jit::{CompiledModule, JitError, compile_ir};
-pub use crate::value::{
-    ClosureData, FuncPtr, JitArgType, RecordData, Value, lookup_jit_param_types,
-    register_jit_param_types,
-};
+pub use crate::value::{ClosureData, FuncPtr, JitArgType, RecordData, Value};
 
 use std::sync::Mutex;
 
@@ -21,7 +19,8 @@ static CAPTURE_BUF: Mutex<Option<Vec<u8>>> = Mutex::new(None);
 
 /// Enable global output capture into a buffer.
 pub fn enable_capture() {
-    *CAPTURE_BUF.lock().unwrap() = Some(Vec::new());
+    let mut guard = CAPTURE_BUF.lock().unwrap();
+    *guard = Some(Vec::new());
 }
 
 /// Disable capture and return captured output as a string.

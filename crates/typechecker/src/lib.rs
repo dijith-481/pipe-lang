@@ -13,8 +13,8 @@ pub use crate::infer::{
 pub use crate::types::{MonoType, PolyType, TypeId};
 pub use crate::unify::{Substitution, unify};
 
+use ast::ast::NodeId;
 use ast::ast::{Decl, Expr, Program};
-use ast::span::Span;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -22,15 +22,16 @@ use std::rc::Rc;
 pub struct TypedProgram<'a> {
     pub ast: &'a Program<'a>,
     pub env: TypeEnv,
-    /// Maps every expression span (and decl span) to its fully-resolved type.
-    pub type_map: HashMap<Span, MonoType>,
+    /// Maps every expression's [`NodeId`] to its fully-resolved type.
+    /// Used by the IR lowerer to look up types without retraversing the AST.
+    pub type_map: HashMap<NodeId, MonoType>,
     /// Maps tag type names (e.g. "Option", "Result") to their variant info.
     /// Populated from the prelude and user-defined type declarations.
     pub tag_variants: TagVariants,
 }
 
 /// Typechecks a parsed program, returning a [`TypedProgram`] with a complete
-/// span→type map for the IR lowerer and LSP hover.
+/// `NodeId`→type map for the IR lowerer and LSP hover.
 ///
 /// # Errors
 ///
@@ -39,18 +40,31 @@ pub fn typecheck<'a>(ast: &'a Program<'a>) -> Result<TypedProgram<'a>, Vec<TypeE
     let mut env = TypeEnv::new();
     env.load_prelude();
 
-    // Forward-declare all top-level functions so recursive calls work.
-    // For each `let f = (params) => body`, insert `f` into the env with a
-    // partial function type built from parameter annotations (or fresh vars).
-    // The main inference pass then resolves everything through unification.
-    forward_declare_top_level(&mut env, ast);
-
     let mut errors = Vec::new();
     let mut type_map = HashMap::new();
 
+    // 1. Process all TypeAlias declarations first so they are available for function annotations.
     for decl in &ast.decls {
-        if let Err(e) = infer::infer_decl_with_map(&mut env, decl, &mut type_map) {
-            errors.push(e);
+        if let Decl::TypeAlias { .. } = decl {
+            if let Err(e) = infer::infer_decl_with_map(&mut env, decl, &mut type_map) {
+                errors.push(e);
+            }
+        }
+    }
+
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+
+    // 2. Forward-declare all top-level functions so recursive calls work.
+    forward_declare_top_level(&mut env, ast);
+
+    // 3. Process all remaining declarations (e.g. Bind, Use).
+    for decl in &ast.decls {
+        if !matches!(decl, Decl::TypeAlias { .. }) {
+            if let Err(e) = infer::infer_decl_with_map(&mut env, decl, &mut type_map) {
+                errors.push(e);
+            }
         }
     }
 

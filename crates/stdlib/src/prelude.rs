@@ -68,16 +68,19 @@ pub fn prelude_builtins() -> Vec<Arc<dyn BuiltinFunction>> {
         Arc::new(option::OptionFlatMap),
         Arc::new(option::OptionUnwrapOr),
         Arc::new(option::UnwrapOr),
+        Arc::new(option::OptionUnwrapOrPanic),
+        Arc::new(option::UnwrapOrPanic),
         // Result combinators
         Arc::new(rslt::ResultMap),
         Arc::new(rslt::ResultFlatMap),
+        Arc::new(option::ResultUnwrapOrPanic),
         // Numeric conversions
         Arc::new(numeric::ToI64),
         Arc::new(numeric::ToI32),
         Arc::new(numeric::ToF64),
         Arc::new(numeric::ToStr),
         // Drop
-        Arc::new(Drop),
+        Arc::new(array::ArrayDrop),
         // Take
         Arc::new(Take),
         // Sqrt
@@ -99,7 +102,8 @@ fn closure_value(builtin: Arc<dyn BuiltinFunction>, arity: usize) -> Value {
         func: FuncPtr::Builtin(builtin),
         captures: Arc::from([]),
         arity,
-        call_arg_types: Arc::from([]),
+        param_descs: Arc::from([]),
+        ret_desc: vec![],
     }))
 }
 
@@ -321,27 +325,6 @@ impl BuiltinFunction for Apply {
     }
 }
 
-// -- Drop --
-
-/// `drop(x)` — ignores its argument and returns unit.
-#[derive(Clone, Copy, Debug, Default)]
-struct Drop;
-
-impl BuiltinFunction for Drop {
-    fn name(&self) -> &str {
-        "drop"
-    }
-
-    fn arity(&self) -> usize {
-        1
-    }
-
-    fn execute(&self, args: &[Value]) -> Result<Value, String> {
-        expect_arity(self.name(), args, self.arity())?;
-        Ok(Value::Unit)
-    }
-}
-
 // -- Take --
 
 /// `take(array, n)` — returns the first `n` elements of `array`.
@@ -365,8 +348,9 @@ impl BuiltinFunction for Take {
         };
         let n = match &args[1] {
             Value::I32(n) => *n as usize,
+            Value::I64(n) => *n as usize,
             Value::Usize(n) => *n,
-            other => return Err(format!("`take` expected I32 or Usize, got {other:?}")),
+            other => return Err(format!("`take` expected I32, I64, or Usize, got {other:?}")),
         };
         let n = n.min(arr.len());
         Ok(Value::array(arr[..n].to_vec()))
@@ -453,7 +437,8 @@ impl BuiltinFunction for EffectMap {
             func: FuncPtr::Builtin(Arc::new(EffectMapInner(effect, func))),
             captures: Arc::from([]),
             arity: 0,
-            call_arg_types: Arc::from([]),
+            param_descs: Arc::from([]),
+            ret_desc: vec![],
         })))
     }
 }
@@ -506,7 +491,8 @@ impl BuiltinFunction for EffectFlatMap {
             func: FuncPtr::Builtin(Arc::new(EffectFlatMapInner(effect, func))),
             captures: Arc::from([]),
             arity: 0,
-            call_arg_types: Arc::from([]),
+            param_descs: Arc::from([]),
+            ret_desc: vec![],
         })))
     }
 }

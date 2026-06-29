@@ -11,9 +11,9 @@ let alice : Person = { name: `Alice`, age: 30, city: `Wonderland` }
 let bob : Person = { name: `Bob`, age: 25, city: `Builderland` }
 
 // Field access with dot operator
-let get_name = (p) => p.name
+let get_name = (p: Person) => p.name
 
-let is_adult = (p) => p.age >= 18
+let is_adult = (p: Person) => p.age >= 18
 
 // Record update (functional style — creates new record)
 let with_age = (p: Person, new_age) => { name: p.name, age: new_age, city: p.city }

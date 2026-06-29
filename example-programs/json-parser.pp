@@ -1,38 +1,28 @@
 // JSON-like Data Demo
 //
-// Demonstrates: record types, nested data, method chaining,
-// string processing, closures
+// Demonstrates: record types, recursive functions, arrays
 
-// Get entry value
-let get_value = (entry) => entry.value
+let entries = [
+    { key: `name`, value: `Alice` },
+    { key: `age`, value: `30` },
+    { key: `city`, value: `New York` },
+    { key: `country`, value: `USA` }
+]
 
-// Get entry key
-let get_key = (entry) => entry.key
+let print_all = (i) => match i < entries.len() {
+    true => {
+        let e = entries[i]
+        println(`  ${e.key}: ${e.value}`)
+        print_all(i + 1usize)
+    }
+    false => true
+}
 
-// Format entry as string
-let entry_to_str = (e) => `${e.key}: ${e.value}`
-
-// -- Main --
 let main = () => {
     println(`=== JSON-like Data Demo ===`)
     println(``)
-
-    // Create some entries as records
-    let entries = [
-        { key: `name`, value: `Alice` },
-        { key: `age`, value: `30` },
-        { key: `city`, value: `New York` },
-        { key: `country`, value: `USA` }
-    ]
-
     println(`All entries:`)
-    entries.map((e) => println(`  ${entry_to_str(e)}`))
-
-    println(``)
-    println(`Filtered (name):`)
-    let name_entries = entries.filter((e) => e.key == `name`)
-    name_entries.map((e) => println(`  ${entry_to_str(e)}`))
-
+    let _ = print_all(0usize)
     println(``)
     println(`Done.`)
 }

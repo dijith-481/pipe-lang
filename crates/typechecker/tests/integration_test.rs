@@ -82,6 +82,7 @@ fn integration_let_binding_typechecks() {
     let bump = Bump::new();
     let val = Expr::int("42", Span::new(8, 10), &bump);
     let decl = Decl::Bind {
+        id: ast::ast::NodeId(0),
         name: "x",
         ty: None,
         value: val,
@@ -119,6 +120,7 @@ fn integration_comparison_returns_bool() {
 fn integration_import_succeeds() {
     let bump = Bump::new();
     let decl = Decl::Use {
+        id: ast::ast::NodeId(0),
         path: BumpVec::from_iter_in(["stdlib", "io"], &bump),
         span: Span::new(0, 13),
     };
@@ -190,6 +192,7 @@ fn integration_bind_then_reference() {
     // First bind x = 42
     let val_x = Expr::int("42", Span::new(8, 10), &bump);
     let decl_x = Decl::Bind {
+        id: ast::ast::NodeId(0),
         name: "x",
         ty: None,
         value: val_x,
@@ -264,6 +267,7 @@ fn hm_lambda_identity_infers_func_type() {
         &bump,
     );
     let lambda = bump.alloc(Expr::Lambda {
+        id: ast::ast::NodeId(0),
         params,
         return_type: None,
         body,
@@ -295,6 +299,7 @@ fn hm_lambda_two_params() {
         &bump,
     );
     let lambda = bump.alloc(Expr::Lambda {
+        id: ast::ast::NodeId(0),
         params,
         return_type: None,
         body,
@@ -355,7 +360,11 @@ fn hm_block_let_stmt_then_result() {
     let mut env = TypeEnv::new();
 
     let val = Expr::int("1", Span::new(10, 11), &bump);
-    let pat = bump.alloc(ast::ast::Pattern::Binding("y", Span::new(6, 7)));
+    let pat = bump.alloc(ast::ast::Pattern::Binding(
+        ast::ast::NodeId(0),
+        "y",
+        Span::new(6, 7),
+    ));
     let stmt = ast::ast::Stmt::Let {
         pattern: pat,
         value: val,
@@ -363,6 +372,7 @@ fn hm_block_let_stmt_then_result() {
     let stmts = BumpVec::from_iter_in([stmt], &bump);
     let result_expr = Expr::ident("y", Span::new(13, 14), &bump);
     let block = bump.alloc(Expr::Block {
+        id: ast::ast::NodeId(0),
         stmts,
         result: result_expr,
         span: Span::new(0, 15),
@@ -386,6 +396,7 @@ fn hm_if_both_branches_same_type() {
     let then_b = Expr::int("1", Span::new(10, 11), &bump);
     let else_b = Expr::int("2", Span::new(20, 21), &bump);
     let expr = bump.alloc(Expr::If {
+        id: ast::ast::NodeId(0),
         condition: cond,
         then_branch: then_b,
         else_branch: else_b,
@@ -406,6 +417,7 @@ fn hm_if_mismatched_branches_fails() {
     let then_b = Expr::int("1", Span::new(10, 11), &bump);
     let else_b = Expr::str("x", Span::new(20, 23), &bump);
     let expr = bump.alloc(Expr::If {
+        id: ast::ast::NodeId(0),
         condition: cond,
         then_branch: then_b,
         else_branch: else_b,
@@ -435,12 +447,14 @@ fn hm_let_poly_id_is_polymorphic() {
         &bump,
     );
     let lambda = bump.alloc(Expr::Lambda {
+        id: ast::ast::NodeId(0),
         params,
         return_type: None,
         body,
         span: Span::new(10, 15),
     });
     let decl = Decl::Bind {
+        id: ast::ast::NodeId(0),
         name: "my_id",
         ty: None,
         value: lambda,
@@ -469,12 +483,14 @@ fn hm_let_poly_id_two_uses() {
         &bump,
     );
     let lambda = bump.alloc(Expr::Lambda {
+        id: ast::ast::NodeId(0),
         params,
         return_type: None,
         body,
         span: Span::new(10, 15),
     });
     let decl = Decl::Bind {
+        id: ast::ast::NodeId(0),
         name: "my_id",
         ty: None,
         value: lambda,
@@ -531,17 +547,22 @@ fn hm_match_bool_arms_same_type() {
     let subject = Expr::bool(true, Span::new(6, 10), &bump);
     let arm_true = ast::ast::MatchArm {
         pattern: bump.alloc(ast::ast::Pattern::Literal(
+            ast::ast::NodeId(0),
             ast::ast::LiteralPattern::Bool(true),
             Span::new(13, 17),
         )),
         body: Expr::int("1", Span::new(21, 22), &bump),
     };
     let arm_false = ast::ast::MatchArm {
-        pattern: bump.alloc(ast::ast::Pattern::Wildcard(Span::new(25, 26))),
+        pattern: bump.alloc(ast::ast::Pattern::Wildcard(
+            ast::ast::NodeId(0),
+            Span::new(25, 26),
+        )),
         body: Expr::int("0", Span::new(30, 31), &bump),
     };
     let arms = BumpVec::from_iter_in([arm_true, arm_false], &bump);
     let expr = bump.alloc(Expr::Match {
+        id: ast::ast::NodeId(0),
         subject,
         arms,
         span: Span::new(0, 32),
@@ -560,17 +581,22 @@ fn hm_match_mismatched_arms_fails() {
     let subject = Expr::bool(true, Span::new(6, 10), &bump);
     let arm_true = ast::ast::MatchArm {
         pattern: bump.alloc(ast::ast::Pattern::Literal(
+            ast::ast::NodeId(0),
             ast::ast::LiteralPattern::Bool(true),
             Span::new(13, 17),
         )),
         body: Expr::int("1", Span::new(21, 22), &bump),
     };
     let arm_false = ast::ast::MatchArm {
-        pattern: bump.alloc(ast::ast::Pattern::Wildcard(Span::new(25, 26))),
+        pattern: bump.alloc(ast::ast::Pattern::Wildcard(
+            ast::ast::NodeId(0),
+            Span::new(25, 26),
+        )),
         body: Expr::str("no", Span::new(30, 34), &bump),
     };
     let arms = BumpVec::from_iter_in([arm_true, arm_false], &bump);
     let expr = bump.alloc(Expr::Match {
+        id: ast::ast::NodeId(0),
         subject,
         arms,
         span: Span::new(0, 35),
@@ -599,6 +625,7 @@ fn hm_array_homogeneous() {
         &bump,
     );
     let expr = bump.alloc(Expr::Array {
+        id: ast::ast::NodeId(0),
         elems,
         span: Span::new(0, 9),
     });
@@ -621,6 +648,7 @@ fn hm_array_mixed_types_fails() {
         &bump,
     );
     let expr = bump.alloc(Expr::Array {
+        id: ast::ast::NodeId(0),
         elems,
         span: Span::new(0, 8),
     });
@@ -647,6 +675,7 @@ fn hm_tuple_infers_element_types() {
         &bump,
     );
     let expr = bump.alloc(Expr::Tuple {
+        id: ast::ast::NodeId(0),
         elems,
         span: Span::new(0, 9),
     });
@@ -688,6 +717,7 @@ fn hm_record_infers_field_types() {
         &bump,
     );
     let expr = bump.alloc(Expr::Record {
+        id: ast::ast::NodeId(0),
         fields,
         span: Span::new(0, 26),
     });
@@ -724,6 +754,7 @@ fn hm_field_access_infers_field_type() {
 
     // .name
     let access = bump.alloc(Expr::FieldAccess {
+        id: ast::ast::NodeId(0),
         object: rec_expr,
         field: "name",
         span: Span::new(0, 22),
@@ -745,6 +776,7 @@ fn hm_unary_neg_i32() {
 
     let operand = Expr::int("42", Span::new(1, 3), &bump);
     let expr = bump.alloc(Expr::Unary {
+        id: ast::ast::NodeId(0),
         op: ast::ast::UnaryOp::Neg,
         operand,
         span: Span::new(0, 3),
@@ -762,6 +794,7 @@ fn hm_unary_not_bool() {
 
     let operand = Expr::bool(true, Span::new(1, 5), &bump);
     let expr = bump.alloc(Expr::Unary {
+        id: ast::ast::NodeId(0),
         op: ast::ast::UnaryOp::Not,
         operand,
         span: Span::new(0, 5),
@@ -784,6 +817,7 @@ fn hm_annotation_matches_inferred() {
     let ann = bump.alloc(ast::ast::TypeExpr::Named("i32", Span::new(7, 10)));
     let val = Expr::int("42", Span::new(13, 15), &bump);
     let decl = Decl::Bind {
+        id: ast::ast::NodeId(0),
         name: "x",
         ty: Some(ann),
         value: val,
@@ -803,6 +837,7 @@ fn hm_annotation_conflicts_with_inferred() {
     let ann = bump.alloc(ast::ast::TypeExpr::Named("str", Span::new(7, 10)));
     let val = Expr::int("42", Span::new(13, 15), &bump);
     let decl = Decl::Bind {
+        id: ast::ast::NodeId(0),
         name: "x",
         ty: Some(ann),
         value: val,
@@ -837,6 +872,7 @@ fn hm_curried_add() {
         &bump,
     );
     let inner_lambda = bump.alloc(Expr::Lambda {
+        id: ast::ast::NodeId(0),
         params: inner_params,
         return_type: None,
         body: add_expr,
@@ -853,6 +889,7 @@ fn hm_curried_add() {
         &bump,
     );
     let outer_lambda = bump.alloc(Expr::Lambda {
+        id: ast::ast::NodeId(0),
         params: outer_params,
         return_type: None,
         body: inner_lambda,
@@ -898,6 +935,7 @@ fn hm_curried_application() {
         &bump,
     );
     let inner_lambda = bump.alloc(Expr::Lambda {
+        id: ast::ast::NodeId(0),
         params: inner_params,
         return_type: None,
         body: add_expr,
@@ -911,12 +949,14 @@ fn hm_curried_application() {
         &bump,
     );
     let outer_lambda = bump.alloc(Expr::Lambda {
+        id: ast::ast::NodeId(0),
         params: outer_params,
         return_type: None,
         body: inner_lambda,
         span: Span::new(0, 19),
     });
     let decl = Decl::Bind {
+        id: ast::ast::NodeId(0),
         name: "add",
         ty: None,
         value: outer_lambda,
@@ -974,12 +1014,14 @@ fn hm_higher_order_apply() {
         &bump,
     );
     let apply_lambda = bump.alloc(Expr::Lambda {
+        id: ast::ast::NodeId(0),
         params,
         return_type: None,
         body: app_expr,
         span: Span::new(0, 16),
     });
     let decl = Decl::Bind {
+        id: ast::ast::NodeId(0),
         name: "apply",
         ty: None,
         value: apply_lambda,
@@ -1013,6 +1055,7 @@ fn hm_higher_order_map_single() {
     let xs_ref = Expr::ident("xs", Span::new(12, 14), &bump);
     let idx_zero = Expr::int("0", Span::new(15, 16), &bump);
     let index_expr = bump.alloc(Expr::Index {
+        id: ast::ast::NodeId(0),
         array: xs_ref,
         index: idx_zero,
         span: Span::new(12, 17),
@@ -1039,12 +1082,14 @@ fn hm_higher_order_map_single() {
         &bump,
     );
     let map_lambda = bump.alloc(Expr::Lambda {
+        id: ast::ast::NodeId(0),
         params,
         return_type: None,
         body,
         span: Span::new(0, 21),
     });
     let decl = Decl::Bind {
+        id: ast::ast::NodeId(0),
         name: "map_single",
         ty: None,
         value: map_lambda,
@@ -1073,6 +1118,7 @@ fn hm_let_poly_alias_polymorphic() {
     // f = id
     let id_ref = Expr::ident("id", Span::new(8, 10), &bump);
     let decl_f = Decl::Bind {
+        id: ast::ast::NodeId(0),
         name: "f",
         ty: None,
         value: id_ref,
@@ -1121,12 +1167,14 @@ fn hm_let_poly_identity_multiple_instantiations() {
         &bump,
     );
     let lambda = bump.alloc(Expr::Lambda {
+        id: ast::ast::NodeId(0),
         params,
         return_type: None,
         body,
         span: Span::new(7, 12),
     });
     let decl = Decl::Bind {
+        id: ast::ast::NodeId(0),
         name: "f",
         ty: None,
         value: lambda,
@@ -1181,12 +1229,14 @@ fn hm_let_poly_independent_bindings() {
         &bump,
     );
     let id_lambda = bump.alloc(Expr::Lambda {
+        id: ast::ast::NodeId(0),
         params: id_params,
         return_type: None,
         body: id_body,
         span: Span::new(8, 13),
     });
     let id_decl = Decl::Bind {
+        id: ast::ast::NodeId(0),
         name: "id",
         ty: None,
         value: id_lambda,
@@ -1204,6 +1254,7 @@ fn hm_let_poly_independent_bindings() {
         &bump,
     );
     let inner = bump.alloc(Expr::Lambda {
+        id: ast::ast::NodeId(0),
         params: inner_params,
         return_type: None,
         body: const_b,
@@ -1217,12 +1268,14 @@ fn hm_let_poly_independent_bindings() {
         &bump,
     );
     let outer = bump.alloc(Expr::Lambda {
+        id: ast::ast::NodeId(0),
         params: outer_params,
         return_type: None,
         body: inner,
         span: Span::new(17, 27),
     });
     let const_decl = Decl::Bind {
+        id: ast::ast::NodeId(0),
         name: "const_fn",
         ty: None,
         value: outer,
@@ -1276,6 +1329,7 @@ fn hm_nested_if() {
     let inner_then = Expr::int("1", Span::new(22, 23), &bump);
     let inner_else = Expr::int("2", Span::new(32, 33), &bump);
     let inner_if = bump.alloc(Expr::If {
+        id: ast::ast::NodeId(0),
         condition: Expr::bool(false, Span::new(12, 17), &bump),
         then_branch: inner_then,
         else_branch: inner_else,
@@ -1283,6 +1337,7 @@ fn hm_nested_if() {
     });
     let outer_else = Expr::int("3", Span::new(45, 46), &bump);
     let outer_if = bump.alloc(Expr::If {
+        id: ast::ast::NodeId(0),
         condition: Expr::bool(true, Span::new(3, 7), &bump),
         then_branch: inner_if,
         else_branch: outer_else,
@@ -1301,26 +1356,36 @@ fn hm_nested_block() {
 
     // inner block: { let y = 1; y }
     let inner_val = Expr::int("1", Span::new(16, 17), &bump);
-    let inner_pat = bump.alloc(ast::ast::Pattern::Binding("y", Span::new(12, 13)));
+    let inner_pat = bump.alloc(ast::ast::Pattern::Binding(
+        ast::ast::NodeId(0),
+        "y",
+        Span::new(12, 13),
+    ));
     let inner_stmt = ast::ast::Stmt::Let {
         pattern: inner_pat,
         value: inner_val,
     };
     let inner_result = Expr::ident("y", Span::new(19, 20), &bump);
     let inner_block = bump.alloc(Expr::Block {
+        id: ast::ast::NodeId(0),
         stmts: BumpVec::from_iter_in([inner_stmt], &bump),
         result: inner_result,
         span: Span::new(6, 21),
     });
 
     // outer block: { let x = inner; x }
-    let outer_pat = bump.alloc(ast::ast::Pattern::Binding("x", Span::new(3, 4)));
+    let outer_pat = bump.alloc(ast::ast::Pattern::Binding(
+        ast::ast::NodeId(0),
+        "x",
+        Span::new(3, 4),
+    ));
     let outer_stmt = ast::ast::Stmt::Let {
         pattern: outer_pat,
         value: inner_block,
     };
     let outer_result = Expr::ident("x", Span::new(24, 25), &bump);
     let outer_block = bump.alloc(Expr::Block {
+        id: ast::ast::NodeId(0),
         stmts: BumpVec::from_iter_in([outer_stmt], &bump),
         result: outer_result,
         span: Span::new(0, 26),
@@ -1355,12 +1420,14 @@ fn hm_nested_record_field_access() {
         &bump,
     );
     let outer_rec = bump.alloc(Expr::Record {
+        id: ast::ast::NodeId(0),
         fields: outer_fields,
         span: Span::new(0, 16),
     });
 
     // outer_rec.a
     let access_a = bump.alloc(Expr::FieldAccess {
+        id: ast::ast::NodeId(0),
         object: outer_rec,
         field: "a",
         span: Span::new(0, 19),
@@ -1368,6 +1435,7 @@ fn hm_nested_record_field_access() {
 
     // outer_rec.a.b
     let access_b = bump.alloc(Expr::FieldAccess {
+        id: ast::ast::NodeId(0),
         object: access_a,
         field: "b",
         span: Span::new(0, 22),
@@ -1394,6 +1462,7 @@ fn hm_deeply_nested_application() {
         &bump,
     );
     let identity_fn = bump.alloc(Expr::Lambda {
+        id: ast::ast::NodeId(0),
         params,
         return_type: None,
         body,
@@ -1431,21 +1500,33 @@ fn hm_block_multiple_lets() {
 
     // { let a = 1; let b = 2; let c = 3; a + b + c }
     let a_val = Expr::int("1", Span::new(10, 11), &bump);
-    let a_pat = bump.alloc(ast::ast::Pattern::Binding("a", Span::new(6, 7)));
+    let a_pat = bump.alloc(ast::ast::Pattern::Binding(
+        ast::ast::NodeId(0),
+        "a",
+        Span::new(6, 7),
+    ));
     let stmt_a = ast::ast::Stmt::Let {
         pattern: a_pat,
         value: a_val,
     };
 
     let b_val = Expr::int("2", Span::new(21, 22), &bump);
-    let b_pat = bump.alloc(ast::ast::Pattern::Binding("b", Span::new(17, 18)));
+    let b_pat = bump.alloc(ast::ast::Pattern::Binding(
+        ast::ast::NodeId(0),
+        "b",
+        Span::new(17, 18),
+    ));
     let stmt_b = ast::ast::Stmt::Let {
         pattern: b_pat,
         value: b_val,
     };
 
     let c_val = Expr::int("3", Span::new(32, 33), &bump);
-    let c_pat = bump.alloc(ast::ast::Pattern::Binding("c", Span::new(28, 29)));
+    let c_pat = bump.alloc(ast::ast::Pattern::Binding(
+        ast::ast::NodeId(0),
+        "c",
+        Span::new(28, 29),
+    ));
     let stmt_c = ast::ast::Stmt::Let {
         pattern: c_pat,
         value: c_val,
@@ -1458,6 +1539,7 @@ fn hm_block_multiple_lets() {
     let sum2 = Expr::binary(BinOp::Add, sum1, c_ref, Span::new(35, 44), &bump);
 
     let block = bump.alloc(Expr::Block {
+        id: ast::ast::NodeId(0),
         stmts: BumpVec::from_iter_in([stmt_a, stmt_b, stmt_c], &bump),
         result: sum2,
         span: Span::new(0, 45),
@@ -1485,6 +1567,7 @@ fn hm_template_with_interpolation() {
         &bump,
     );
     let expr = bump.alloc(Expr::Template {
+        id: ast::ast::NodeId(0),
         parts,
         span: Span::new(0, 15),
     });
@@ -1511,6 +1594,7 @@ fn hm_template_multi_interpolation() {
         &bump,
     );
     let expr = bump.alloc(Expr::Template {
+        id: ast::ast::NodeId(0),
         parts,
         span: Span::new(0, 13),
     });
@@ -1533,6 +1617,7 @@ fn hm_template_bool_interpolation() {
         &bump,
     );
     let expr = bump.alloc(Expr::Template {
+        id: ast::ast::NodeId(0),
         parts,
         span: Span::new(0, 15),
     });
@@ -1552,6 +1637,7 @@ fn hm_index_i32_array() {
     let mut env = TypeEnv::new();
 
     let arr = bump.alloc(Expr::Array {
+        id: ast::ast::NodeId(0),
         elems: BumpVec::from_iter_in(
             [
                 Expr::int("1", Span::new(1, 2), &bump),
@@ -1564,6 +1650,7 @@ fn hm_index_i32_array() {
     });
     let idx = Expr::int("0", Span::new(10, 11), &bump);
     let expr = bump.alloc(Expr::Index {
+        id: ast::ast::NodeId(0),
         array: arr,
         index: idx,
         span: Span::new(0, 12),
@@ -1580,6 +1667,7 @@ fn hm_index_str_array() {
     let mut env = TypeEnv::new();
 
     let arr = bump.alloc(Expr::Array {
+        id: ast::ast::NodeId(0),
         elems: BumpVec::from_iter_in(
             [
                 Expr::str("a", Span::new(1, 4), &bump),
@@ -1591,6 +1679,7 @@ fn hm_index_str_array() {
     });
     let idx = Expr::int("0", Span::new(11, 12), &bump);
     let expr = bump.alloc(Expr::Index {
+        id: ast::ast::NodeId(0),
         array: arr,
         index: idx,
         span: Span::new(0, 13),
@@ -1615,11 +1704,16 @@ fn hm_match_binding_pattern() {
     let one = Expr::int("1", Span::new(16, 17), &bump);
     let body = Expr::binary(BinOp::Add, x_ref, one, Span::new(12, 17), &bump);
     let arm = ast::ast::MatchArm {
-        pattern: bump.alloc(ast::ast::Pattern::Binding("x", Span::new(10, 11))),
+        pattern: bump.alloc(ast::ast::Pattern::Binding(
+            ast::ast::NodeId(0),
+            "x",
+            Span::new(10, 11),
+        )),
         body,
     };
     let arms = BumpVec::from_iter_in([arm], &bump);
     let expr = bump.alloc(Expr::Match {
+        id: ast::ast::NodeId(0),
         subject,
         arms,
         span: Span::new(0, 18),
@@ -1636,6 +1730,7 @@ fn hm_match_tuple_pattern() {
     let mut env = TypeEnv::new();
 
     let subject = bump.alloc(Expr::Tuple {
+        id: ast::ast::NodeId(0),
         elems: BumpVec::from_iter_in(
             [
                 Expr::int("1", Span::new(7, 8), &bump),
@@ -1647,9 +1742,10 @@ fn hm_match_tuple_pattern() {
     });
 
     let a_ref = Expr::ident("a", Span::new(22, 23), &bump);
-    let pat_a = ast::ast::Pattern::Binding("a", Span::new(19, 20));
-    let pat_b = ast::ast::Pattern::Wildcard(Span::new(22, 23));
+    let pat_a = ast::ast::Pattern::Binding(ast::ast::NodeId(0), "a", Span::new(19, 20));
+    let pat_b = ast::ast::Pattern::Wildcard(ast::ast::NodeId(0), Span::new(22, 23));
     let tuple_pat = bump.alloc(ast::ast::Pattern::Tuple {
+        id: ast::ast::NodeId(0),
         patterns: BumpVec::from_iter_in([pat_a, pat_b], &bump),
         span: Span::new(18, 24),
     });
@@ -1660,6 +1756,7 @@ fn hm_match_tuple_pattern() {
     };
     let arms = BumpVec::from_iter_in([arm], &bump);
     let expr = bump.alloc(Expr::Match {
+        id: ast::ast::NodeId(0),
         subject,
         arms,
         span: Span::new(0, 25),
@@ -1676,6 +1773,7 @@ fn hm_match_record_pattern() {
     let mut env = TypeEnv::new();
 
     let subject = bump.alloc(Expr::Record {
+        id: ast::ast::NodeId(0),
         fields: BumpVec::from_iter_in(
             [
                 ast::ast::RecordField {
@@ -1705,6 +1803,7 @@ fn hm_match_record_pattern() {
         pattern: None,
     };
     let rec_pat = bump.alloc(ast::ast::Pattern::Record {
+        id: ast::ast::NodeId(0),
         fields: BumpVec::from_iter_in([x_field, y_field], &bump),
         span: Span::new(20, 31),
     });
@@ -1715,6 +1814,7 @@ fn hm_match_record_pattern() {
     };
     let arms = BumpVec::from_iter_in([arm], &bump);
     let expr = bump.alloc(Expr::Match {
+        id: ast::ast::NodeId(0),
         subject,
         arms,
         span: Span::new(0, 32),
@@ -1738,11 +1838,16 @@ fn hm_match_constructor_pattern() {
     // x => x
     let x_ref = Expr::ident("x", Span::new(16, 17), &bump);
     let arm = ast::ast::MatchArm {
-        pattern: bump.alloc(ast::ast::Pattern::Binding("x", Span::new(14, 15))),
+        pattern: bump.alloc(ast::ast::Pattern::Binding(
+            ast::ast::NodeId(0),
+            "x",
+            Span::new(14, 15),
+        )),
         body: x_ref,
     };
     let arms = BumpVec::from_iter_in([arm], &bump);
     let expr = bump.alloc(Expr::Match {
+        id: ast::ast::NodeId(0),
         subject,
         arms,
         span: Span::new(0, 18),
@@ -1761,17 +1866,22 @@ fn hm_match_wildcard_default() {
     let subject = Expr::bool(true, Span::new(6, 10), &bump);
     let arm1 = ast::ast::MatchArm {
         pattern: bump.alloc(ast::ast::Pattern::Literal(
+            ast::ast::NodeId(0),
             ast::ast::LiteralPattern::Bool(true),
             Span::new(13, 17),
         )),
         body: Expr::int("1", Span::new(21, 22), &bump),
     };
     let arm2 = ast::ast::MatchArm {
-        pattern: bump.alloc(ast::ast::Pattern::Wildcard(Span::new(25, 26))),
+        pattern: bump.alloc(ast::ast::Pattern::Wildcard(
+            ast::ast::NodeId(0),
+            Span::new(25, 26),
+        )),
         body: Expr::int("0", Span::new(30, 31), &bump),
     };
     let arms = BumpVec::from_iter_in([arm1, arm2], &bump);
     let expr = bump.alloc(Expr::Match {
+        id: ast::ast::NodeId(0),
         subject,
         arms,
         span: Span::new(0, 32),
@@ -1790,6 +1900,7 @@ fn hm_match_three_arms() {
     let subject = Expr::int("1", Span::new(6, 7), &bump);
     let arm1 = ast::ast::MatchArm {
         pattern: bump.alloc(ast::ast::Pattern::Literal(
+            ast::ast::NodeId(0),
             ast::ast::LiteralPattern::Int("0"),
             Span::new(10, 11),
         )),
@@ -1797,17 +1908,22 @@ fn hm_match_three_arms() {
     };
     let arm2 = ast::ast::MatchArm {
         pattern: bump.alloc(ast::ast::Pattern::Literal(
+            ast::ast::NodeId(0),
             ast::ast::LiteralPattern::Int("1"),
             Span::new(21, 22),
         )),
         body: Expr::str("b", Span::new(26, 29), &bump),
     };
     let arm3 = ast::ast::MatchArm {
-        pattern: bump.alloc(ast::ast::Pattern::Wildcard(Span::new(32, 33))),
+        pattern: bump.alloc(ast::ast::Pattern::Wildcard(
+            ast::ast::NodeId(0),
+            Span::new(32, 33),
+        )),
         body: Expr::str("c", Span::new(37, 40), &bump),
     };
     let arms = BumpVec::from_iter_in([arm1, arm2, arm3], &bump);
     let expr = bump.alloc(Expr::Match {
+        id: ast::ast::NodeId(0),
         subject,
         arms,
         span: Span::new(0, 41),
@@ -1826,6 +1942,7 @@ fn hm_match_three_arms_mismatch() {
     let subject = Expr::int("1", Span::new(6, 7), &bump);
     let arm1 = ast::ast::MatchArm {
         pattern: bump.alloc(ast::ast::Pattern::Literal(
+            ast::ast::NodeId(0),
             ast::ast::LiteralPattern::Int("0"),
             Span::new(10, 11),
         )),
@@ -1833,17 +1950,22 @@ fn hm_match_three_arms_mismatch() {
     };
     let arm2 = ast::ast::MatchArm {
         pattern: bump.alloc(ast::ast::Pattern::Literal(
+            ast::ast::NodeId(0),
             ast::ast::LiteralPattern::Int("1"),
             Span::new(19, 20),
         )),
         body: Expr::str("one", Span::new(24, 29), &bump),
     };
     let arm3 = ast::ast::MatchArm {
-        pattern: bump.alloc(ast::ast::Pattern::Wildcard(Span::new(32, 33))),
+        pattern: bump.alloc(ast::ast::Pattern::Wildcard(
+            ast::ast::NodeId(0),
+            Span::new(32, 33),
+        )),
         body: Expr::int("2", Span::new(37, 38), &bump),
     };
     let arms = BumpVec::from_iter_in([arm1, arm2, arm3], &bump);
     let expr = bump.alloc(Expr::Match {
+        id: ast::ast::NodeId(0),
         subject,
         arms,
         span: Span::new(0, 39),
@@ -1914,6 +2036,7 @@ fn hm_nested_logical() {
     let mut env = TypeEnv::new();
 
     let not_expr = bump.alloc(Expr::Unary {
+        id: ast::ast::NodeId(0),
         op: ast::ast::UnaryOp::Not,
         operand: Expr::bool(true, Span::new(1, 5), &bump),
         span: Span::new(0, 5),
@@ -1939,6 +2062,7 @@ fn hm_unary_neg_f64() {
 
     let operand = Expr::float("3.14", Span::new(1, 5), &bump);
     let expr = bump.alloc(Expr::Unary {
+        id: ast::ast::NodeId(0),
         op: ast::ast::UnaryOp::Neg,
         operand,
         span: Span::new(0, 5),
@@ -1956,6 +2080,7 @@ fn hm_unary_not_on_string_fails() {
 
     let operand = Expr::str("hello", Span::new(1, 8), &bump);
     let expr = bump.alloc(Expr::Unary {
+        id: ast::ast::NodeId(0),
         op: ast::ast::UnaryOp::Not,
         operand,
         span: Span::new(0, 8),
@@ -1973,6 +2098,7 @@ fn hm_unary_neg_on_string_fails() {
 
     let operand = Expr::str("hello", Span::new(1, 8), &bump);
     let expr = bump.alloc(Expr::Unary {
+        id: ast::ast::NodeId(0),
         op: ast::ast::UnaryOp::Neg,
         operand,
         span: Span::new(0, 8),
@@ -2097,6 +2223,7 @@ fn hm_field_access_on_tuple_fails() {
     let mut env = TypeEnv::new();
 
     let tup = bump.alloc(Expr::Tuple {
+        id: ast::ast::NodeId(0),
         elems: BumpVec::from_iter_in(
             [
                 Expr::int("1", Span::new(1, 2), &bump),
@@ -2107,6 +2234,7 @@ fn hm_field_access_on_tuple_fails() {
         span: Span::new(0, 6),
     });
     let access = bump.alloc(Expr::FieldAccess {
+        id: ast::ast::NodeId(0),
         object: tup,
         field: "x",
         span: Span::new(0, 8),
@@ -2123,6 +2251,7 @@ fn hm_field_access_on_array_fails() {
     let mut env = TypeEnv::new();
 
     let arr = bump.alloc(Expr::Array {
+        id: ast::ast::NodeId(0),
         elems: BumpVec::from_iter_in(
             [
                 Expr::int("1", Span::new(1, 2), &bump),
@@ -2133,6 +2262,7 @@ fn hm_field_access_on_array_fails() {
         span: Span::new(0, 6),
     });
     let access = bump.alloc(Expr::FieldAccess {
+        id: ast::ast::NodeId(0),
         object: arr,
         field: "x",
         span: Span::new(0, 8),
@@ -2149,6 +2279,7 @@ fn hm_field_access_missing_field_fails() {
     let mut env = TypeEnv::new();
 
     let rec = bump.alloc(Expr::Record {
+        id: ast::ast::NodeId(0),
         fields: BumpVec::from_iter_in(
             [ast::ast::RecordField {
                 name: "x",
@@ -2159,6 +2290,7 @@ fn hm_field_access_missing_field_fails() {
         span: Span::new(0, 7),
     });
     let access = bump.alloc(Expr::FieldAccess {
+        id: ast::ast::NodeId(0),
         object: rec,
         field: "y",
         span: Span::new(0, 9),
@@ -2181,6 +2313,7 @@ fn hm_index_non_array_fails() {
     let num = Expr::int("42", Span::new(0, 2), &bump);
     let idx = Expr::int("0", Span::new(3, 4), &bump);
     let expr = bump.alloc(Expr::Index {
+        id: ast::ast::NodeId(0),
         array: num,
         index: idx,
         span: Span::new(0, 5),
@@ -2197,6 +2330,7 @@ fn hm_index_with_string_fails() {
     let mut env = TypeEnv::new();
 
     let arr = bump.alloc(Expr::Array {
+        id: ast::ast::NodeId(0),
         elems: BumpVec::from_iter_in(
             [
                 Expr::int("1", Span::new(1, 2), &bump),
@@ -2208,6 +2342,7 @@ fn hm_index_with_string_fails() {
     });
     let idx = Expr::str("x", Span::new(7, 10), &bump);
     let expr = bump.alloc(Expr::Index {
+        id: ast::ast::NodeId(0),
         array: arr,
         index: idx,
         span: Span::new(0, 11),
@@ -2228,6 +2363,7 @@ fn hm_empty_array() {
     let mut env = TypeEnv::new();
 
     let expr = bump.alloc(Expr::Array {
+        id: ast::ast::NodeId(0),
         elems: BumpVec::new_in(&bump),
         span: Span::new(0, 2),
     });
@@ -2248,6 +2384,7 @@ fn hm_empty_match_fails() {
     let subject = Expr::int("1", Span::new(6, 7), &bump);
     let arms = BumpVec::new_in(&bump);
     let expr = bump.alloc(Expr::Match {
+        id: ast::ast::NodeId(0),
         subject,
         arms,
         span: Span::new(0, 8),
@@ -2286,6 +2423,7 @@ fn hm_annotation_function_type_matches() {
         &bump,
     );
     let lambda = bump.alloc(Expr::Lambda {
+        id: ast::ast::NodeId(0),
         params,
         return_type: None,
         body,
@@ -2293,6 +2431,7 @@ fn hm_annotation_function_type_matches() {
     });
 
     let decl = Decl::Bind {
+        id: ast::ast::NodeId(0),
         name: "f",
         ty: Some(ann),
         value: lambda,
@@ -2327,6 +2466,7 @@ fn hm_annotation_function_type_conflict() {
         &bump,
     );
     let lambda = bump.alloc(Expr::Lambda {
+        id: ast::ast::NodeId(0),
         params,
         return_type: None,
         body,
@@ -2334,6 +2474,7 @@ fn hm_annotation_function_type_conflict() {
     });
 
     let decl = Decl::Bind {
+        id: ast::ast::NodeId(0),
         name: "f",
         ty: Some(ann),
         value: lambda,
@@ -2368,6 +2509,7 @@ fn hm_annotation_return_type_mismatch() {
         &bump,
     );
     let lambda = bump.alloc(Expr::Lambda {
+        id: ast::ast::NodeId(0),
         params,
         return_type: None,
         body,
@@ -2375,6 +2517,7 @@ fn hm_annotation_return_type_mismatch() {
     });
 
     let decl = Decl::Bind {
+        id: ast::ast::NodeId(0),
         name: "f",
         ty: Some(ann),
         value: lambda,
@@ -2443,6 +2586,7 @@ fn hm_chained_bindings() {
     let mut env = TypeEnv::new();
 
     let decl_a = Decl::Bind {
+        id: ast::ast::NodeId(0),
         name: "a",
         ty: None,
         value: Expr::int("1", Span::new(8, 9), &bump),
@@ -2454,6 +2598,7 @@ fn hm_chained_bindings() {
     let two = Expr::int("2", Span::new(22, 23), &bump);
     let add = Expr::binary(BinOp::Add, a_ref, two, Span::new(18, 23), &bump);
     let decl_b = Decl::Bind {
+        id: ast::ast::NodeId(0),
         name: "b",
         ty: None,
         value: add,
@@ -2465,6 +2610,7 @@ fn hm_chained_bindings() {
     let three = Expr::int("3", Span::new(36, 37), &bump);
     let mul = Expr::binary(BinOp::Mul, b_ref, three, Span::new(32, 37), &bump);
     let decl_c = Decl::Bind {
+        id: ast::ast::NodeId(0),
         name: "c",
         ty: None,
         value: mul,
@@ -2482,6 +2628,7 @@ fn hm_binding_reuse() {
     let mut env = TypeEnv::new();
 
     let decl_a = Decl::Bind {
+        id: ast::ast::NodeId(0),
         name: "a",
         ty: None,
         value: Expr::int("1", Span::new(8, 9), &bump),
@@ -2490,6 +2637,7 @@ fn hm_binding_reuse() {
     infer_decl(&mut env, &decl_a).unwrap();
 
     let decl_b = Decl::Bind {
+        id: ast::ast::NodeId(0),
         name: "b",
         ty: None,
         value: Expr::str("hello", Span::new(18, 25), &bump),
@@ -2524,12 +2672,14 @@ fn hm_let_poly_three_instantiations() {
         &bump,
     );
     let lambda = bump.alloc(Expr::Lambda {
+        id: ast::ast::NodeId(0),
         params,
         return_type: None,
         body,
         span: Span::new(7, 12),
     });
     let decl = Decl::Bind {
+        id: ast::ast::NodeId(0),
         name: "f",
         ty: None,
         value: lambda,
@@ -2587,6 +2737,7 @@ fn hm_let_poly_swap_tuple() {
     let b_param = Expr::ident("b", Span::new(13, 14), &bump);
     let a_ref = Expr::ident("a", Span::new(17, 18), &bump);
     let tuple_expr = bump.alloc(Expr::Tuple {
+        id: ast::ast::NodeId(0),
         elems: BumpVec::from_iter_in([b_param, a_ref], &bump),
         span: Span::new(12, 19),
     });
@@ -2598,6 +2749,7 @@ fn hm_let_poly_swap_tuple() {
         &bump,
     );
     let inner = bump.alloc(Expr::Lambda {
+        id: ast::ast::NodeId(0),
         params: inner_params,
         return_type: None,
         body: tuple_expr,
@@ -2611,12 +2763,14 @@ fn hm_let_poly_swap_tuple() {
         &bump,
     );
     let outer = bump.alloc(Expr::Lambda {
+        id: ast::ast::NodeId(0),
         params: outer_params,
         return_type: None,
         body: inner,
         span: Span::new(0, 19),
     });
     let decl = Decl::Bind {
+        id: ast::ast::NodeId(0),
         name: "swap",
         ty: None,
         value: outer,
@@ -2726,7 +2880,8 @@ fn ctor_ok() {
     match ty {
         MonoType::Tag { name, payload } => {
             assert_eq!(name.as_str(), "Result");
-            assert_eq!(payload[0], MonoType::Str);
+            // payload order: [e, t] = [Err_type, Ok_type]
+            assert_eq!(payload[1], MonoType::Str); // Ok("hello") → Ok_type = Str at index 1
             assert_eq!(payload.len(), 2);
         }
         _ => panic!("expected Result<str, _>, got {ty:?}"),
@@ -2753,7 +2908,8 @@ fn ctor_err() {
     match ty {
         MonoType::Tag { name, payload } => {
             assert_eq!(name.as_str(), "Result");
-            assert_eq!(payload[1], MonoType::I32);
+            // payload order: [e, t] = [Err_type, Ok_type]
+            assert_eq!(payload[0], MonoType::I32); // Err(42) → Err_type = I32 at index 0
             assert_eq!(payload.len(), 2);
         }
         _ => panic!("expected Result<_, i32>, got {ty:?}"),
@@ -2828,8 +2984,16 @@ fn pattern_match_option_some() {
     // Some(v) => v
     let v_ref = Expr::ident("v", Span::new(16, 17), &bump);
     let some_pat = Pattern::Constructor {
+        id: ast::ast::NodeId(0),
         name: "Some",
-        fields: BumpVec::from_iter_in([Pattern::Binding("v", Span::new(15, 16))], &bump),
+        fields: BumpVec::from_iter_in(
+            [Pattern::Binding(
+                ast::ast::NodeId(0),
+                "v",
+                Span::new(15, 16),
+            )],
+            &bump,
+        ),
         span: Span::new(11, 18),
     };
     let arm1 = MatchArm {
@@ -2840,6 +3004,7 @@ fn pattern_match_option_some() {
     // None => 0
     let zero = Expr::int("0", Span::new(27, 28), &bump);
     let none_pat = Pattern::Constructor {
+        id: ast::ast::NodeId(0),
         name: "None",
         fields: BumpVec::new_in(&bump),
         span: Span::new(21, 25),
@@ -2851,6 +3016,7 @@ fn pattern_match_option_some() {
 
     let arms = BumpVec::from_iter_in([arm1, arm2], &bump);
     let match_expr = bump.alloc(Expr::Match {
+        id: ast::ast::NodeId(0),
         subject: x_ref,
         arms,
         span: Span::new(0, 29),
@@ -2879,8 +3045,16 @@ fn pattern_match_result_ok() {
     // Ok(v) => v
     let v_ref = Expr::ident("v", Span::new(15, 16), &bump);
     let ok_pat = Pattern::Constructor {
+        id: ast::ast::NodeId(0),
         name: "Ok",
-        fields: BumpVec::from_iter_in([Pattern::Binding("v", Span::new(14, 15))], &bump),
+        fields: BumpVec::from_iter_in(
+            [Pattern::Binding(
+                ast::ast::NodeId(0),
+                "v",
+                Span::new(14, 15),
+            )],
+            &bump,
+        ),
         span: Span::new(10, 17),
     };
     let arm1 = MatchArm {
@@ -2891,8 +3065,12 @@ fn pattern_match_result_ok() {
     // Err(_) => "" (str) — same type as Ok arm
     let empty = Expr::str("", Span::new(28, 30), &bump);
     let err_pat = Pattern::Constructor {
+        id: ast::ast::NodeId(0),
         name: "Err",
-        fields: BumpVec::from_iter_in([Pattern::Wildcard(Span::new(25, 26))], &bump),
+        fields: BumpVec::from_iter_in(
+            [Pattern::Wildcard(ast::ast::NodeId(0), Span::new(25, 26))],
+            &bump,
+        ),
         span: Span::new(21, 27),
     };
     let arm2 = MatchArm {
@@ -2902,15 +3080,16 @@ fn pattern_match_result_ok() {
 
     let arms = BumpVec::from_iter_in([arm1, arm2], &bump);
     let match_expr = bump.alloc(Expr::Match {
+        id: ast::ast::NodeId(0),
         subject: x_ref,
         arms,
         span: Span::new(0, 31),
     });
 
-    // Bind x: Result<str, i32>
+    // Bind x: Result<str, i32> — payload order [e, t] = [Err, Ok]
     let res_str_i32 = MonoType::Tag {
         name: "Result".into(),
-        payload: Rc::from([MonoType::Str, MonoType::I32]),
+        payload: Rc::from([MonoType::I32, MonoType::Str]),
     };
     env.insert("x", PolyType::mono(res_str_i32));
 
@@ -2930,8 +3109,16 @@ fn pattern_match_option_mismatched_arms() {
     // Some(v) => v (i32)
     let v_ref = Expr::ident("v", Span::new(16, 17), &bump);
     let some_pat = Pattern::Constructor {
+        id: ast::ast::NodeId(0),
         name: "Some",
-        fields: BumpVec::from_iter_in([Pattern::Binding("v", Span::new(15, 16))], &bump),
+        fields: BumpVec::from_iter_in(
+            [Pattern::Binding(
+                ast::ast::NodeId(0),
+                "v",
+                Span::new(15, 16),
+            )],
+            &bump,
+        ),
         span: Span::new(11, 18),
     };
     let arm1 = MatchArm {
@@ -2942,6 +3129,7 @@ fn pattern_match_option_mismatched_arms() {
     // None => "hello" (str) — mismatch!
     let hello = Expr::str("hello", Span::new(27, 34), &bump);
     let none_pat = Pattern::Constructor {
+        id: ast::ast::NodeId(0),
         name: "None",
         fields: BumpVec::new_in(&bump),
         span: Span::new(21, 25),
@@ -2953,6 +3141,7 @@ fn pattern_match_option_mismatched_arms() {
 
     let arms = BumpVec::from_iter_in([arm1, arm2], &bump);
     let match_expr = bump.alloc(Expr::Match {
+        id: ast::ast::NodeId(0),
         subject: x_ref,
         arms,
         span: Span::new(0, 35),

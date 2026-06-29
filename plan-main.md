@@ -5,7 +5,7 @@
 `pipe-lang` is a minimalist, purely functional programming language designed for high performance, deterministic memory management, and uncompromising developer ergonomics. It blends the syntactic simplicity of Go with the expressive power of TypeScript and Rust, grounded strictly in pure functional mathematics.
 
 **The Pillars of `pipe-lang`:**
-1. **Absolute Minimalism:** Minimal keyword footprint. No `return`, `with`, `do`, `then`, `yield`, `class`, or `effect` keywords. Everything is an expression. 
+1. **Absolute Minimalism:** Minimal keyword footprint. No `return`, `with`, `do`, `then`, `yield`, `class`, or `effect` keywords. Everything is an expression.
 2. **Purity by Default:** Functions map inputs to outputs. No implicit global state, no side effects, no mutable references, and no hidden control flow.
 3. **Explicit Effect Boundary:** Side effects (IO, state, randomness) are modeled strictly as generic data structures (`Effect<T>`) executed by the runtime, preventing impure code from bleeding into pure logic.
 4. **No Garbage Collection:** Memory safety is achieved without a GC. Because data is immutable, cyclic references are mathematically impossible. Memory is managed deterministically via Atomic Reference Counting (ARC).
@@ -19,7 +19,6 @@
 The language reserves only the absolute minimum required keywords:
 `let`, `type`, `match`, `if`, `else`, `true`, `false`, `use`.
 
-
 ### 2.2 Comments
 ```rust
 // Single line comments only
@@ -29,21 +28,21 @@ The language reserves only the absolute minimum required keywords:
 Identifiers must start with an alphabetic character or underscore, followed by alphanumeric characters or underscores.
 ```rust
 let valid_name = 1
-let _privateVal = 2
+let _private_val = 2
 ```
 
 ### 2.4 Literals
 **Numeric Literals:**
 There is no implicit type coercion. Numeric literals map to their explicit types. If no suffix is provided, they default to `i32` and `f64` based on the presence of a decimal point.
-*   **Signed Integers:** `i8`, `i16`, `i32` (default), `i64` (e.g., `42`, `42i64`, `-10i8`)
-*   **Unsigned Integers:** `u8`, `u16`, `u32`, `u64`, `usize` (e.g., `255u8`, `100usize`)
-*   **Floats:** `f32`, `f64` (default) (e.g., `3.14`, `2.0f32`)
+- **Signed Integers:** `i8`, `i16`, `i32` (default), `i64` (e.g., `42`, `42i64`, `-10i8`)
+- **Unsigned Integers:** `u8`, `u16`, `u32`, `u64`, `usize` (e.g., `255u8`, `100usize`)
+- **Floats:** `f32`, `f64` (default) (e.g., `3.14`, `2.0f32`)
 
 **Boolean Literals:**
 `true`, `false`
 
 **String Literals:**
-Strings are UTF-8 encoded and immutable.
+Strings are UTF-8 encoded and immutable. String literals use double quotes.
 ```rust
 let plain = "Hello, world\n"
 ```
@@ -56,11 +55,11 @@ let greeting = `Hello, ${name}!`
 ```
 
 ### 2.5 Operators
-*   **Arithmetic:** `+`, `-`, `*`, `/`, `%`
-*   **Comparison:** `==`, `!=`, `<`, `<=`, `>`, `>=`
-*   **Logical:** `&&`, `||`, `!`
-*   **Data Access:** `.` (Method chaining and record field access)
-*   **No List Operator:** There is no `:` (cons) or `++` operator. Lists are manipulated exclusively via standard library methods (`arr.concat()`, `arr.prepend()`).
+- **Arithmetic:** `+`, `-`, `*`, `/`, `%`
+- **Comparison:** `==`, `!=`, `<`, `<=`, `>`, `>=`
+- **Logical:** `&&`, `||`, `!`
+- **Data Access:** `.` (Method chaining and record field access), `[]` (Array indexing)
+- **No List Operator:** There is no `:` (cons) or `++` operator. Lists are manipulated exclusively via standard library methods (`concat`, `prepend`, `head`, `tail`).
 
 ---
 
@@ -106,7 +105,7 @@ type Result<T, E> =
 
 ### 3.4 Type Aliases
 ```rust
-type UserId = i64  //  UserId === i64 : false handled by the Hindley-Milner type checker
+type UserId = i64  // UserId === i64: transparent alias in the HM type checker
 ```
 
 ---
@@ -119,9 +118,13 @@ Everything in `pipe-lang` is an expression. Every block evaluates to its final e
 ```rust
 let x = 5
 ```
+Bindings can optionally include type annotations:
+```rust
+let x: i64 = 5
+```
 
 ### 4.2 Functions & Closures
-Functions are defined via arrow syntax. There is no `return` statement.
+Functions are defined via arrow syntax. There is no `return` statement. Functions are closures that can capture variables from their enclosing scope.
 ```rust
 // Single expression
 let add = (a, b) => a + b
@@ -131,6 +134,9 @@ let complex_math = (x) => {
     let doubled = x * 2
     doubled * doubled
 }
+
+// With type annotation
+let greet: (str) -> str = (name) => `Hello, ${name}!`
 ```
 
 ### 4.3 If / Else (Rust-Style)
@@ -140,7 +146,7 @@ let absolute = (x) => if x > 0 { x } else { -x }
 ```
 
 ### 4.4 Method Chaining
-Methods are syntactic sugar for function application. `a.f(b)` desugars strictly to `f(a, b)`.
+Method calls are syntactic sugar for function application. `a.f(b)` desugars strictly to `f(a, b)`.
 ```rust
 let adults = users
     .filter((u) => if u.age >= 18 { true } else { false })
@@ -161,87 +167,129 @@ let describe = (opt) => match opt {
 ```
 
 **Supported Patterns:**
-1.  **Wildcard:** `_` (matches anything, discards value)
-2.  **Binding:** `x` (matches anything, binds to name `x`)
-3.  **Literal:** `42`, `"hello"`, `true`
-4.  **Constructor:** `Some(x)`, `Ok(val)`
-5.  **Tuple:** `(a, b)`
-6.  **Record:** `{ name: n, age }`
+1. **Wildcard:** `_` (matches anything, discards value)
+2. **Binding:** `x` (matches anything, binds to name `x`)
+3. **Literal:** `42`, `"hello"`, `true`
+4. **Constructor:** `Some(x)`, `Ok(val)`
+5. **Tuple:** `(a, b)`
+6. **Record:** `{ name: n, age }`
 
-*(Note: There is no list pattern matching like `x:xs`. Arrays are manipulated via `.head()`, `.tail()`, and `.splitAt()` methods).*
+*(Note: There is no list pattern matching like `x:xs`. Arrays are manipulated exclusively via standard library methods).*
 
 ---
 
 ## 6. The Effect System
 
-`pipe-lang` does not have a `do` block or special syntax for IO. 
+`pipe-lang` represents side effects via the generic type `Effect<T>`. Functions that perform IO return `Effect<T>` instead of `T`. The runtime stores effects as `Value::Effect(Arc<dyn BuiltinFunction>)` — a deferred computation thunk.
 
-Side effects are represented by the generic data type `Effect<T>`. An `Effect` is an immutable description of a computation. The typechecker ensures that pure functions cannot execute effects.
-
-To chain effects, the language relies purely on the `flatMap` and `map` methods. The runtime evaluates the single `Effect<()>` returned by `main`.
+**Current implementation:**
+- `println`, `print`, `read_line`, `read_file` return `Effect<()>`, `Effect<str>`, and `Effect<Result<str, str>>` respectively.
+- `Effect.map` and `Effect.flatMap` allow chaining effectful computations.
+- The runtime evaluates effects eagerly when the effect closure is invoked by `main`.
+- The typechecker does NOT enforce that pure functions cannot execute effects — this is a planned improvement.
 
 ```rust
-// Reading a file, transforming it, and printing it
-let main: () -> Effect<()> = () => 
-    io.readLine()
-        .flatMap((name) => io.println(`Hello, ${name}!`))
+let main: () -> Effect<()> = () => {
+    println(`Hello, world!`)
+}
 ```
 
 ---
 
 ## 7. Standard Library (Exhaustive Specification)
 
-The standard library is implemented natively in Rust (the host language) and linked via the runtime's JIT bridge. There are no implicit type conversions. 
+The standard library is implemented natively in Rust (the host language) and linked via the runtime's JIT bridge. All 44 builtins are registered in the prelude and available without imports.
 
-### 7.1 Numeric Conversions & Methods
-All conversions are explicit method calls.
+### 7.1 Core Combinators (6)
 
-| Method | Type Signature | Description |
+| Function | Signature | Description |
 | :--- | :--- | :--- |
-| `to_i64` | `(i32) -> i64` | Widening conversion |
-| `to_i32` | `(f64) -> i32` | Truncating conversion |
-| `to_f64` | `(i32) -> f64` | Float conversion |
-| `to_str` | `(i32) -> str` | String formatting (available on all primitives) |
+| `id` | `(a) -> a` | Identity function |
+| `const` | `(a) -> (b) -> a` | Constant combinator (K combinator) |
+| `flip` | `((a, b) -> c) -> (b, a) -> c` | Swaps arguments of a binary function |
+| `compose` | `((b -> c), (a -> b)) -> (a -> c)` | Left-to-right function composition |
+| `pipe` | `((a -> b), (b -> c)) -> (a -> c)` | Right-to-left function piping |
+| `apply` | `((a -> b), a) -> b` | Applies a function to an argument |
 
-### 7.2 Array `<T>`
-Arrays are manipulated via methods. No custom operators.
+### 7.2 Array Operations (12)
 
-| Method | Type Signature |
-| :--- | :--- |
-| `map` | `<A, B>(Array<A>, (A) -> B) -> Array<B>` |
-| `filter` | `<T>(Array<T>, (T) -> bool) -> Array<T>` |
-| `fold` | `<A, B>(Array<A>, B, (B, A) -> B) -> B` |
-| `flatMap` | `<A, B>(Array<A>, (A) -> Array<B>) -> Array<B>` |
-| `concat` | `<T>(Array<T>, Array<T>) -> Array<T>` |
-| `prepend` | `<T>(Array<T>, T) -> Array<T>` |
-| `len` | `<T>(Array<T>) -> usize` |
-| `head` | `<T>(Array<T>) -> Option<T>` |
-| `tail` | `<T>(Array<T>) -> Option<Array<T>>` |
+| Method | Signature | Description |
+| :--- | :--- | :--- |
+| `map` | `(Array<A>, (A) -> B) -> Array<B>` | Transform each element |
+| `filter` | `(Array<T>, (T) -> Bool) -> Array<T>` | Keep elements matching predicate |
+| `fold` | `(Array<A>, B, (B, A) -> B) -> B` | Left fold |
+| `flat_map` | `(Array<A>, (A) -> Array<B>) -> Array<B>` | Map then flatten |
+| `concat` | `(Array<T>, Array<T>) -> Array<T>` | Concatenate two arrays |
+| `prepend` | `(Array<T>, T) -> Array<T>` | Prepend element to array |
+| `len` | `(Array<T>) -> Usize` | Number of elements |
+| `head` | `(Array<T>) -> Option<T>` | First element (None if empty) |
+| `tail` | `(Array<T>) -> Option<Array<T>>` | All elements except first |
+| `drop` | `(Array<T>, I32) -> Array<T>` | Remove first N elements |
+| `take` | `(Array<T>, I32) -> Array<T>` | Keep first N elements |
 
-### 7.3 Option `<T>` & Result `<T, E>`
-| Method | Type Signature |
-| :--- | :--- |
-| `Option.map` | `<A, B>(Option<A>, (A) -> B) -> Option<B>` |
-| `Option.flatMap` | `<A, B>(Option<A>, (A) -> Option<B>) -> Option<B>` |
-| `Option.unwrapOr` | `<A>(Option<A>, A) -> A` (Requires default fallback) |
-| `Result.map` | `<T, E, U>(Result<T, E>, (T) -> U) -> Result<U, E>` |
-| `Result.flatMap` | `<T, E, U>(Result<T, E>, (T) -> Result<U, E>) -> Result<U, E>` |
+### 7.3 String Operations
 
-### 7.4 Strings (`str`)
-| Method | Type Signature |
-| :--- | :--- |
-| `len` | `(str) -> usize` (Byte length) |
-| `concat` | `(str, str) -> str` |
-| `split` | `(str, str) -> Array<str>` |
-| `trim` | `(str) -> str` |
-| `parse_i32` | `(str) -> Result<i32, str>` |
+| Method | Signature | Description |
+| :--- | :--- | :--- |
+| `Str.concat` | `(Str, Str) -> Str` | Append second string |
+| `Str.len` | `(Str) -> Usize` | Byte length |
+| `Str.split` | `(Str, Str) -> Array<Str>` | Split on delimiter |
+| `split` | `(Str, Str) -> Array<Str>` | Bare alias for `Str.split` |
+| `Str.trim` | `(Str) -> Str` | Strip leading/trailing whitespace |
+| `trim` | `(Str) -> Str` | Bare alias for `Str.trim` |
+| `Str.parse_i32` | `(Str) -> Result<I32, Str>` | Parse as decimal i32 |
+| `parse_i32` | `(Str) -> Result<I32, Str>` | Bare alias for `Str.parse_i32` |
 
-### 7.5 IO Module (Requires `use stdlib::io`)
-| Function | Type Signature |
-| :--- | :--- |
-| `io.println` | `(str) -> Effect<()>` |
-| `io.readLine` | `() -> Effect<str>` |
-| `io.readFile` | `(str) -> Effect<Result<str, str>>` |
+### 7.4 IO Operations
+
+| Function | Signature | Description |
+| :--- | :--- | :--- |
+| `println` | `(Str) -> Unit` | Print with trailing newline |
+| `print` | `(Str) -> Unit` | Print without newline |
+| `read_line` | `(Unit) -> Str` | Read one line from stdin |
+| `read_file` | `(Str) -> Result<Str, Str>` | Read entire file |
+
+### 7.5 Option Operations
+
+| Method | Signature | Description |
+| :--- | :--- | :--- |
+| `Option.map` | `(Option<A>, (A) -> B) -> Option<B>` | Transform inner value |
+| `Option.flat_map` | `(Option<A>, (A) -> Option<B>) -> Option<B>` | Chain optional operations |
+| `Option.unwrap_or` | `(Option<A>, A) -> A` | Default fallback |
+| `unwrap_or` | `(Option<A>, A) -> A` | Bare alias |
+| `Option.unwrap_or_panic` | `(Option<A>) -> A` | Panic on None |
+| `unwrap_or_panic` | `(Option<A>) -> A` | Bare alias |
+
+### 7.6 Result Operations
+
+| Method | Signature | Description |
+| :--- | :--- | :--- |
+| `Result.map` | `(Result<T, E>, (T) -> U) -> Result<U, E>` | Transform Ok value |
+| `Result.flat_map` | `(Result<T, E>, (T) -> Result<U, E>) -> Result<U, E>` | Chain fallible operations |
+| `unwrap_or_panic` | `(Result<T, E>) -> T` | Panic on Err |
+
+### 7.7 Numeric Conversions
+
+| Method | Signature | Description |
+| :--- | :--- | :--- |
+| `to_i64` | `(numeric) -> I64` | Widen to 64-bit signed |
+| `to_i32` | `(numeric) -> I32` | Narrow to 32-bit signed |
+| `to_f64` | `(numeric) -> F64` | Convert to 64-bit float |
+| `to_str` | `(primitive) -> Str` | Format as string |
+
+### 7.8 Other
+
+| Function | Signature | Description |
+| :--- | :--- | :--- |
+| `sqrt` | `(F64) -> F64` | Square root |
+| `unwrap` | `(Option<A>) -> A` | Panic on None |
+
+### 7.9 Effect Combinators
+
+| Method | Signature | Description |
+| :--- | :--- | :--- |
+| `Effect.map` | `(Effect<A>, (A) -> B) -> Effect<B>` | Transform effect result |
+| `Effect.flatMap` | `(Effect<A>, (A) -> Effect<B>) -> Effect<B>` | Chain effects |
 
 ---
 
@@ -250,9 +298,9 @@ Arrays are manipulated via methods. No custom operators.
 `pipe-lang` achieves complete memory safety and determinism without a tracing Garbage Collector.
 
 ### 8.1 Region-Based RC
-- **Primitives:** (`i32`, `f64`, `bool`) are unboxed and passed by value on the stack.
+- **Primitives:** (`i32`, `f64`, `bool`, etc.) are unboxed and passed by value on the stack.
 - **Complex Types:** (`str`, `Array<T>`, `Records`, `Closures`, `Tags` with payloads) are heap-allocated and wrapped in an Atomic Reference Count (`Arc`).
-- **No Cycles:** Because there is no mutation (no mutable bindings, no cell/ref types), it is structurally impossible to construct reference cycles. 
+- **No Cycles:** Because there is no mutation (no mutable bindings, no cell/ref types), it is structurally impossible to construct reference cycles.
 - **Deterministic Drop:** As soon as an `Arc` count reaches zero, the memory is instantly reclaimed.
 
 ### 8.2 Value Representation (Rust Native)
@@ -262,21 +310,24 @@ The runtime uses a flat `Value` enum mapped directly to Rust types:
 pub enum Value {
     I32(i32),
     I64(i64),
+    Usize(usize),
     F64(f64),
     Bool(bool),
+    Unit,
     Str(Arc<str>),
     Array(Arc<[Value]>),
-    Record(Arc<BTreeMap<SmolStr, Value>>),
-    Closure(Arc<ClosureData>),
-    Effect(Arc<dyn BuiltinFunction>),
+    Record(Arc<RecordData>),   // fields: BTreeMap<SmolStr, Value>
+    Closure(Arc<ClosureData>), // func ptr + captures + arity + descriptors
     Tag { tag: u32, payload: Arc<[Value]> },
-    Unit,
+    Effect(Arc<dyn BuiltinFunction>),
 }
 
 pub struct ClosureData {
-    pub func: FuncPtr,
-    pub captures: Arc<[Value]>, 
+    pub func: FuncPtr,          // Builtin or Jit { address, arity }
+    pub captures: Arc<[Value]>,
     pub arity: usize,
+    pub param_descs: Arc<[JitArgType]>,
+    pub ret_desc: Vec<JitArgType>,
 }
 ```
 
@@ -287,71 +338,121 @@ pub struct ClosureData {
 The compiler is a strict, single-pass pipeline.
 
 ### Phase 1: Lexer & Parser (Frontend)
-- **Lexer:** Hand-written, zero-copy. Emits tokens, tracking accurate byte-spans for error reporting. 
-- **Parser:** Hand-written recursive descent. Constructs the AST into a memory Arena (`bumpalo`) for extreme performance and cache locality, preventing deep clone overhead.
+- **Lexer:** Hand-written, zero-copy. Emits tokens, tracking accurate byte-spans for error reporting.
+- **Parser:** Hand-written recursive descent. Constructs the AST into a memory Arena (`bumpalo`) for extreme performance and cache locality.
 
 ### Phase 2: Typechecker (Hindley-Milner)
 - Implements Algorithm W with Let-Polymorphism.
 - Resolves all type variables. Rejects programs with type mismatches or unhandled effect boundaries.
-- **Data Structure:** Unification uses an efficient Union-Find (Disjoint Set) structure rather than cloning HashMaps.
+- **Data Structure:** Unification uses an efficient Union-Find (Disjoint Set) structure via the `ena` crate.
+- **Output:** `TypedProgram` with `type_map: HashMap<NodeId, MonoType>` and `tag_variants: TagVariants`.
 
 ### Phase 3: IR Lowering
 Translates the hierarchical typed AST into a flat, SSA-lite (Static Single Assignment) representation.
 - Functions are hoisted.
-- Closures are lowered by identifying free variables and constructing explicit capture arrays (`MakeClosure` instruction).
-- **Basic Blocks:** Code is arranged into basic blocks ending in explicit terminators (`Return`, `Jump`, `Branch`, `Switch`).
-- **Effect Flattening:** `Effect.flatMap` chains are flattened into sequential instructions for the runtime to interpret or JIT.
+- Closures are lowered by identifying free variables (`Vec`-based capture analysis for deterministic ordering) and constructing explicit capture arrays (`MakeClosure` instruction).
+- **Basic Blocks:** Code is arranged into basic blocks ending in explicit terminators (`Return`, `Jump`, `Branch`, `Switch`, `TailCall`, `Unreachable`).
+- **42 Instruction Variants:** Constants (I8-I64, U8-U64, Usize, F32, F64, Bool, Str, Unit), Arithmetic (Add, Sub, Mul, Div, Rem, Neg), Comparisons (Eq, Ne, Lt, Le, Gt, Ge), Logical (And, Or, Not), Array (Alloc, Get, Set, Len, Concat), Record (Alloc, Get, Set), Tag (Construct, Discriminant, Get), Closure (MakeClosure, CallIndirect, CallNamed), String (StrConcat, Println), and runtime (Panic, Retain, Release, ClosureGet).
 
 ### Phase 4: Cranelift JIT Backend
 - Consumes the IR. Maps IR instructions directly to Cranelift IR.
-- Passes: Inlining small functions, Dead Code Elimination, Constant Folding, and Tail Call Optimization (crucial for recursive functional logic).
-- Output: A callable native function pointer that takes a packed buffer of arguments and returns the result.
+- All functions use a uniform calling convention: `extern "C" fn(args: *const u8, ret: *mut u8) -> i32`.
+- Passes: Inlining small functions, Dead Code Elimination, Constant Folding.
+- Output: A callable native function pointer. `CompiledModule::call_main()` executes the program.
 
 ---
 
-## 10. Tooling & Ecosystem
+## 10. Module System (`use`)
 
-### 10.1 Command Line Interface (CLI)
+The `use` keyword imports modules by path. The parser, typechecker, and IR lowerer all support `use` declarations.
+
+```rust
+use stdlib::io
+```
+
+- **Parsed:** Path segments separated by `::` (e.g., `use stdlib::io`).
+- **Typechecked:** Returns `Unit`. No name resolution is performed (all builtins are in prelude).
+- **IR:** Recorded as `IrModule::imports` for future module resolution.
+- **Runtime:** Currently inert — module loading is not yet implemented.
+
+---
+
+## 11. Tooling & Ecosystem
+
+### 11.1 Command Line Interface (CLI)
 Built with `clap`.
-*   `pipe-lang check <file.pp>` - Runs Lex, Parse, and Typecheck. Prints diagnostics.
-*   `pipe-lang compile <file.pp> --emit-ir` - Compiles and dumps the IR.
-*   `pipe-lang run <file.pp>` - Full pipeline execution.
+- `pipe-lang check <file.pp>` — Runs Lex, Parse, and Typecheck. Prints diagnostics.
+- `pipe-lang compile <file.pp> --emit-ir` — Compiles and dumps the IR to stdout.
+- `pipe-lang run <file.pp>` — Full pipeline: parse, typecheck, lower to IR, JIT compile, and execute.
+- `pipe-lang lsp` — Launch the Language Server Protocol server (stdio-based).
 
-### 10.2 Diagnostics
-Powered by `miette`. Errors must contain:
+### 11.2 Diagnostics
+Errors use custom formatted diagnostics with:
 1. The exact byte span of the error.
 2. A graphical snippet of the source code highlighting the exact tokens.
 3. A clear message (e.g., "type mismatch: expected i32, got str").
 
-### 10.3 Language Server Protocol (LSP)
+### 11.3 Language Server Protocol (LSP)
 Implemented as an out-of-process server using `tower-lsp`.
 - **Supported features:**
-  - `textDocument/didOpen` & `didChange`: Triggers background compilation and streams `PublishDiagnostics`.
-  - `textDocument/hover`: Queries the typechecker's span-map to return the inferred HM type of any expression.
+  - `textDocument/didOpen` & `didChange` (full sync) — Triggers background compilation and streams diagnostics.
+  - `textDocument/hover` — Queries the typechecker's span-map to return the inferred HM type of any expression.
+- **Planned:** Go-to-definition, completions, document symbols.
 
-### 10.4 Tree-sitter
-A declarative `grammar.js` repository defining the exact lexical and syntactic rules of the language. Used by modern editors (Neovim, Zed) for syntax highlighting and AST-based text manipulation, completely decoupled from the Rust compiler binary.
+### 11.4 Tree-sitter
+A declarative `grammar.js` repository defining the exact lexical and syntactic rules of the language. Used by modern editors (Neovim, Zed) for syntax highlighting and AST-based text manipulation, completely decoupled from the Rust compiler binary. Available in a separate repository.
 
 ---
 
-## 11. Project Workspace & Crate Structure
-
-The repository must adhere exactly to this workspace configuration. Separation of concerns is paramount.
+## 12. Project Workspace & Crate Structure
 
 ```text
 pipe-lang/
-├── Cargo.toml                  # Workspace root
+├── Cargo.toml                       # Workspace root
 ├── crates/
-│   ├── ast/                    # Pure data structures: Expr, Decl, Pattern (Arena allocated)
-│   ├── lexer/                  # Tokenizer and Token definitions
-│   ├── parser/                 # Recursive descent parser -> AST
-│   ├── typechecker/            # HM unification, Types, Env, Inference rules
-│   ├── ir/                     # SSA Data structures and Lowering logic
-│   ├── runtime/                # ARC memory model, Value enum, Cranelift JIT logic
-│   ├── stdlib/                 # Rust implementations of Arrays, Options, Strings, IO
-│   ├── diagnostics/            # miette error formatting
-│   └── cli/                    # Clap CLI entry point
-│   └── lsp/                    # tower-lsp implementation
-├── tree-sitter-pipe-lang/      # Separate grammar package
-└── example-programs/           # Canonical test files
+│   ├── ast/                         # Pure data structures: Expr, Decl, Pattern (Arena allocated)
+│   ├── lexer/                       # Tokenizer and Token definitions
+│   ├── parser/                      # Recursive descent parser -> AST
+│   ├── typechecker/                 # HM unification, MonoType, Env, Inference rules
+│   ├── ir/                          # SSA data structures and Lowering logic
+│   ├── runtime/                     # ARC memory model, Value enum, Cranelift JIT
+│   ├── stdlib/                      # Rust implementations of all builtins (Arrays, Strings, IO, etc.)
+│   ├── diagnostics/                 # Error formatting and diagnostic output
+│   ├── cli/                         # Clap CLI entry point and session orchestration
+│   └── pipe-lang-lsp/              # tower-lsp language server implementation
+├── example-programs/                # Canonical test files (22 programs)
+└── plan-main.md                     # This specification document
 ```
+
+---
+
+## 13. Example Programs
+
+The `example-programs/` directory contains 22 canonical `.pp` programs demonstrating the language:
+
+| Program | Lines | Demonstrates |
+| :--- | :--- | :--- |
+| `hello.pp` | 3 | Simple println |
+| `map-strings.pp` | 3 | Array.map with strings |
+| `capturing-closures.pp` | 17 | Closures capturing local variables |
+| `io-effects.pp` | 21 | Pure/impure separation, Effect types |
+| `json-parser.pp` | 28 | Records, recursive functions |
+| `ascii-art.pp` | 33 | String building, templates, recursion |
+| `higher-order.pp` | 36 | map/filter/fold pipelines, closures |
+| `closures.pp` | 39 | Closure creation, composition, higher-order |
+| `expression-evaluator.pp` | 39 | ADTs, recursive eval, Result |
+| `patterns.pp` | 47 | Exhaustive pattern matching, nested patterns |
+| `option-result.pp` | 50 | Option/Result, .map(), .unwrap_or() |
+| `state-machine.pp` | 51 | Typed state machine, fold over events |
+| `markdown-renderer.pp` | 53 | ADTs, pattern matching, HTML rendering |
+| `generics.pp` | 59 | Polymorphic functions, generic ADTs |
+| `sorting.pp` | 55 | Quicksort/Mergesort, recursion |
+| `tiny-repl.pp` | 79 | Simulated REPL, parse/eval loop |
+| `csv-query.pp` | 114 | CSV processing, map/filter/fold pipeline |
+| `pathfinding-bfs.pp` | 122 | BFS on grid, recursive frontier expansion |
+| `game-of-life.pp` | 125 | 2D arrays, neighbor counting, recursion |
+| `factorial.pp` | 12 | Recursive factorial |
+| `fibonacci.pp` | 11 | Naive recursive Fibonacci |
+| `records.pp` | 36 | Typed records, field access, functional update |
+
+12 of these have corresponding `.expected.txt` output files used by integration tests.
