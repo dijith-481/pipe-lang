@@ -80,10 +80,16 @@ impl From<TypeError> for diagnostics::CompilerError {
                 got,
             } => diagnostics::CompilerError::type_error(
                 span,
-                format!("type mismatch: expected {expected}, got {got}"),
+                format!("type mismatch: expected `{expected}`, got `{got}`"),
             ),
             TypeError::UnboundVariable { name, span } => {
-                diagnostics::CompilerError::type_error(span, format!("unbound variable `{name}`"))
+                diagnostics::CompilerError::type_error(
+                    span,
+                    format!(
+                        "unbound variable `{name}` — make sure it is spelled \
+                         correctly and in scope"
+                    ),
+                )
             }
             TypeError::ArityMismatch {
                 expected,
@@ -91,12 +97,20 @@ impl From<TypeError> for diagnostics::CompilerError {
                 span,
             } => diagnostics::CompilerError::type_error(
                 span,
-                format!("arity mismatch: expected {expected} arguments, got {got}"),
+                format!(
+                    "this function expects {expected} argument(s), \
+                     but {got} were provided"
+                ),
             ),
-            TypeError::InfiniteType { var, ty, span } => diagnostics::CompilerError::type_error(
-                span,
-                format!("infinite type: {var} occurs in {ty}"),
-            ),
+            TypeError::InfiniteType { var: _var, ty, span } => {
+                diagnostics::CompilerError::type_error(
+                    span,
+                    format!(
+                        "recursive type constraint — `{ty}` references itself. \
+                         Try adding a type annotation"
+                    ),
+                )
+            }
             TypeError::AnnotationConflict {
                 annotation,
                 inferred,
@@ -104,19 +118,29 @@ impl From<TypeError> for diagnostics::CompilerError {
             } => diagnostics::CompilerError::type_error(
                 span,
                 format!(
-                    "type annotation conflict: annotation says {annotation}, inferred {inferred}"
+                    "type annotation says `{annotation}`, \
+                     but the expression is inferred as `{inferred}`"
                 ),
             ),
             TypeError::NonExhaustiveMatch { span } => {
-                diagnostics::CompilerError::type_error(span, "non-exhaustive match")
+                diagnostics::CompilerError::type_error(
+                    span,
+                    "non-exhaustive match — add a wildcard pattern `_` to \
+                     catch all unmatched cases",
+                )
             }
-            TypeError::FieldNotFound { field, span } => diagnostics::CompilerError::type_error(
-                span,
-                format!("field `{field}` not found on record"),
-            ),
+            TypeError::FieldNotFound { field, span } => {
+                diagnostics::CompilerError::type_error(
+                    span,
+                    format!("field `{field}` not found on this record type"),
+                )
+            }
             TypeError::NumericOverflow { ty, span } => diagnostics::CompilerError::type_error(
                 span,
-                format!("numeric literal overflows type `{ty}`"),
+                format!(
+                    "numeric literal overflows `{ty}` — use a larger type \
+                     like `i64` or `f64`"
+                ),
             ),
         }
     }

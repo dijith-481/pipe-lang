@@ -93,16 +93,23 @@ fn launch_lsp() {
 fn run_session(config: SessionConfig) -> i32 {
     let mut session = CompilerSession::new(config);
     if let Err(e) = session.load_source() {
-        eprintln!("{e}");
+        eprintln!("error: {e}");
         return 1;
     }
     match session.run_pipeline() {
         Ok(result) => {
             result.eprint_to_stderr();
+            let status = if result.success { "success" } else { "failed" };
+            if !result.diagnostics.is_empty() || !result.success {
+                eprintln!(
+                    "[pipe-lang] compilation {status} with {} diagnostic(s)",
+                    result.diagnostics.len()
+                );
+            }
             if result.success { result.exit_code } else { 1 }
         }
         Err(e) => {
-            eprintln!("{e}");
+            eprintln!("{}", e.render());
             1
         }
     }
