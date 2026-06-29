@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+echo "→ Generating tree-sitter parser..."
+npx tree-sitter generate
+
+echo "→ Testing grammar..."
+npx tree-sitter test
+
+echo "→ Building..."
+npx tree-sitter build
+
+echo "✓ Done! Parser generated in src/"

@@ -1,0 +1,4 @@
+# Generated parser files (regenerate with: tree-sitter generate)
+/src/
+node_modules/
+target/

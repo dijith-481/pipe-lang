@@ -1,0 +1,25 @@
+{
+  "name": "tree-sitter-pipe-lang",
+  "version": "0.1.0",
+  "description": "Tree-sitter grammar for pipe-lang",
+  "main": "bindings/node",
+  "scripts": {
+    "generate": "tree-sitter generate",
+    "test": "tree-sitter test",
+    "build": "tree-sitter build",
+    "highlight": "tree-sitter highlight",
+    "parse": "tree-sitter parse"
+  },
+  "keywords": [
+    "parser",
+    "tree-sitter",
+    "pipe-lang"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "nan": "^2.19.0"
+  },
+  "devDependencies": {
+    "tree-sitter-cli": "^0.22.6"
+  }
+}
