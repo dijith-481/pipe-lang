@@ -17,9 +17,9 @@ use cli::fixtures::{
 
 /// Smoke test: the test infrastructure can find all example files.
 #[test]
-fn fixtures_discover_20_programs() {
+fn fixtures_discover_22_programs() {
     let fixtures = discover_fixtures(&examples_dir()).expect("discover");
-    assert_eq!(fixtures.len(), 20);
+    assert_eq!(fixtures.len(), 22);
 }
 
 /// One stub test per example program. Each will be promoted to a

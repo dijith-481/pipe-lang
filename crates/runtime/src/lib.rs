@@ -19,7 +19,8 @@ static CAPTURE_BUF: Mutex<Option<Vec<u8>>> = Mutex::new(None);
 
 /// Enable global output capture into a buffer.
 pub fn enable_capture() {
-    *CAPTURE_BUF.lock().unwrap() = Some(Vec::new());
+    let mut guard = CAPTURE_BUF.lock().unwrap();
+    *guard = Some(Vec::new());
 }
 
 /// Disable capture and return captured output as a string.
