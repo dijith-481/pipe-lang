@@ -176,11 +176,16 @@ fn expr_ir_type(
 // Free-variable analysis
 // ---------------------------------------------------------------------------
 
-fn free_vars<'a>(expr: &Expr<'a>, bound: &HashSet<&'a str>, out: &mut HashSet<SmolStr>) {
+fn free_vars<'a>(expr: &Expr<'a>, bound: &HashSet<&'a str>, out: &mut Vec<SmolStr>) {
+    fn add_free(out: &mut Vec<SmolStr>, name: SmolStr) {
+        if !out.contains(&name) {
+            out.push(name);
+        }
+    }
     match expr {
         Expr::Ident(_, name, _) => {
             if !bound.contains(name) {
-                out.insert((*name).into());
+                add_free(out, (*name).into());
             }
         }
         Expr::Lambda { params, body, .. } => {
@@ -752,6 +757,7 @@ fn lower_expr<'src>(
             let subj_v = lower_expr(fb, subject, hoisted, ctx)?;
             let subj_ty = fb.expr_type(subject.id());
             let merge_id = fb.alloc_block();
+            let entry_block = fb.func.blocks[fb.current_block].id;
             let result_v = fb.alloc_value();
             let mut resolved_result_ty: Option<IrType> = None;
 
@@ -832,24 +838,21 @@ fn lower_expr<'src>(
 
             if is_tag {
                 // Tag types: TagDiscriminant + Switch.
-                // Find the block containing subj_v (the entry block) BEFORE
-                // switching current_block, so TagDiscriminant and Switch are
-                // emitted into the correct block (not the last arm's block).
-                let subject_block_idx = fb
-                    .func
-                    .blocks
-                    .iter()
-                    .position(|b| {
-                        b.instructions.iter().any(|(vid, _)| *vid == Some(subj_v))
-                            || b.params.iter().any(|(vid, _)| *vid == subj_v)
-                    })
-                    .unwrap_or(0);
-                fb.current_block = subject_block_idx;
+                // Create a fresh dispatch block at the current position so
+                // multiple matches on the same subject don't overwrite each
+                // other's terminators on the subject block.
+                let dispatch_block = fb.alloc_block();
+                fb.set_current(dispatch_block);
                 let disc_v = fb.emit(Instruction::TagDiscriminant(subj_v));
                 fb.set_terminator(Terminator::Switch {
                     discriminant: disc_v,
                     arms: switch_arms,
                     default: default_arm,
+                });
+                fb.set_current(entry_block);
+                fb.set_terminator(Terminator::Jump {
+                    target: dispatch_block,
+                    args: vec![],
                 });
             } else {
                 // Primitive types: cascading Branch chain using Eq comparisons.
@@ -886,12 +889,14 @@ fn lower_expr<'src>(
                         }
                     };
                     let eq_v = fb.emit(Instruction::Eq(subj_v, lit_v));
+                    let saved_block = fb.func.blocks[fb.current_block].id;
                     let else_target = cascade_target.unwrap_or_else(|| {
                         let trap = fb.alloc_block();
                         fb.set_current(trap);
                         fb.set_terminator(Terminator::Unreachable);
                         trap
                     });
+                    fb.set_current(saved_block);
                     fb.set_terminator(Terminator::Branch {
                         condition: eq_v,
                         then_block: block_id,
@@ -901,23 +906,16 @@ fn lower_expr<'src>(
                     });
                     cascade_target = Some(check_block);
                 }
-                // Jump from the subject block to the first check.
+                // Jump from the current position to the first check.
+                let saved_block2 = fb.func.blocks[fb.current_block].id;
                 let entry = cascade_target.unwrap_or_else(|| {
                     let trap = fb.alloc_block();
                     fb.set_current(trap);
                     fb.set_terminator(Terminator::Unreachable);
                     trap
                 });
-                let subject_block_idx = fb
-                    .func
-                    .blocks
-                    .iter()
-                    .position(|b| {
-                        b.instructions.iter().any(|(vid, _)| *vid == Some(subj_v))
-                            || b.params.iter().any(|(vid, _)| *vid == subj_v)
-                    })
-                    .unwrap_or(0);
-                fb.current_block = subject_block_idx;
+                fb.set_current(saved_block2);
+                fb.set_current(entry_block);
                 fb.set_terminator(Terminator::Jump {
                     target: entry,
                     args: vec![],
@@ -1051,7 +1049,7 @@ fn lower_expr<'src>(
 
         Expr::Lambda { params, body, .. } => {
             let param_names: HashSet<&str> = params.iter().map(|p| p.name).collect();
-            let mut frees = HashSet::new();
+            let mut frees = Vec::new();
             free_vars(body, &param_names, &mut frees);
             let captures: Vec<SmolStr> = frees
                 .into_iter()

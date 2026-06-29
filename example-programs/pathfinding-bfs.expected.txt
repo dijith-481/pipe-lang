@@ -5,16 +5,16 @@ Grid Legend: (space)=open, #=wall, .=visited
 Start: (0, 0)
 Goal:  (7, 7)
 
-Shortest path: 15 steps from (0, 0) to (7, 7)
+Shortest path: 14 steps from (0, 0) to (7, 7)
 
 Grid (BFS exploration):
-.##.# # 
-#  # # #
-#     # 
-# ## # #
-# #     
-#  ## # 
-# #   # 
-#   #   
+..# # # 
+...#.# #
+#.....# 
+#.##.#.#
+#.#.....
+#..##.#.
+#.#...#.
+#...#.. 
 
-Reachable cells: 39 / 64
+Reachable cells: 34 / 64

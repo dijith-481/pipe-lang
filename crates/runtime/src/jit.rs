@@ -135,6 +135,12 @@ pub fn compile_ir(ir_module: &IrModule) -> Result<CompiledModule, JitError> {
         .map_err(|e| JitError::IsaBuilder {
             msg: format!("flag: {e}"),
         })?;
+    flag_builder
+        .set("opt_level", "speed")
+        .map_err(|e| JitError::IsaBuilder {
+            msg: format!("flag: {e}"),
+        })?;
+
     let isa_builder = cranelift_native::builder().map_err(|e| JitError::IsaBuilder {
         msg: format!("native ISA: {e:?}"),
     })?;
@@ -2758,28 +2764,22 @@ fn compile_comparison(
             let cmp = builder
                 .ins()
                 .fcmp(float_compare_code(op), left_value, right_value);
-            builder.ins().bitcast(
-                types::I8,
-                MemFlags::new().with_endianness(Endianness::Little),
-                cmp,
-            )
+            let one = builder.ins().iconst(types::I8, 1);
+            let zero = builder.ins().iconst(types::I8, 0);
+            builder.ins().select(cmp, one, zero)
         }
         IrType::Bool => match op {
             CompareOp::Eq => {
                 let cmp = builder.ins().icmp(IntCC::Equal, left_value, right_value);
-                builder.ins().bitcast(
-                    types::I8,
-                    MemFlags::new().with_endianness(Endianness::Little),
-                    cmp,
-                )
+                let one = builder.ins().iconst(types::I8, 1);
+                let zero = builder.ins().iconst(types::I8, 0);
+                builder.ins().select(cmp, one, zero)
             }
             CompareOp::Ne => {
                 let cmp = builder.ins().icmp(IntCC::NotEqual, left_value, right_value);
-                builder.ins().bitcast(
-                    types::I8,
-                    MemFlags::new().with_endianness(Endianness::Little),
-                    cmp,
-                )
+                let one = builder.ins().iconst(types::I8, 1);
+                let zero = builder.ins().iconst(types::I8, 0);
+                builder.ins().select(cmp, one, zero)
             }
             _ => return Err(unsupported_type(ctx.func_name, ty)),
         },
@@ -2853,11 +2853,9 @@ fn compile_comparison(
                 (left_value, right_value)
             };
             let cmp = builder.ins().icmp(int_compare_code(op, ty), l_val, r_val);
-            builder.ins().bitcast(
-                types::I8,
-                MemFlags::new().with_endianness(Endianness::Little),
-                cmp,
-            )
+            let one = builder.ins().iconst(types::I8, 1);
+            let zero = builder.ins().iconst(types::I8, 0);
+            builder.ins().select(cmp, one, zero)
         }
         _ => return Err(unsupported_type(ctx.func_name, ty)),
     };
@@ -2924,11 +2922,9 @@ fn compile_tag_cmp(
     let left_disc = builder.ins().load(I32, MemFlags::trusted(), left_value, 0);
     let right_disc = builder.ins().load(I32, MemFlags::trusted(), right_value, 0);
     let disc_eq_b1 = builder.ins().icmp(IntCC::Equal, left_disc, right_disc);
-    let disc_eq = builder.ins().bitcast(
-        types::I8,
-        MemFlags::new().with_endianness(Endianness::Little),
-        disc_eq_b1,
-    );
+    let disc_one = builder.ins().iconst(types::I8, 1);
+    let disc_zero = builder.ins().iconst(types::I8, 0);
+    let disc_eq = builder.ins().select(disc_eq_b1, disc_one, disc_zero);
 
     // Compute payload equality for the matched variant.
     // Since we don't know at compile time which variant the runtime
@@ -2940,11 +2936,9 @@ fn compile_tag_cmp(
     for variant in &tag_type.variants {
         let disc_val = builder.ins().iconst(I32, i64::from(variant.discriminant));
         let is_this = builder.ins().icmp(IntCC::Equal, left_disc, disc_val);
-        let is_this_i8 = builder.ins().bitcast(
-            types::I8,
-            MemFlags::new().with_endianness(Endianness::Little),
-            is_this,
-        );
+        let is_this_one = builder.ins().iconst(types::I8, 1);
+        let is_this_zero = builder.ins().iconst(types::I8, 0);
+        let is_this_i8 = builder.ins().select(is_this, is_this_one, is_this_zero);
 
         let mut payload_eq = builder.ins().iconst(types::I8, 1);
         let mut offset: i32 = 4;
@@ -4145,72 +4139,72 @@ unsafe extern "C" fn pipe_rt_box_value_jit(ptr: u64, desc_ptr: u64, _desc_len: u
                     ret_desc,
                 }))
             }
-            17 => {
-                let variant_count = unsafe { desc_read_u32(desc, offset) } as usize;
-                let disc = unsafe { std::ptr::read_unaligned(ptr as *const i32) } as u32;
+                    17 => {
+                        let variant_count = unsafe { desc_read_u32(desc, offset) } as usize;
+                        let disc = unsafe { std::ptr::read_unaligned(ptr as *const i32) } as u32;
 
-                let mut matched_variant = None;
-                let mut current_offset = *offset;
+                        let mut matched_variant = None;
+                        let mut current_offset = *offset;
 
-                for _ in 0..variant_count {
-                    let var_disc = unsafe { desc_read_u32(desc, &mut current_offset) };
-                    let _payload_byte_len = unsafe { desc_read_u32(desc, &mut current_offset) };
-                    let payload_count =
-                        unsafe { desc_read_u32(desc, &mut current_offset) } as usize;
+                        for _ in 0..variant_count {
+                            let var_disc = unsafe { desc_read_u32(desc, &mut current_offset) };
+                            let _payload_byte_len = unsafe { desc_read_u32(desc, &mut current_offset) };
+                            let payload_count =
+                                unsafe { desc_read_u32(desc, &mut current_offset) } as usize;
 
-                    if var_disc == disc {
-                        matched_variant = Some((current_offset, payload_count));
-                    }
-
-                    // Advance past this variant's schema
-                    for _ in 0..payload_count {
-                        let _size = unsafe { desc_read_u32(desc, &mut current_offset) };
-                        let _tag = unsafe { desc_read_u32(desc, &mut current_offset) };
-                        let total_bytes =
-                            unsafe { desc_read_u32(desc, &mut current_offset) } as usize;
-                        current_offset += total_bytes.saturating_sub(8);
-                    }
-                }
-
-                *offset = current_offset; // Skip remainder of descriptor
-
-                let mut payload_fields = Vec::new();
-                if let Some((mut p_offset, payload_count)) = matched_variant {
-                    let mut p_ptr = unsafe { ptr.add(4) }; // skip disc
-                    for _ in 0..payload_count {
-                        let field_size = unsafe { desc_read_u32(desc, &mut p_offset) } as usize;
-                        let field_tag =
-                            unsafe { std::ptr::read_unaligned(desc.add(p_offset) as *const u32) };
-                        let actual_ptr = if is_tag_heap_type(field_tag) {
-                            let p = unsafe { std::ptr::read_unaligned(p_ptr as *const u64) };
-                            if p == 0 {
-                                std::ptr::null()
-                            } else {
-                                p as *const u8
+                            if var_disc == disc {
+                                matched_variant = Some((current_offset, payload_count));
                             }
+
+                            // Advance past this variant's schema
+                            for _ in 0..payload_count {
+                                let _size = unsafe { desc_read_u32(desc, &mut current_offset) };
+                                let _tag = unsafe { desc_read_u32(desc, &mut current_offset) };
+                                let total_bytes =
+                                    unsafe { desc_read_u32(desc, &mut current_offset) } as usize;
+                                current_offset += total_bytes.saturating_sub(8);
+                            }
+                        }
+
+                        *offset = current_offset; // Skip remainder of descriptor
+
+                        let mut payload_fields = Vec::new();
+                        if let Some((mut p_offset, payload_count)) = matched_variant {
+                            let mut p_ptr = unsafe { ptr.add(4) }; // skip disc
+                            for _ in 0..payload_count {
+                                let field_size = unsafe { desc_read_u32(desc, &mut p_offset) } as usize;
+                                let field_tag =
+                                    unsafe { std::ptr::read_unaligned(desc.add(p_offset) as *const u32) };
+                                let actual_ptr = if is_tag_heap_type(field_tag) {
+                                    let p = unsafe { std::ptr::read_unaligned(p_ptr as *const u64) };
+                                    if p == 0 {
+                                        std::ptr::null()
+                                    } else {
+                                        p as *const u8
+                                    }
+                                } else {
+                                    p_ptr
+                                };
+                                payload_fields.push(unsafe { box_rec(actual_ptr, desc, &mut p_offset) });
+                                p_ptr = unsafe { p_ptr.add(field_size) };
+                            }
+                        }
+
+                        let payload_val = if payload_fields.len() == 1 {
+                            payload_fields.into_iter().next().unwrap()
                         } else {
-                            p_ptr
+                            V::Array(payload_fields.into())
                         };
-                        payload_fields.push(unsafe { box_rec(actual_ptr, desc, &mut p_offset) });
-                        p_ptr = unsafe { p_ptr.add(field_size) };
+
+                        V::Tag {
+                            tag: disc,
+                            payload: match payload_val {
+                                V::Unit => vec![].into(),
+                                V::Array(a) => a,
+                                other => vec![other].into(),
+                            },
+                        }
                     }
-                }
-
-                let payload_val = if payload_fields.len() == 1 {
-                    payload_fields.into_iter().next().unwrap()
-                } else {
-                    V::Array(payload_fields.into())
-                };
-
-                V::Tag {
-                    tag: disc,
-                    payload: match payload_val {
-                        V::Unit => vec![].into(),
-                        V::Array(a) => a,
-                        other => vec![other].into(),
-                    },
-                }
-            }
             _ => V::Unit,
         };
 
