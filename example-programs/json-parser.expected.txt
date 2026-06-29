@@ -1,21 +1,9 @@
-=== JSON Parser & Query ===
+=== JSON-like Data Demo ===
 
-Blog Post (serialized):
-{"title": "Introduction to Functional Programming", "author": {"name": "Alice Johnson", "email": "alice@example.com", "roles": ["author", "editor"]}, "tags": ["fp", "beginner", "pipe-lang"], "published": true, "views": 1547, "metadata": {"wordCount": 2500, "readingTime": 12, "rating": 4.5}}
+All entries:
+  name: Alice
+  age: 30
+  city: New York
+  country: USA
 
-Queries:
-  title = "Introduction to Functional Programming"
-  author name = "Alice Johnson"
-  author email = "alice@example.com"
-  views = 1547
-
-API Response:
-{"status": "ok", "code": 200, "data": [{"id": 1, "name": "Widget A", "price": 29.99, "inStock": true}, {"id": 2, "name": "Widget B", "price": 49.99, "inStock": false}, {"id": 3, "name": "Widget C", "price": 19.99, "inStock": true}]}
-
-Products (3 items):
-  #1 Widget A: $29.99
-  #2 Widget B: $49.99
-  #3 Widget C: $19.99
-
-Nested query: author email from blog post
-  Result: alice@example.com
+Done.

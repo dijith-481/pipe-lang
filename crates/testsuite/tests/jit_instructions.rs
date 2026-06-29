@@ -658,6 +658,7 @@ fn jit_record_alloc_and_get() {
             entry,
             Instruction::RecordAlloc(Box::new(RecordAllocData {
                 type_name: SmolStr::new("Person"),
+                field_names: vec![SmolStr::new("name"), SmolStr::new("age")],
                 fields: vec![name, age],
             })),
         );
@@ -685,6 +686,7 @@ fn jit_record_set_and_get() {
             entry,
             Instruction::RecordAlloc(Box::new(RecordAllocData {
                 type_name: SmolStr::new("Person"),
+                field_names: vec![SmolStr::new("name"), SmolStr::new("age")],
                 fields: vec![name, age],
             })),
         );
@@ -874,6 +876,7 @@ fn jit_println_record_uses_type_tag() {
             entry,
             Instruction::RecordAlloc(Box::new(RecordAllocData {
                 type_name: SmolStr::new("Test"),
+                field_names: vec![SmolStr::new("val")],
                 fields: vec![val],
             })),
         );
@@ -1539,6 +1542,7 @@ fn fix_eq_record() {
             entry,
             Instruction::RecordAlloc(Box::new(RecordAllocData {
                 type_name: SmolStr::new("Person"),
+                field_names: vec![SmolStr::new("age")],
                 fields: vec![age],
             })),
         );
@@ -1547,6 +1551,7 @@ fn fix_eq_record() {
             entry,
             Instruction::RecordAlloc(Box::new(RecordAllocData {
                 type_name: SmolStr::new("Person"),
+                field_names: vec![SmolStr::new("age")],
                 fields: vec![age],
             })),
         );
@@ -1566,6 +1571,7 @@ fn fix_ne_record_different() {
             entry,
             Instruction::RecordAlloc(Box::new(RecordAllocData {
                 type_name: SmolStr::new("Person"),
+                field_names: vec![SmolStr::new("age")],
                 fields: vec![age_a],
             })),
         );
@@ -1574,6 +1580,7 @@ fn fix_ne_record_different() {
             entry,
             Instruction::RecordAlloc(Box::new(RecordAllocData {
                 type_name: SmolStr::new("Person"),
+                field_names: vec![SmolStr::new("age")],
                 fields: vec![age_b],
             })),
         );

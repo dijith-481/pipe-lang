@@ -1395,7 +1395,6 @@ fn compile_instruction(
         }
 
         ir::Instruction::TagGet(data) => {
-            tracing::warn!("TagGet MATCHED in instruction switch!");
             compile_tag_get(builder, ctx, data, values)?
         }
 

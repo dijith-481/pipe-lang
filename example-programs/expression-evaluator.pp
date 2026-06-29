@@ -20,9 +20,8 @@ let eval: (Expr) -> Result<f64, str> = (expr) => match expr {
     Div(l, r) => { let lr = eval(l); match lr { Ok(lv) => { let rr = eval(r); match rr { Ok(rv) => if rv == 0.0 { Err(`division by zero`) } else { Ok(lv / rv) } Err(e) => Err(e) } } Err(e) => Err(e) } }
 }
 
-let expr_to_str = (expr) => match expr { Num(v) => to_str(v) Add(l,r) => `(${expr_to_str(l)} + ${expr_to_str(r)})` Sub(l,r) => `(${expr_to_str(l)} - ${expr_to_str(r)})` Mul(l,r) => `(${expr_to_str(l)} * ${expr_to_str(r)})` Div(l,r) => `(${expr_to_str(l)} / ${expr_to_str(r)})` Neg(val) => `(-${expr_to_str(val)})` }
-let format_result = (expr, result) => match result { Ok(v) => `${expr_to_str(expr)} = ${to_str(v)}` Err(msg) => `${expr_to_str(expr)} => Error: ${msg}` }
-let run_test = (expr) => { let result = eval(expr); println(format_result(expr, result)) }
+let expr_to_str: (Expr) -> str = (expr) => match expr { Num(v) => to_str(v) Add(l,r) => `(${expr_to_str(l)} + ${expr_to_str(r)})` Sub(l,r) => `(${expr_to_str(l)} - ${expr_to_str(r)})` Mul(l,r) => `(${expr_to_str(l)} * ${expr_to_str(r)})` Div(l,r) => `(${expr_to_str(l)} / ${expr_to_str(r)})` Neg(val) => `(-${expr_to_str(val)})` }
+let run_test = (expr) => { let repr = expr_to_str(expr); match eval(expr) { Ok(v) => println(`${repr} = ${to_str(v)}`) Err(msg) => println(`${repr} => Error: ${msg}`) } }
 
 let main = () => {
     println(`=== Expression Evaluator ===`)

@@ -228,6 +228,7 @@ fn write_func_type(f: &mut fmt::Formatter<'_>, ft: &FuncType) -> fmt::Result {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordAllocData {
     pub type_name: SmolStr,
+    pub field_names: Vec<SmolStr>,
     pub fields: Vec<ValueId>,
 }
 
@@ -1058,10 +1059,11 @@ pub fn infer_instruction_type(
                 .collect();
             Some(IrType::Record(RecordType {
                 name: data.type_name.clone(),
-                fields: field_types
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, ty)| (SmolStr::new(format!("_{i}")), ty))
+                fields: data
+                    .field_names
+                    .iter()
+                    .zip(field_types.into_iter())
+                    .map(|(name, ty)| (name.clone(), ty))
                     .collect(),
             }))
         }

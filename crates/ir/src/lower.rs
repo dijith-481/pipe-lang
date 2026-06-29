@@ -978,9 +978,11 @@ fn lower_expr<'src>(
             // alphabetical ordering that field_index_of returns
             // (derived from BTreeMap keys).
             sorted.sort_by(|(a, _), (b, _)| a.name.cmp(b.name));
+            let field_names: Vec<SmolStr> = sorted.iter().map(|(f, _)| (*f.name).into()).collect();
             let field_vals: Vec<ValueId> = sorted.into_iter().map(|(_, v)| v).collect();
             Ok(fb.emit(Instruction::RecordAlloc(Box::new(RecordAllocData {
                 type_name: "anon".into(),
+                field_names,
                 fields: field_vals,
             }))))
         }
