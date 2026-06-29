@@ -1,0 +1,22 @@
+{
+  "grammars": [
+    {
+      "name": "pipe_lang",
+      "camelcase": "PipeLang",
+      "scope": "source.pipe",
+      "file-types": ["pp"],
+      "injection-regex": "pipe_lang",
+      "highlights": ["queries/highlights.scm"],
+      "injections": ["queries/injections.scm"],
+      "folds": ["queries/folds.scm"],
+      "indents": ["queries/indents.scm"]
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0"
+  },
+  "bindings": {
+    "rust": true,
+    "node": true
+  }
+}

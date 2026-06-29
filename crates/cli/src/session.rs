@@ -67,10 +67,10 @@ pub struct CompileResult {
 }
 
 impl CompileResult {
-    /// Prints all diagnostics to stderr.
+    /// Prints all diagnostics to stderr with graphical source-code annotations.
     pub fn eprint_to_stderr(&self) {
         for diag in &self.diagnostics {
-            eprintln!("{diag:?}");
+            eprintln!("{}", diag.render());
         }
     }
 }

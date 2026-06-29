@@ -1,0 +1,12 @@
+[package]
+name = "formatter"
+version = "0.1.0"
+edition = "2024"
+
+[lints]
+workspace = true
+
+[dependencies]
+ast = { version = "0.1.0", path = "../ast" }
+parser = { version = "0.1.0", path = "../parser" }
+bumpalo = "3.20.3"

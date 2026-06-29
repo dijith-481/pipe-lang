@@ -17,6 +17,7 @@ ast = { version = "0.1.0", path = "../ast" }
 bumpalo = "3"
 clap = { version = "4.6.1", features = ["derive"] }
 diagnostics = { version = "0.1.0", path = "../diagnostics" }
+formatter = { version = "0.1.0", path = "../formatter" }
 ir = { version = "0.1.0", path = "../ir" }
 miette = { version = "7.6.0", features = ["fancy-no-backtrace"] }
 pipe-lang-lsp = { version = "0.1.0", path = "../pipe-lang-lsp" }
