@@ -1,8 +1,7 @@
 use std::fmt::Display;
 
 use ast::span::Span;
-use miette::{Diagnostic, GraphicalReportHandler, LabeledSpan, NamedSource, Severity,
-             SourceCode};
+use miette::{Diagnostic, GraphicalReportHandler, LabeledSpan, NamedSource, Severity, SourceCode};
 use std::sync::Arc;
 
 /// Unified compiler error type aggregating all phases of compilation.
@@ -14,7 +13,10 @@ use std::sync::Arc;
 pub enum CompilerError {
     /// Error produced by the lexer.
     #[error("lex error: {msg}")]
-    #[diagnostic(code(pipe_lang::lex), help("Check the syntax of the highlighted character"))]
+    #[diagnostic(
+        code(pipe_lang::lex),
+        help("Check the syntax of the highlighted character")
+    )]
     LexError {
         #[label]
         span: Span,
@@ -23,7 +25,10 @@ pub enum CompilerError {
 
     /// Error produced by the parser.
     #[error("parse error: {msg}")]
-    #[diagnostic(code(pipe_lang::parse), help("Check the syntax near the highlighted token"))]
+    #[diagnostic(
+        code(pipe_lang::parse),
+        help("Check the syntax near the highlighted token")
+    )]
     ParseError {
         #[label]
         span: Span,
@@ -33,7 +38,10 @@ pub enum CompilerError {
 
     /// Error produced by the type checker.
     #[error("type error: {msg}")]
-    #[diagnostic(code(pipe_lang::ty), help("Make sure the types in this expression are consistent"))]
+    #[diagnostic(
+        code(pipe_lang::ty),
+        help("Make sure the types in this expression are consistent")
+    )]
     TypeError {
         #[label]
         span: Span,
@@ -42,7 +50,10 @@ pub enum CompilerError {
 
     /// Error produced during IR lowering.
     #[error("ir error: {msg}")]
-    #[diagnostic(code(pipe_lang::ir), help("Internal compiler error — this is a bug in pipe-lang"))]
+    #[diagnostic(
+        code(pipe_lang::ir),
+        help("Internal compiler error — this is a bug in pipe-lang")
+    )]
     IrError {
         #[label]
         span: Span,
@@ -60,7 +71,10 @@ pub enum CompilerError {
 
     /// Error during effect execution.
     #[error("effect error: {msg}")]
-    #[diagnostic(code(pipe_lang::effect), help("Effect execution failed — check IO operations"))]
+    #[diagnostic(
+        code(pipe_lang::effect),
+        help("Effect execution failed — check IO operations")
+    )]
     EffectError {
         #[label]
         span: Option<Span>,
@@ -74,7 +88,10 @@ pub enum CompilerError {
 
     /// Multiple errors collected together (for error recovery).
     #[error("encountered {count} error(s)")]
-    #[diagnostic(code(pipe_lang::multiple), help("Fix each error individually and recompile"))]
+    #[diagnostic(
+        code(pipe_lang::multiple),
+        help("Fix each error individually and recompile")
+    )]
     Multiple {
         count: usize,
         #[label]
@@ -139,8 +156,7 @@ impl SourceDiagnostic {
     #[must_use]
     pub fn render(&self) -> String {
         let mut output = String::new();
-        let handler = GraphicalReportHandler::new()
-            .with_width(term_width().unwrap_or(100));
+        let handler = GraphicalReportHandler::new().with_width(term_width().unwrap_or(100));
         let _ = handler.render_report(&mut output, self);
         output
     }
@@ -164,7 +180,7 @@ fn term_width() -> Option<usize> {
             .ok()?;
         if child.status.success() {
             let utf8 = String::from_utf8(child.stdout).ok()?;
-            let parts: Vec<&str> = utf8.trim().split_whitespace().collect();
+            let parts: Vec<&str> = utf8.split_whitespace().collect();
             if parts.len() == 2 {
                 return parts[1].parse::<usize>().ok();
             }
@@ -176,33 +192,25 @@ fn term_width() -> Option<usize> {
 impl From<lexer::error::LexError> for CompilerError {
     fn from(err: lexer::error::LexError) -> Self {
         match err {
-            lexer::error::LexError::UnexpectedChar { ch, span } => {
-                CompilerError::lex_error(
-                    span,
-                    format!(
-                        "unexpected character `{ch}` — pipe-lang identifiers \
+            lexer::error::LexError::UnexpectedChar { ch, span } => CompilerError::lex_error(
+                span,
+                format!(
+                    "unexpected character `{ch}` — pipe-lang identifiers \
                          start with a letter or underscore"
-                    ),
-                )
-            }
-            lexer::error::LexError::UnterminatedString { span } => {
-                CompilerError::lex_error(
-                    span,
-                    "unterminated string literal — close the string with a double quote (\")",
-                )
-            }
-            lexer::error::LexError::InvalidNumber { span } => {
-                CompilerError::lex_error(
-                    span,
-                    "invalid numeric literal — use a format like `42`, `3.14`, or `42i64`",
-                )
-            }
-            lexer::error::LexError::UnexpectedEof { span } => {
-                CompilerError::lex_error(
-                    span,
-                    "unexpected end of input — check for unclosed braces, parentheses, or quotes",
-                )
-            }
+                ),
+            ),
+            lexer::error::LexError::UnterminatedString { span } => CompilerError::lex_error(
+                span,
+                "unterminated string literal — close the string with a double quote (\")",
+            ),
+            lexer::error::LexError::InvalidNumber { span } => CompilerError::lex_error(
+                span,
+                "invalid numeric literal — use a format like `42`, `3.14`, or `42i64`",
+            ),
+            lexer::error::LexError::UnexpectedEof { span } => CompilerError::lex_error(
+                span,
+                "unexpected end of input — check for unclosed braces, parentheses, or quotes",
+            ),
         }
     }
 }
@@ -238,20 +246,16 @@ impl From<parser::error::ParseError> for CompilerError {
                     expected,
                 )
             }
-            parser::error::ParseError::ExpectedExpression { span } => {
-                CompilerError::parse_error(
-                    span,
-                    "expected an expression here — try a value, variable, or function call",
-                    vec![],
-                )
-            }
-            parser::error::ParseError::Unimplemented { span } => {
-                CompilerError::parse_error(
-                    span,
-                    "this language feature is not yet implemented",
-                    vec![],
-                )
-            }
+            parser::error::ParseError::ExpectedExpression { span } => CompilerError::parse_error(
+                span,
+                "expected an expression here — try a value, variable, or function call",
+                vec![],
+            ),
+            parser::error::ParseError::Unimplemented { span } => CompilerError::parse_error(
+                span,
+                "this language feature is not yet implemented",
+                vec![],
+            ),
         }
     }
 }

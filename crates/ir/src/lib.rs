@@ -1062,7 +1062,7 @@ pub fn infer_instruction_type(
                 fields: data
                     .field_names
                     .iter()
-                    .zip(field_types.into_iter())
+                    .zip(field_types)
                     .map(|(name, ty)| (name.clone(), ty))
                     .collect(),
             }))
