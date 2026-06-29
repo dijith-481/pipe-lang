@@ -72,9 +72,13 @@ fn main() {
         "never" | "no" | "false" => {
             // Disable ANSI colors
             #[allow(unused_unsafe)]
-            unsafe { std::env::set_var("NO_COLOR", "1"); }
+            unsafe {
+                std::env::set_var("NO_COLOR", "1");
+            }
             #[allow(unused_unsafe)]
-            unsafe { std::env::set_var("CLICOLOR", "0"); }
+            unsafe {
+                std::env::set_var("CLICOLOR", "0");
+            }
         }
         _ => { /* auto-detect */ }
     }
@@ -96,18 +100,14 @@ fn main() {
             run_session(config)
         }
         Commands::Run { file } => {
-            let config =
-                SessionConfig::new(PathBuf::from(&file)).with_mode(CompileMode::Run);
+            let config = SessionConfig::new(PathBuf::from(&file)).with_mode(CompileMode::Run);
             run_session(config)
         }
         Commands::Check { file } => {
-            let config =
-                SessionConfig::new(PathBuf::from(&file)).with_mode(CompileMode::Check);
+            let config = SessionConfig::new(PathBuf::from(&file)).with_mode(CompileMode::Check);
             run_session(config)
         }
-        Commands::Fmt { file, check } => {
-            run_fmt(&file, check)
-        }
+        Commands::Fmt { file, check } => run_fmt(&file, check),
         Commands::Explain { code } => {
             run_explain(&code);
             0
@@ -141,7 +141,11 @@ fn run_session(config: SessionConfig) -> i32 {
     match session.run_pipeline() {
         Ok(result) => {
             result.eprint_to_stderr();
-            let status = if result.success { "succeeded" } else { "failed" };
+            let status = if result.success {
+                "succeeded"
+            } else {
+                "failed"
+            };
             if !result.diagnostics.is_empty() || !result.success {
                 eprintln!(
                     "[pipe-lang] compilation {status} with {} diagnostic(s)",
@@ -179,10 +183,10 @@ fn run_fmt(path: &str, check: bool) -> i32 {
                     1
                 }
             } else {
-            if let Err(e) = std::fs::write(path, &formatted) {
-                eprintln!("error: failed to write {path}: {e}");
-                return 1;
-            }
+                if let Err(e) = std::fs::write(path, &formatted) {
+                    eprintln!("error: failed to write {path}: {e}");
+                    return 1;
+                }
                 eprintln!("[pipe-lang] formatted {}", path);
                 0
             }
@@ -197,7 +201,9 @@ fn run_fmt(path: &str, check: bool) -> i32 {
 fn run_explain(code: &str) {
     match code {
         "pipe_lang::lex" => {
-            println!("Lex errors occur when the tokenizer encounters invalid characters or syntax.\n");
+            println!(
+                "Lex errors occur when the tokenizer encounters invalid characters or syntax.\n"
+            );
             println!("Common causes:");
             println!("  • Unexpected characters like @, #, or $ in source code");
             println!("  • Unterminated string literals (missing closing quote)");
@@ -205,12 +211,16 @@ fn run_explain(code: &str) {
             println!("\nCheck the highlighted region in the error output for the exact issue.");
         }
         "pipe_lang::parse" => {
-            println!("Parse errors occur when the source code does not follow pipe-lang's grammar.\n");
+            println!(
+                "Parse errors occur when the source code does not follow pipe-lang's grammar.\n"
+            );
             println!("Common causes:");
             println!("  • Missing parentheses, braces, or commas");
             println!("  • Wrong keyword or operator ordering");
             println!("  • Incomplete expressions or declarations");
-            println!("\nThe error shows the expected tokens; check the syntax near the highlighted position.");
+            println!(
+                "\nThe error shows the expected tokens; check the syntax near the highlighted position."
+            );
         }
         "pipe_lang::ty" => {
             println!("Type errors occur when the type checker detects an inconsistency.\n");
@@ -228,7 +238,9 @@ fn run_explain(code: &str) {
         }
         _ => {
             println!("Unknown error code: {code}");
-            println!("Available codes: pipe_lang::lex, pipe_lang::parse, pipe_lang::ty, pipe_lang::ir, pipe_lang::runtime");
+            println!(
+                "Available codes: pipe_lang::lex, pipe_lang::parse, pipe_lang::ty, pipe_lang::ir, pipe_lang::runtime"
+            );
         }
     }
 }

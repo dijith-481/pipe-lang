@@ -280,15 +280,13 @@ fn compiler_error_from_type_error(error: TypeError) -> CompilerError {
             span,
             format!("type mismatch: expected `{expected}`, got `{got}`"),
         ),
-        TypeError::UnboundVariable { name, span } => {
-            CompilerError::type_error(
-                span,
-                format!(
-                    "unbound variable `{name}` — make sure it is spelled \
+        TypeError::UnboundVariable { name, span } => CompilerError::type_error(
+            span,
+            format!(
+                "unbound variable `{name}` — make sure it is spelled \
                      correctly and in scope"
-                ),
-            )
-        }
+            ),
+        ),
         TypeError::ArityMismatch {
             expected,
             got,
@@ -300,15 +298,17 @@ fn compiler_error_from_type_error(error: TypeError) -> CompilerError {
                  but {got} were provided"
             ),
         ),
-        TypeError::InfiniteType { var: _var, ty, span } => {
-            CompilerError::type_error(
-                span,
-                format!(
-                    "recursive type constraint — `{ty}` references itself. \
+        TypeError::InfiniteType {
+            var: _var,
+            ty,
+            span,
+        } => CompilerError::type_error(
+            span,
+            format!(
+                "recursive type constraint — `{ty}` references itself. \
                      Try adding a type annotation"
-                ),
-            )
-        }
+            ),
+        ),
         TypeError::AnnotationConflict {
             annotation,
             inferred,
@@ -320,28 +320,22 @@ fn compiler_error_from_type_error(error: TypeError) -> CompilerError {
             );
             CompilerError::type_error(span, msg)
         }
-        TypeError::NonExhaustiveMatch { span } => {
-            CompilerError::type_error(
-                span,
-                "non-exhaustive match — add a wildcard pattern `_` to \
+        TypeError::NonExhaustiveMatch { span } => CompilerError::type_error(
+            span,
+            "non-exhaustive match — add a wildcard pattern `_` to \
                  catch all unmatched cases",
-            )
-        }
-        TypeError::FieldNotFound { field, span } => {
-            CompilerError::type_error(
-                span,
-                format!("field `{field}` not found on this record type"),
-            )
-        }
-        TypeError::NumericOverflow { ty, span } => {
-            CompilerError::type_error(
-                span,
-                format!(
-                    "numeric literal overflows `{ty}` — use a larger type \
+        ),
+        TypeError::FieldNotFound { field, span } => CompilerError::type_error(
+            span,
+            format!("field `{field}` not found on this record type"),
+        ),
+        TypeError::NumericOverflow { ty, span } => CompilerError::type_error(
+            span,
+            format!(
+                "numeric literal overflows `{ty}` — use a larger type \
                      like `i64` or `f64`"
-                ),
-            )
-        }
+            ),
+        ),
     }
 }
 

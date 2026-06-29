@@ -554,15 +554,17 @@ fn resolve_and_queue_global<'src>(
 /// the receiver's type from the type map to emit the correct qualified name.
 fn qualify_method_name<'a>(name: &'a str, receiver_type: Option<&MonoType>) -> Cow<'a, str> {
     match (name, receiver_type) {
-        ("map" | "flat_map", Some(MonoType::Tag { name: type_name, .. })) => {
-            let qualified = match type_name.as_str() {
-                "Option" => Cow::Owned(format!("Option.{name}")),
-                "Result" => Cow::Owned(format!("Result.{name}")),
-                "Effect" => Cow::Owned(format!("Effect.{name}")),
-                _ => return Cow::Borrowed(name),
-            };
-            qualified
-        }
+        (
+            "map" | "flat_map",
+            Some(MonoType::Tag {
+                name: type_name, ..
+            }),
+        ) => match type_name.as_str() {
+            "Option" => Cow::Owned(format!("Option.{name}")),
+            "Result" => Cow::Owned(format!("Result.{name}")),
+            "Effect" => Cow::Owned(format!("Effect.{name}")),
+            _ => Cow::Borrowed(name),
+        },
         _ => Cow::Borrowed(name),
     }
 }

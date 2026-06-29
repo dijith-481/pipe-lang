@@ -57,7 +57,9 @@ impl Fmt {
 
     fn format_decl(&mut self, decl: &Decl) {
         match decl {
-            Decl::Bind { name, ty, value, .. } => {
+            Decl::Bind {
+                name, ty, value, ..
+            } => {
                 self.fmt("let ");
                 self.fmt(name);
                 if let Some(ty) = ty {
@@ -67,7 +69,9 @@ impl Fmt {
                 self.fmt(" = ");
                 self.format_expr(value);
             }
-            Decl::TypeAlias { name, params, rhs, .. } => {
+            Decl::TypeAlias {
+                name, params, rhs, ..
+            } => {
                 self.fmt("type ");
                 self.fmt(name);
                 if !params.is_empty() {
@@ -145,10 +149,8 @@ impl Fmt {
                 }
             }
             TypeExpr::Sum { variants, .. } => {
-                for (i, v) in variants.iter().enumerate() {
-                    if i > 0 || true {
-                        self.fmt("| ");
-                    }
+                for v in variants.iter() {
+                    self.fmt("| ");
                     self.fmt(v.name);
                     if !v.fields.is_empty() {
                         self.fmt("(");
@@ -176,7 +178,11 @@ impl Fmt {
                 self.fmt("\"");
             }
             Expr::Bool(_, val, _) => {
-                if *val { self.fmt("true"); } else { self.fmt("false"); }
+                if *val {
+                    self.fmt("true");
+                } else {
+                    self.fmt("false");
+                }
             }
             Expr::Ident(_, name, _) => self.fmt(name),
             Expr::Application { func, args, .. } => {
@@ -190,7 +196,12 @@ impl Fmt {
                 }
                 self.fmt(")");
             }
-            Expr::Lambda { params, return_type, body, .. } => {
+            Expr::Lambda {
+                params,
+                return_type,
+                body,
+                ..
+            } => {
                 self.fmt("(");
                 for (i, p) in params.iter().enumerate() {
                     if i > 0 {
@@ -210,7 +221,9 @@ impl Fmt {
                 self.fmt(" => ");
                 self.format_expr(body);
             }
-            Expr::Binary { op, left, right, .. } => {
+            Expr::Binary {
+                op, left, right, ..
+            } => {
                 self.format_expr(left);
                 self.ws();
                 self.fmt(op_str(op));
@@ -221,7 +234,12 @@ impl Fmt {
                 self.fmt(unary_op_str(op));
                 self.format_expr(operand);
             }
-            Expr::If { condition, then_branch, else_branch, .. } => {
+            Expr::If {
+                condition,
+                then_branch,
+                else_branch,
+                ..
+            } => {
                 self.fmt("if ");
                 self.format_expr(condition);
                 self.fmt(" {");
@@ -368,7 +386,11 @@ impl Fmt {
                     self.fmt("\"");
                 }
                 LiteralPattern::Bool(b) => {
-                    if *b { self.fmt("true"); } else { self.fmt("false"); }
+                    if *b {
+                        self.fmt("true");
+                    } else {
+                        self.fmt("false");
+                    }
                 }
             },
             Pattern::Binding(_, name, _) => self.fmt(name),

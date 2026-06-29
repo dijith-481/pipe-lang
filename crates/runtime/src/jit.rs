@@ -1394,9 +1394,7 @@ fn compile_instruction(
             compile_tag_discriminant(builder, ctx, *value_id, values)?
         }
 
-        ir::Instruction::TagGet(data) => {
-            compile_tag_get(builder, ctx, data, values)?
-        }
+        ir::Instruction::TagGet(data) => compile_tag_get(builder, ctx, data, values)?,
 
         ir::Instruction::RecordAlloc(data) => compile_record_alloc(builder, ctx, data, values)?,
 
@@ -3332,7 +3330,7 @@ unsafe extern "C" fn __pipe_println(args: *const u8, ret: *mut u8) -> i32 {
                 let len = unsafe { std::ptr::read_unaligned(ptr as *const u64) };
                 format!("[{} elements]", len)
             }
-        },
+        }
         18 => format!("{}", raw as u64),
         14 => "<record>".to_string(),
         15 => "<effect>".to_string(),
@@ -4138,72 +4136,72 @@ unsafe extern "C" fn pipe_rt_box_value_jit(ptr: u64, desc_ptr: u64, _desc_len: u
                     ret_desc,
                 }))
             }
-                    17 => {
-                        let variant_count = unsafe { desc_read_u32(desc, offset) } as usize;
-                        let disc = unsafe { std::ptr::read_unaligned(ptr as *const i32) } as u32;
+            17 => {
+                let variant_count = unsafe { desc_read_u32(desc, offset) } as usize;
+                let disc = unsafe { std::ptr::read_unaligned(ptr as *const i32) } as u32;
 
-                        let mut matched_variant = None;
-                        let mut current_offset = *offset;
+                let mut matched_variant = None;
+                let mut current_offset = *offset;
 
-                        for _ in 0..variant_count {
-                            let var_disc = unsafe { desc_read_u32(desc, &mut current_offset) };
-                            let _payload_byte_len = unsafe { desc_read_u32(desc, &mut current_offset) };
-                            let payload_count =
-                                unsafe { desc_read_u32(desc, &mut current_offset) } as usize;
+                for _ in 0..variant_count {
+                    let var_disc = unsafe { desc_read_u32(desc, &mut current_offset) };
+                    let _payload_byte_len = unsafe { desc_read_u32(desc, &mut current_offset) };
+                    let payload_count =
+                        unsafe { desc_read_u32(desc, &mut current_offset) } as usize;
 
-                            if var_disc == disc {
-                                matched_variant = Some((current_offset, payload_count));
-                            }
-
-                            // Advance past this variant's schema
-                            for _ in 0..payload_count {
-                                let _size = unsafe { desc_read_u32(desc, &mut current_offset) };
-                                let _tag = unsafe { desc_read_u32(desc, &mut current_offset) };
-                                let total_bytes =
-                                    unsafe { desc_read_u32(desc, &mut current_offset) } as usize;
-                                current_offset += total_bytes.saturating_sub(8);
-                            }
-                        }
-
-                        *offset = current_offset; // Skip remainder of descriptor
-
-                        let mut payload_fields = Vec::new();
-                        if let Some((mut p_offset, payload_count)) = matched_variant {
-                            let mut p_ptr = unsafe { ptr.add(4) }; // skip disc
-                            for _ in 0..payload_count {
-                                let field_size = unsafe { desc_read_u32(desc, &mut p_offset) } as usize;
-                                let field_tag =
-                                    unsafe { std::ptr::read_unaligned(desc.add(p_offset) as *const u32) };
-                                let actual_ptr = if is_tag_heap_type(field_tag) {
-                                    let p = unsafe { std::ptr::read_unaligned(p_ptr as *const u64) };
-                                    if p == 0 {
-                                        std::ptr::null()
-                                    } else {
-                                        p as *const u8
-                                    }
-                                } else {
-                                    p_ptr
-                                };
-                                payload_fields.push(unsafe { box_rec(actual_ptr, desc, &mut p_offset) });
-                                p_ptr = unsafe { p_ptr.add(field_size) };
-                            }
-                        }
-
-                        let payload_val = if payload_fields.len() == 1 {
-                            payload_fields.into_iter().next().unwrap()
-                        } else {
-                            V::Array(payload_fields.into())
-                        };
-
-                        V::Tag {
-                            tag: disc,
-                            payload: match payload_val {
-                                V::Unit => vec![].into(),
-                                V::Array(a) => a,
-                                other => vec![other].into(),
-                            },
-                        }
+                    if var_disc == disc {
+                        matched_variant = Some((current_offset, payload_count));
                     }
+
+                    // Advance past this variant's schema
+                    for _ in 0..payload_count {
+                        let _size = unsafe { desc_read_u32(desc, &mut current_offset) };
+                        let _tag = unsafe { desc_read_u32(desc, &mut current_offset) };
+                        let total_bytes =
+                            unsafe { desc_read_u32(desc, &mut current_offset) } as usize;
+                        current_offset += total_bytes.saturating_sub(8);
+                    }
+                }
+
+                *offset = current_offset; // Skip remainder of descriptor
+
+                let mut payload_fields = Vec::new();
+                if let Some((mut p_offset, payload_count)) = matched_variant {
+                    let mut p_ptr = unsafe { ptr.add(4) }; // skip disc
+                    for _ in 0..payload_count {
+                        let field_size = unsafe { desc_read_u32(desc, &mut p_offset) } as usize;
+                        let field_tag =
+                            unsafe { std::ptr::read_unaligned(desc.add(p_offset) as *const u32) };
+                        let actual_ptr = if is_tag_heap_type(field_tag) {
+                            let p = unsafe { std::ptr::read_unaligned(p_ptr as *const u64) };
+                            if p == 0 {
+                                std::ptr::null()
+                            } else {
+                                p as *const u8
+                            }
+                        } else {
+                            p_ptr
+                        };
+                        payload_fields.push(unsafe { box_rec(actual_ptr, desc, &mut p_offset) });
+                        p_ptr = unsafe { p_ptr.add(field_size) };
+                    }
+                }
+
+                let payload_val = if payload_fields.len() == 1 {
+                    payload_fields.into_iter().next().unwrap()
+                } else {
+                    V::Array(payload_fields.into())
+                };
+
+                V::Tag {
+                    tag: disc,
+                    payload: match payload_val {
+                        V::Unit => vec![].into(),
+                        V::Array(a) => a,
+                        other => vec![other].into(),
+                    },
+                }
+            }
             _ => V::Unit,
         };
 
@@ -4749,7 +4747,7 @@ unsafe fn encode_value_to_ret_buf(value: crate::value::Value, ret: *mut u8, ret_
                 _ => 0,
             };
             if tag == 0 {
-                unsafe { std::ptr::write_unaligned(ret as *mut u8, n as u8) };
+                unsafe { std::ptr::write_unaligned(ret, n as u8) };
             } else {
                 unsafe { std::ptr::write_unaligned(ret as *mut i16, n as i16) };
             }
@@ -4771,14 +4769,14 @@ unsafe fn encode_value_to_ret_buf(value: crate::value::Value, ret: *mut u8, ret_
             };
             unsafe { std::ptr::write_unaligned(ret as *mut i64, n) };
         }
-        4 | 5 | 6 => {
+        4..=6 => {
             // U8, U16, U32
             let n = match &value {
                 Value::I32(n) => *n,
                 _ => 0,
             };
             if tag == 4 {
-                unsafe { std::ptr::write_unaligned(ret as *mut u8, n as u8) };
+                unsafe { std::ptr::write_unaligned(ret, n as u8) };
             } else if tag == 5 {
                 unsafe { std::ptr::write_unaligned(ret as *mut u16, n as u16) };
             } else {
@@ -4804,7 +4802,7 @@ unsafe fn encode_value_to_ret_buf(value: crate::value::Value, ret: *mut u8, ret_
                 Value::Bool(b) => *b,
                 _ => false,
             };
-            unsafe { std::ptr::write_unaligned(ret as *mut u8, b as u8) };
+            unsafe { std::ptr::write_unaligned(ret, b as u8) };
         }
         12 => {
             // Unit: 4 zero bytes
