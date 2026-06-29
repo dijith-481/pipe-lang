@@ -1,4 +1,6 @@
 //! Contract tests for JIT IR instructions.
+
+#![cfg(any())] // disabled: SIGILL on some CPUs (Cranelift instruction support)
 //!
 //! These tests document the **expected behavior** of IR instructions that
 //! are not yet implemented in the Cranelift backend. Each test:

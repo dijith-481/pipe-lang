@@ -13,6 +13,9 @@ A minimalist, purely functional programming language with Hindley-Milner type in
 ## Quick Start
 
 ```bash
+# Install
+cargo install --path crates/cli
+
 # Run a program
 pipe-lang run example-programs/hello.pp
 
@@ -21,6 +24,18 @@ pipe-lang check example-programs/hello.pp
 
 # Dump intermediate representation
 pipe-lang compile example-programs/hello.pp --emit-ir
+
+# Format source code in-place
+pipe-lang fmt example-programs/hello.pp
+
+# Check formatting without modifying
+pipe-lang fmt --check example-programs/hello.pp
+
+# Explain an error code
+pipe-lang explain pipe_lang::ty
+
+# Start language server (for editor integration)
+pipe-lang lsp
 ```
 
 ## Example
@@ -71,6 +86,94 @@ let main = () => {
 | `Option<T>`, `Result<T, E>` | Built-in generic ADTs |
 | `Effect<T>` | Deferred side effect |
 
+## Tooling
+
+### Pretty Error Messages
+
+Errors are rendered with source-code annotations, underlines, and help text:
+
+```
+  x type error: type mismatch: expected `str`, got `i32`
+   ,-[example-programs/hello.pp:1:9]
+ 1 | let x = "hello" + 42
+   :         ^^^^^^^^^^^^
+   `----
+  help: Make sure the types in this expression are consistent
+```
+
+Use `--color never` to disable ANSI output, or `pipe-lang explain <code>` for detailed explanations of error types.
+
+### Formatter
+
+```bash
+# Format a file in-place
+pipe-lang fmt file.pp
+
+# Check formatting without modifying (exit code 1 if not formatted)
+pipe-lang fmt --check file.pp
+```
+
+### Language Server Protocol (LSP)
+
+The LSP server implements the Language Server Protocol over stdio:
+
+```bash
+pipe-lang lsp
+```
+
+Supported capabilities:
+- **Diagnostics** on file open and change (full-sync)
+- **Hover** — shows the inferred Hindley-Milner type of any expression
+
+Neovim integration (0.12+): create `~/.config/nvim/lsp/pipe_lang.lua`:
+```lua
+return {
+  cmd = { "pipe-lang", "lsp" },
+}
+```
+
+Then add `"pipe_lang"` to `vim.lsp.enable({...})` in your config.
+
+### Tree-sitter Grammar
+
+A tree-sitter grammar is available at `tree-sitter-pipe-lang/` for syntax highlighting, code folding, and indentation in editors (21/22 example programs parse correctly).
+
+To install in Neovim (requires `cc` compiler):
+```bash
+cd tree-sitter-pipe-lang
+tree-sitter generate
+cc -shared -fPIC -o parser.so src/parser.c -Isrc/tree_sitter
+mkdir -p ~/.local/share/nvim/treesitter/pipe_lang
+cp parser.so ~/.local/share/nvim/treesitter/pipe_lang/
+cp queries/*.scm ~/.local/share/nvim/site/after/queries/pipe_lang/
+```
+
+Register the parser in your Neovim config:
+```lua
+vim.filetype.add({ extension = { pp = "pipe_lang" } })
+local parser_path = vim.fn.stdpath("data") .. "/treesitter/pipe_lang/parser.so"
+if vim.uv.fs_stat(parser_path) then
+  vim.treesitter.language.add("pipe_lang", { path = parser_path })
+end
+```
+
+### Conform (Formatter) Integration
+
+Add to your `conform.lua`:
+```lua
+formatters_by_ft = {
+  pipe_lang = { "pipe-lang" },
+  -- ...
+},
+formatters = {
+  ["pipe-lang"] = {
+    command = "pipe-lang",
+    args = { "fmt", "$FILENAME" },
+    stdin = false,
+  },
+},
+```
+
 ## Project Structure
 
 ```
@@ -82,10 +185,12 @@ crates/
   ir/               # SSA intermediate representation
   runtime/          # Value enum, ARC memory, Cranelift JIT
   stdlib/           # Builtin function implementations
-  diagnostics/      # Error formatting
-  cli/              # CLI entry point
+  diagnostics/      # Error formatting with miette
+  formatter/        # AST-based pretty printer
+  cli/              # CLI entry point (clap)
   pipe-lang-lsp/    # Language server (tower-lsp)
-example-programs/   # 22 example programs
+tree-sitter-pipe-lang/  # Tree-sitter grammar
+example-programs/       # 22 example programs
 ```
 
 ## Status

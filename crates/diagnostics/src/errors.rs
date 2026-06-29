@@ -164,7 +164,7 @@ fn term_width() -> Option<usize> {
             .ok()?;
         if child.status.success() {
             let utf8 = String::from_utf8(child.stdout).ok()?;
-            let parts: Vec<&str> = utf8.trim().split_whitespace().collect();
+            let parts: Vec<&str> = utf8.split_whitespace().collect();
             if parts.len() == 2 {
                 return parts[1].parse::<usize>().ok();
             }

@@ -98,7 +98,7 @@ impl From<TypeError> for diagnostics::CompilerError {
             } => diagnostics::CompilerError::type_error(
                 span,
                 format!(
-                    "this function expects {expected} argument(s), \
+                    "arity mismatch: this function expects {expected} argument(s), \
                      but {got} were provided"
                 ),
             ),

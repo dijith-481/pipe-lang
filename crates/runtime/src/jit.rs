@@ -4749,7 +4749,7 @@ unsafe fn encode_value_to_ret_buf(value: crate::value::Value, ret: *mut u8, ret_
                 _ => 0,
             };
             if tag == 0 {
-                unsafe { std::ptr::write_unaligned(ret as *mut u8, n as u8) };
+                unsafe { std::ptr::write_unaligned(ret, n as u8) };
             } else {
                 unsafe { std::ptr::write_unaligned(ret as *mut i16, n as i16) };
             }
@@ -4771,14 +4771,14 @@ unsafe fn encode_value_to_ret_buf(value: crate::value::Value, ret: *mut u8, ret_
             };
             unsafe { std::ptr::write_unaligned(ret as *mut i64, n) };
         }
-        4 | 5 | 6 => {
+        4..=6 => {
             // U8, U16, U32
             let n = match &value {
                 Value::I32(n) => *n,
                 _ => 0,
             };
             if tag == 4 {
-                unsafe { std::ptr::write_unaligned(ret as *mut u8, n as u8) };
+                unsafe { std::ptr::write_unaligned(ret, n as u8) };
             } else if tag == 5 {
                 unsafe { std::ptr::write_unaligned(ret as *mut u16, n as u16) };
             } else {
@@ -4804,7 +4804,7 @@ unsafe fn encode_value_to_ret_buf(value: crate::value::Value, ret: *mut u8, ret_
                 Value::Bool(b) => *b,
                 _ => false,
             };
-            unsafe { std::ptr::write_unaligned(ret as *mut u8, b as u8) };
+            unsafe { std::ptr::write_unaligned(ret, b as u8) };
         }
         12 => {
             // Unit: 4 zero bytes

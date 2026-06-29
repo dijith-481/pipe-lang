@@ -74,7 +74,7 @@
 (type_named) @type
 
 ; -- Function names (let bindings) --
-(let_binding name: (identifier) @function)
+(let_binding name: (binding_pattern (identifier) @function))
 
 ; -- Fields --
 (record_field name: (identifier) @property)

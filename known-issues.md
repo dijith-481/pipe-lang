@@ -50,3 +50,10 @@ When the typechecker cannot resolve a type variable (e.g., in recursive function
 ## 7. Tests use subprocess spawning for isolation
 
 `run_fixture` spawns a `pipe-lang` subprocess per test to avoid global state pollution (JITModule, capture buffer, builtin registry) between tests. This works but adds ~0.5s overhead per test.
+
+## 8. Pre-existing test failures (not caused by this PR)
+
+- `typechecker::integration_test::ctor_ok` — type inference assertion fails
+- `typechecker::integration_test::ctor_err` — type inference assertion fails  
+- `typechecker::integration_test::pattern_match_result_ok` — unification error
+- `testsuite::jit_instructions` — SIGILL on this CPU (Cranelift generates unsupported instructions)

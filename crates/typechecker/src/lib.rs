@@ -45,10 +45,10 @@ pub fn typecheck<'a>(ast: &'a Program<'a>) -> Result<TypedProgram<'a>, Vec<TypeE
 
     // 1. Process all TypeAlias declarations first so they are available for function annotations.
     for decl in &ast.decls {
-        if let Decl::TypeAlias { .. } = decl {
-            if let Err(e) = infer::infer_decl_with_map(&mut env, decl, &mut type_map) {
-                errors.push(e);
-            }
+        if let Decl::TypeAlias { .. } = decl
+            && let Err(e) = infer::infer_decl_with_map(&mut env, decl, &mut type_map)
+        {
+            errors.push(e);
         }
     }
 
@@ -60,6 +60,7 @@ pub fn typecheck<'a>(ast: &'a Program<'a>) -> Result<TypedProgram<'a>, Vec<TypeE
     forward_declare_top_level(&mut env, ast);
 
     // 3. Process all remaining declarations (e.g. Bind, Use).
+    #[allow(clippy::collapsible_if)]
     for decl in &ast.decls {
         if !matches!(decl, Decl::TypeAlias { .. }) {
             if let Err(e) = infer::infer_decl_with_map(&mut env, decl, &mut type_map) {

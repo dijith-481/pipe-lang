@@ -1,19 +1,55 @@
-use std::fmt::Write;
-
-use ast::ast::*;
+use ast::ast::{BinOp, Decl, Expr, LiteralPattern, Pattern, Program, Stmt, TemplatePart, TypeExpr,
+               UnaryOp};
 
 /// Formats a pipe-lang source file with consistent indentation and spacing.
+///
+/// Comments are preserved by extracting them from the source before parsing
+/// and re-inserting them at their approximate positions in the output.
 pub fn format_source(source: &str) -> Result<String, String> {
     let arena = bumpalo::Bump::new();
     let program = parser::parse(source, &arena).map_err(|e| e.to_string())?;
+
+    // Extract comments (line-based: // ...)
+    let comments = extract_comments(source);
+
     let mut fmt = Fmt::new();
-    fmt.format_program(&program);
+    fmt.format_program(&program, &comments);
     Ok(fmt.out)
+}
+
+/// A comment extracted from the source: its line number (0-indexed) and text.
+#[derive(Debug, Clone)]
+struct Comment {
+    /// 0-indexed line number in the original source
+    line: usize,
+    /// The comment text including `//` prefix and leading whitespace
+    text: String,
+}
+
+/// Extracts all single-line comments from source, preserving their positions.
+fn extract_comments(source: &str) -> Vec<Comment> {
+    source
+        .lines()
+        .enumerate()
+        .filter_map(|(line_idx, line)| {
+            let trimmed = line.trim();
+            if trimmed.starts_with("//") {
+                Some(Comment {
+                    line: line_idx,
+                    text: line.to_string(),
+                })
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 struct Fmt {
     out: String,
     indent: usize,
+    /// Approximate output line number (for comment re-insertion tracking)
+    out_line: usize,
 }
 
 impl Fmt {
@@ -21,11 +57,13 @@ impl Fmt {
         Self {
             out: String::with_capacity(1024),
             indent: 0,
+            out_line: 0,
         }
     }
 
     fn nl(&mut self) {
-        let _ = writeln!(self.out);
+        self.out.push('\n');
+        self.out_line += 1;
     }
 
     fn indent_str(&self) -> String {
@@ -48,11 +86,31 @@ impl Fmt {
         self.out.push_str(s);
     }
 
-    fn format_program(&mut self, program: &Program) {
+    /// Emit any comments that belong at the current output line.
+    /// Advances `comments` past the inserted ones.
+    fn emit_comments(&mut self, comments: &mut &[Comment]) {
+        while let Some((first, rest)) = comments.split_first() {
+            if first.line <= self.out_line.saturating_add(1) {
+                let indent = self.indent_str();
+                self.out.push_str(&indent);
+                self.out.push_str(&first.text);
+                self.nl();
+                *comments = rest;
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn format_program(&mut self, program: &Program, comments: &[Comment]) {
+        let mut remaining = comments;
         for decl in &program.decls {
+            self.emit_comments(&mut remaining);
             self.format_decl(decl);
             self.nl();
         }
+        // Emit trailing comments
+        self.emit_comments(&mut remaining);
     }
 
     fn format_decl(&mut self, decl: &Decl) {
@@ -131,24 +189,24 @@ impl Fmt {
                     self.fmt("{}");
                 } else {
                     self.fmt("{\n");
+                    self.out_line += 1;
                     self.push_indent();
                     for field in fields {
-                        let _ = write!(self.out, "{}", self.indent_str());
+                        self.out.push_str(&self.indent_str());
                         self.fmt(field.name);
                         self.fmt(" : ");
                         self.format_type_expr(field.ty);
                         self.fmt("\n");
+                        self.out_line += 1;
                     }
                     self.pop_indent();
-                    let _ = write!(self.out, "{}", self.indent_str());
+                    self.out.push_str(&self.indent_str());
                     self.fmt("}");
                 }
             }
             TypeExpr::Sum { variants, .. } => {
-                for (i, v) in variants.iter().enumerate() {
-                    if i > 0 || true {
-                        self.fmt("| ");
-                    }
+                for v in variants.iter() {
+                    self.fmt("| ");
                     self.fmt(v.name);
                     if !v.fields.is_empty() {
                         self.fmt("(");
@@ -227,19 +285,19 @@ impl Fmt {
                 self.fmt(" {");
                 self.nl();
                 self.push_indent();
-                let _ = write!(self.out, "{}", self.indent_str());
+                self.out.push_str(&self.indent_str());
                 self.format_expr(then_branch);
                 self.nl();
                 self.pop_indent();
-                let _ = write!(self.out, "{}", self.indent_str());
+                self.out.push_str(&self.indent_str());
                 self.fmt("} else {");
                 self.nl();
                 self.push_indent();
-                let _ = write!(self.out, "{}", self.indent_str());
+                self.out.push_str(&self.indent_str());
                 self.format_expr(else_branch);
                 self.nl();
                 self.pop_indent();
-                let _ = write!(self.out, "{}", self.indent_str());
+                self.out.push_str(&self.indent_str());
                 self.fmt("}");
             }
             Expr::Match { subject, arms, .. } => {
@@ -249,14 +307,14 @@ impl Fmt {
                 self.nl();
                 self.push_indent();
                 for arm in arms {
-                    let _ = write!(self.out, "{}", self.indent_str());
+                    self.out.push_str(&self.indent_str());
                     self.format_pattern(arm.pattern);
                     self.fmt(" => ");
                     self.format_expr(arm.body);
                     self.nl();
                 }
                 self.pop_indent();
-                let _ = write!(self.out, "{}", self.indent_str());
+                self.out.push_str(&self.indent_str());
                 self.fmt("}");
             }
             Expr::Block { stmts, result, .. } => {
@@ -264,7 +322,7 @@ impl Fmt {
                 self.nl();
                 self.push_indent();
                 for stmt in stmts {
-                    let _ = write!(self.out, "{}", self.indent_str());
+                    self.out.push_str(&self.indent_str());
                     match stmt {
                         Stmt::Let { pattern, value } => {
                             self.fmt("let ");
@@ -281,11 +339,11 @@ impl Fmt {
                         }
                     }
                 }
-                let _ = write!(self.out, "{}", self.indent_str());
+                self.out.push_str(&self.indent_str());
                 self.format_expr(result);
                 self.nl();
                 self.pop_indent();
-                let _ = write!(self.out, "{}", self.indent_str());
+                self.out.push_str(&self.indent_str());
                 self.fmt("}");
             }
             Expr::Record { fields, .. } => {
