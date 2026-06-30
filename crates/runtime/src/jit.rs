@@ -31,8 +31,8 @@ use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::immediates::{Ieee32, Ieee64};
 use cranelift_codegen::ir::types::{self, I32};
 use cranelift_codegen::ir::{
-    AbiParam, Block, BlockArg, Endianness, FuncRef, Function, GlobalValue, InstBuilder, MemFlags,
-    SigRef, StackSlotData, StackSlotKind, TrapCode, Type, UserFuncName, Value,
+    AbiParam, Block, BlockArg, Endianness, FuncRef, Function, GlobalValue, InstBuilder,
+    MemFlagsData, SigRef, StackSlotData, StackSlotKind, TrapCode, Type, UserFuncName, Value,
 };
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Switch as ClifSwitch};
@@ -118,37 +118,38 @@ impl CompiledModule {
     }
 }
 
+static GLOBAL_ISA: std::sync::OnceLock<std::sync::Arc<dyn cranelift_codegen::isa::TargetIsa>> =
+    std::sync::OnceLock::new();
+
+fn get_global_isa() -> std::sync::Arc<dyn cranelift_codegen::isa::TargetIsa> {
+    GLOBAL_ISA
+        .get_or_init(|| {
+            let mut flag_builder = settings::builder();
+            flag_builder
+                .set("use_colocated_libcalls", "false")
+                .expect("valid Cranelift flag");
+            flag_builder
+                .set("is_pic", "false")
+                .expect("valid Cranelift flag");
+            flag_builder
+                .set("opt_level", "speed")
+                .expect("valid Cranelift flag");
+            let flags = settings::Flags::new(flag_builder);
+            cranelift_codegen::isa::lookup_by_name("x86_64")
+                .expect("x86_64 ISA should be available")
+                .finish(flags)
+                .expect("Cranelift ISA should finish")
+        })
+        .clone()
+}
+
 /// Compiles an IR module into a [`CompiledModule`].
 ///
 /// # Errors
 ///
 /// Returns [`JitError`] for any of the failure modes listed above.
 pub fn compile_ir(ir_module: &IrModule) -> Result<CompiledModule, JitError> {
-    let mut flag_builder = settings::builder();
-    flag_builder
-        .set("use_colocated_libcalls", "false")
-        .map_err(|e| JitError::IsaBuilder {
-            msg: format!("flag: {e}"),
-        })?;
-    flag_builder
-        .set("is_pic", "false")
-        .map_err(|e| JitError::IsaBuilder {
-            msg: format!("flag: {e}"),
-        })?;
-    flag_builder
-        .set("opt_level", "speed")
-        .map_err(|e| JitError::IsaBuilder {
-            msg: format!("flag: {e}"),
-        })?;
-
-    let isa_builder = cranelift_native::builder().map_err(|e| JitError::IsaBuilder {
-        msg: format!("native ISA: {e:?}"),
-    })?;
-    let isa = isa_builder
-        .finish(settings::Flags::new(flag_builder))
-        .map_err(|e| JitError::IsaBuilder {
-            msg: format!("finish ISA: {e:?}"),
-        })?;
+    let isa = get_global_isa();
     let builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
     let mut module = JITModule::new(builder);
 
@@ -655,7 +656,7 @@ fn compile_function_body(
     let println_fn_ptr =
         builder
             .ins()
-            .load(types::I64, MemFlags::trusted(), println_fn_ptr_addr, 0);
+            .load(types::I64, MemFlagsData::trusted(), println_fn_ptr_addr, 0);
     let println_sig = {
         let sig = make_signature(params.module);
         let f: &mut Function = builder.func;
@@ -670,10 +671,12 @@ fn compile_function_body(
             .declare_data_in_func(params.str_concat_ptr_data_id, f)
     };
     let str_concat_fn_ptr_addr = builder.ins().global_value(types::I64, str_concat_fn_ptr_gv);
-    let str_concat_fn_ptr =
-        builder
-            .ins()
-            .load(types::I64, MemFlags::trusted(), str_concat_fn_ptr_addr, 0);
+    let str_concat_fn_ptr = builder.ins().load(
+        types::I64,
+        MemFlagsData::trusted(),
+        str_concat_fn_ptr_addr,
+        0,
+    );
     let str_concat_sig = {
         let sig = make_signature(params.module);
         let f: &mut Function = builder.func;
@@ -692,7 +695,7 @@ fn compile_function_body(
         .global_value(types::I64, alloc_closure_fn_ptr_gv);
     let alloc_closure_fn_ptr = builder.ins().load(
         types::I64,
-        MemFlags::trusted(),
+        MemFlagsData::trusted(),
         alloc_closure_fn_ptr_addr,
         0,
     );
@@ -712,10 +715,12 @@ fn compile_function_body(
     let alloc_array_fn_ptr_addr = builder
         .ins()
         .global_value(types::I64, alloc_array_fn_ptr_gv);
-    let alloc_array_fn_ptr =
-        builder
-            .ins()
-            .load(types::I64, MemFlags::trusted(), alloc_array_fn_ptr_addr, 0);
+    let alloc_array_fn_ptr = builder.ins().load(
+        types::I64,
+        MemFlagsData::trusted(),
+        alloc_array_fn_ptr_addr,
+        0,
+    );
     let alloc_array_sig = {
         let sig = make_signature(params.module);
         let f: &mut Function = builder.func;
@@ -732,10 +737,12 @@ fn compile_function_body(
     let array_concat_fn_ptr_addr = builder
         .ins()
         .global_value(types::I64, array_concat_fn_ptr_gv);
-    let array_concat_fn_ptr =
-        builder
-            .ins()
-            .load(types::I64, MemFlags::trusted(), array_concat_fn_ptr_addr, 0);
+    let array_concat_fn_ptr = builder.ins().load(
+        types::I64,
+        MemFlagsData::trusted(),
+        array_concat_fn_ptr_addr,
+        0,
+    );
     let array_concat_sig = {
         let sig = make_signature(params.module);
         let f: &mut Function = builder.func;
@@ -752,10 +759,12 @@ fn compile_function_body(
     let call_builtin_fn_ptr_addr = builder
         .ins()
         .global_value(types::I64, call_builtin_fn_ptr_gv);
-    let call_builtin_fn_ptr =
-        builder
-            .ins()
-            .load(types::I64, MemFlags::trusted(), call_builtin_fn_ptr_addr, 0);
+    let call_builtin_fn_ptr = builder.ins().load(
+        types::I64,
+        MemFlagsData::trusted(),
+        call_builtin_fn_ptr_addr,
+        0,
+    );
     let call_builtin_sig = {
         let sig = make_signature(params.module);
         let f: &mut Function = builder.func;
@@ -770,9 +779,10 @@ fn compile_function_body(
             .declare_data_in_func(params.str_eq_ptr_data_id, f)
     };
     let str_eq_fn_ptr_addr = builder.ins().global_value(types::I64, str_eq_fn_ptr_gv);
-    let str_eq_fn_ptr = builder
-        .ins()
-        .load(types::I64, MemFlags::trusted(), str_eq_fn_ptr_addr, 0);
+    let str_eq_fn_ptr =
+        builder
+            .ins()
+            .load(types::I64, MemFlagsData::trusted(), str_eq_fn_ptr_addr, 0);
     let str_eq_sig = {
         let mut sig = params.module.make_signature();
         sig.params.push(AbiParam::new(types::I64));
@@ -790,9 +800,10 @@ fn compile_function_body(
             .declare_data_in_func(params.arr_eq_ptr_data_id, f)
     };
     let arr_eq_fn_ptr_addr = builder.ins().global_value(types::I64, arr_eq_fn_ptr_gv);
-    let arr_eq_fn_ptr = builder
-        .ins()
-        .load(types::I64, MemFlags::trusted(), arr_eq_fn_ptr_addr, 0);
+    let arr_eq_fn_ptr =
+        builder
+            .ins()
+            .load(types::I64, MemFlagsData::trusted(), arr_eq_fn_ptr_addr, 0);
     let arr_eq_sig = {
         let mut sig = params.module.make_signature();
         sig.params.push(AbiParam::new(types::I64)); // a
@@ -816,7 +827,7 @@ fn compile_function_body(
         .global_value(types::I64, box_value_jit_fn_ptr_gv);
     let box_value_jit_fn_ptr = builder.ins().load(
         types::I64,
-        MemFlags::trusted(),
+        MemFlagsData::trusted(),
         box_value_jit_fn_ptr_addr,
         0,
     );
@@ -843,7 +854,7 @@ fn compile_function_body(
         .global_value(types::I64, unbox_value_jit_fn_ptr_gv);
     let unbox_value_jit_fn_ptr = builder.ins().load(
         types::I64,
-        MemFlags::trusted(),
+        MemFlagsData::trusted(),
         unbox_value_jit_fn_ptr_addr,
         0,
     );
@@ -866,9 +877,10 @@ fn compile_function_body(
             .declare_data_in_func(params.retain_ptr_data_id, f)
     };
     let retain_fn_ptr_addr = builder.ins().global_value(types::I64, retain_fn_ptr_gv);
-    let retain_fn_ptr = builder
-        .ins()
-        .load(types::I64, MemFlags::trusted(), retain_fn_ptr_addr, 0);
+    let retain_fn_ptr =
+        builder
+            .ins()
+            .load(types::I64, MemFlagsData::trusted(), retain_fn_ptr_addr, 0);
     let retain_sig = {
         let sig = make_signature(params.module);
         let f: &mut Function = builder.func;
@@ -886,7 +898,7 @@ fn compile_function_body(
     let release_fn_ptr =
         builder
             .ins()
-            .load(types::I64, MemFlags::trusted(), release_fn_ptr_addr, 0);
+            .load(types::I64, MemFlagsData::trusted(), release_fn_ptr_addr, 0);
     let release_sig = {
         let sig = make_signature(params.module);
         let f: &mut Function = builder.func;
@@ -1440,7 +1452,7 @@ fn compile_instruction(
             let cl_type = storage_type(ty, ctx.func_name)?;
             builder
                 .ins()
-                .load(cl_type, MemFlags::trusted(), env_val, *offset as i32)
+                .load(cl_type, MemFlagsData::trusted(), env_val, *offset as i32)
         }
 
         ir::Instruction::Panic { .. } => {
@@ -1492,7 +1504,9 @@ fn compile_call_named(
 
         // Arg 0: Null closure env for local named functions
         let zero = builder.ins().iconst(types::I64, 0);
-        builder.ins().store(MemFlags::trusted(), zero, args_buf, 0);
+        builder
+            .ins()
+            .store(MemFlagsData::trusted(), zero, args_buf, 0);
 
         let mut offset: i32 = 8;
         for arg_id in &data.args {
@@ -1501,7 +1515,7 @@ fn compile_call_named(
                 let arg_val = lookup_value(values, *arg_id, ctx.func_name)?;
                 builder
                     .ins()
-                    .store(MemFlags::trusted(), arg_val, args_buf, offset);
+                    .store(MemFlagsData::trusted(), arg_val, args_buf, offset);
             }
             offset += 8;
         }
@@ -1553,19 +1567,19 @@ fn compile_builtin_call(
     let name_ptr = builder.ins().global_value(types::I64, *name_gv);
     builder
         .ins()
-        .store(MemFlags::trusted(), name_ptr, args_buf, 0);
+        .store(MemFlagsData::trusted(), name_ptr, args_buf, 0);
 
     // Store name length.
     let name_len = builder.ins().iconst(I32, callee_name.len() as i64);
     builder
         .ins()
-        .store(MemFlags::trusted(), name_len, args_buf, 8);
+        .store(MemFlagsData::trusted(), name_len, args_buf, 8);
 
     // Store argument count.
     let arg_count_val = builder.ins().iconst(I32, arg_count as i64);
     builder
         .ins()
-        .store(MemFlags::trusted(), arg_count_val, args_buf, 12);
+        .store(MemFlagsData::trusted(), arg_count_val, args_buf, 12);
 
     // Store each argument as (val: i64, tag: u32).
     for (i, arg_id) in data.args.iter().enumerate() {
@@ -1590,7 +1604,7 @@ fn compile_builtin_call(
                     let v = builder.ins().iconst(I32, val as i64);
                     builder
                         .ins()
-                        .store(MemFlags::trusted(), v, desc_ptr, (j * 4) as i32);
+                        .store(MemFlagsData::trusted(), v, desc_ptr, (j * 4) as i32);
                 }
                 let desc_len = builder.ins().iconst(I32, desc_bytes.len() as i64);
                 let inst = builder.ins().call_indirect(
@@ -1605,24 +1619,24 @@ fn compile_builtin_call(
 
             builder
                 .ins()
-                .store(MemFlags::trusted(), stored_val, args_buf, offset);
+                .store(MemFlagsData::trusted(), stored_val, args_buf, offset);
             let tag =
                 ir_type_tag(arg_type).ok_or_else(|| unsupported_type(ctx.func_name, arg_type))?;
             let tag_val = builder.ins().iconst(I32, i64::from(tag));
             builder
                 .ins()
-                .store(MemFlags::trusted(), tag_val, args_buf, offset + 8);
+                .store(MemFlagsData::trusted(), tag_val, args_buf, offset + 8);
         } else {
             // Unit args: store 0 val + tag 12.
             let zero = builder.ins().iconst(types::I64, 0);
             let offset = 16 + i as i32 * 12;
             builder
                 .ins()
-                .store(MemFlags::trusted(), zero, args_buf, offset);
+                .store(MemFlagsData::trusted(), zero, args_buf, offset);
             let tag_val = builder.ins().iconst(I32, 12);
             builder
                 .ins()
-                .store(MemFlags::trusted(), tag_val, args_buf, offset + 8);
+                .store(MemFlagsData::trusted(), tag_val, args_buf, offset + 8);
         }
     }
 
@@ -1658,7 +1672,7 @@ fn compile_builtin_call(
             let v = builder.ins().iconst(I32, val as i64);
             builder
                 .ins()
-                .store(MemFlags::trusted(), v, desc_ptr, (j * 4) as i32);
+                .store(MemFlagsData::trusted(), v, desc_ptr, (j * 4) as i32);
         }
         let desc_len = builder.ins().iconst(I32, desc_bytes.len() as i64);
         let inst = builder.ins().call_indirect(
@@ -1690,12 +1704,12 @@ fn compile_println(
     let widened = widen_to_i64(builder, val, ty, ctx.func_name)?;
     builder
         .ins()
-        .store(MemFlags::trusted(), widened, args_buf, 0);
+        .store(MemFlagsData::trusted(), widened, args_buf, 0);
 
     let tag_val = builder.ins().iconst(I32, i64::from(tag));
     builder
         .ins()
-        .store(MemFlags::trusted(), tag_val, args_buf, 8);
+        .store(MemFlagsData::trusted(), tag_val, args_buf, 8);
 
     let ret_slot =
         builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 4, 0));
@@ -1727,7 +1741,7 @@ fn compile_str_concat(
     let count_val = builder.ins().iconst(I32, count as i64);
     builder
         .ins()
-        .store(MemFlags::trusted(), count_val, args_buf, 0);
+        .store(MemFlagsData::trusted(), count_val, args_buf, 0);
 
     for (i, part_id) in parts.iter().enumerate() {
         let ty = lookup_type(ctx.value_types, *part_id, ctx.func_name)?;
@@ -1736,12 +1750,12 @@ fn compile_str_concat(
         let offset = 4i32 + i as i32 * 12;
         builder
             .ins()
-            .store(MemFlags::trusted(), widened, args_buf, offset);
+            .store(MemFlagsData::trusted(), widened, args_buf, offset);
         let tag = ir_type_tag(ty).ok_or_else(|| unsupported_type(ctx.func_name, ty))?;
         let tag_val = builder.ins().iconst(I32, i64::from(tag));
         builder
             .ins()
-            .store(MemFlags::trusted(), tag_val, args_buf, offset + 8);
+            .store(MemFlagsData::trusted(), tag_val, args_buf, offset + 8);
     }
 
     let ret_slot =
@@ -1756,7 +1770,7 @@ fn compile_str_concat(
 
     Ok(builder
         .ins()
-        .load(types::I64, MemFlags::trusted(), ret_buf, 0))
+        .load(types::I64, MemFlagsData::trusted(), ret_buf, 0))
 }
 
 /// Widen or bitcast a Cranelift `Value` to `I64` for the Println
@@ -1783,12 +1797,12 @@ fn widen_to_i64(
         IrType::U32 => Ok(builder.ins().uextend(types::I64, val)),
         IrType::U64 => Ok(val),
         IrType::F32 => {
-            let mf = MemFlags::new().with_endianness(Endianness::Little);
+            let mf = MemFlagsData::new().with_endianness(Endianness::Little);
             let as_i32 = builder.ins().bitcast(types::I32, mf, val);
             Ok(builder.ins().uextend(types::I64, as_i32))
         }
         IrType::F64 => {
-            let mf = MemFlags::new().with_endianness(Endianness::Little);
+            let mf = MemFlagsData::new().with_endianness(Endianness::Little);
             Ok(builder.ins().bitcast(types::I64, mf, val))
         }
         IrType::Bool => Ok(builder.ins().uextend(types::I64, val)),
@@ -1841,13 +1855,13 @@ fn compile_make_closure(
     // Store func_ptr at offset 0.
     builder
         .ins()
-        .store(MemFlags::trusted(), fn_ptr, content_buf, 0);
+        .store(MemFlagsData::trusted(), fn_ptr, content_buf, 0);
 
     // Store capture_count at offset 8.
     let capture_count_val = builder.ins().iconst(types::I64, capture_count as i64);
     builder
         .ins()
-        .store(MemFlags::trusted(), capture_count_val, content_buf, 8);
+        .store(MemFlagsData::trusted(), capture_count_val, content_buf, 8);
 
     // Store each capture at offset 16, each in an 8-byte slot.
     let mut offset: i32 = 16;
@@ -1869,7 +1883,7 @@ fn compile_make_closure(
             };
             builder
                 .ins()
-                .store(MemFlags::trusted(), val_i64, args_buf, 0);
+                .store(MemFlagsData::trusted(), val_i64, args_buf, 0);
 
             let ret_slot = builder.create_sized_stack_slot(StackSlotData::new(
                 StackSlotKind::ExplicitSlot,
@@ -1884,7 +1898,7 @@ fn compile_make_closure(
         }
         builder
             .ins()
-            .store(MemFlags::trusted(), capture_val, content_buf, offset);
+            .store(MemFlagsData::trusted(), capture_val, content_buf, offset);
         offset += 8;
     }
 
@@ -1896,12 +1910,12 @@ fn compile_make_closure(
     let content_addr = builder.ins().stack_addr(types::I64, content_slot, 0);
     builder
         .ins()
-        .store(MemFlags::trusted(), content_addr, args_buf, 0);
+        .store(MemFlagsData::trusted(), content_addr, args_buf, 0);
 
     let byte_size_val = builder.ins().iconst(I32, total_size as i64);
     builder
         .ins()
-        .store(MemFlags::trusted(), byte_size_val, args_buf, 8);
+        .store(MemFlagsData::trusted(), byte_size_val, args_buf, 8);
 
     // Allocate 8-byte ret buffer for the closure pointer.
     let ret_slot =
@@ -1916,7 +1930,7 @@ fn compile_make_closure(
 
     Ok(builder
         .ins()
-        .load(types::I64, MemFlags::trusted(), ret_buf, 0))
+        .load(types::I64, MemFlagsData::trusted(), ret_buf, 0))
 }
 
 /// Compile a `CallIndirect` instruction.
@@ -1988,7 +2002,7 @@ fn compile_call_indirect(
     // Load func_ptr from closure offset 0.
     let fn_ptr = builder
         .ins()
-        .load(types::I64, MemFlags::trusted(), closure_val, 0);
+        .load(types::I64, MemFlagsData::trusted(), closure_val, 0);
 
     // Compute total args buffer size: closure_env (1 slot) + call args.
     let args_buf_size = ((1 + call_arg_count) * 8).max(1) as u32;
@@ -2002,7 +2016,7 @@ fn compile_call_indirect(
     // Arg 0: closure_env pointer.
     builder
         .ins()
-        .store(MemFlags::trusted(), closure_val, args_buf, 0);
+        .store(MemFlagsData::trusted(), closure_val, args_buf, 0);
 
     // Store call arguments.
     let mut offset: i32 = 8;
@@ -2012,7 +2026,7 @@ fn compile_call_indirect(
             let arg_val = lookup_value(values, *arg_id, ctx.func_name)?;
             builder
                 .ins()
-                .store(MemFlags::trusted(), arg_val, args_buf, offset);
+                .store(MemFlagsData::trusted(), arg_val, args_buf, offset);
         }
         offset += 8;
     }
@@ -2060,7 +2074,7 @@ fn compile_tail_call(
     };
     let fn_ptr = builder
         .ins()
-        .load(types::I64, MemFlags::trusted(), closure_val, 0);
+        .load(types::I64, MemFlagsData::trusted(), closure_val, 0);
 
     let args_buf_size = ((1 + call_args.len()) * 8).max(1) as u32;
     let arg_slot = builder.create_sized_stack_slot(StackSlotData::new(
@@ -2073,7 +2087,7 @@ fn compile_tail_call(
     // Arg 0: closure_env pointer.
     builder
         .ins()
-        .store(MemFlags::trusted(), closure_val, args_buf, 0);
+        .store(MemFlagsData::trusted(), closure_val, args_buf, 0);
 
     let mut offset: i32 = 8;
     for arg_id in call_args {
@@ -2082,7 +2096,7 @@ fn compile_tail_call(
             let arg_val = lookup_value(values, *arg_id, ctx.func_name)?;
             builder
                 .ins()
-                .store(MemFlags::trusted(), arg_val, args_buf, offset);
+                .store(MemFlagsData::trusted(), arg_val, args_buf, offset);
         }
         offset += 8;
     }
@@ -2136,14 +2150,14 @@ fn compile_tag_construct(
     let disc_val = builder.ins().iconst(I32, i64::from(data.discriminant));
     builder
         .ins()
-        .store(MemFlags::trusted(), disc_val, content_buf, 0);
+        .store(MemFlagsData::trusted(), disc_val, content_buf, 0);
 
     let mut offset: i32 = 4;
     for (vid, size) in data.payload.iter().zip(payload_sizes.iter()) {
         let val = lookup_value(values, *vid, ctx.func_name)?;
         builder
             .ins()
-            .store(MemFlags::trusted(), val, content_buf, offset);
+            .store(MemFlagsData::trusted(), val, content_buf, offset);
         offset += size;
     }
 
@@ -2153,11 +2167,11 @@ fn compile_tag_construct(
     let content_addr = builder.ins().stack_addr(types::I64, content_slot, 0);
     builder
         .ins()
-        .store(MemFlags::trusted(), content_addr, args_buf, 0);
+        .store(MemFlagsData::trusted(), content_addr, args_buf, 0);
     let byte_size_val = builder.ins().iconst(I32, total_size as i64);
     builder
         .ins()
-        .store(MemFlags::trusted(), byte_size_val, args_buf, 8);
+        .store(MemFlagsData::trusted(), byte_size_val, args_buf, 8);
 
     let ret_slot =
         builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 0));
@@ -2170,7 +2184,7 @@ fn compile_tag_construct(
 
     Ok(builder
         .ins()
-        .load(types::I64, MemFlags::trusted(), ret_buf, 0))
+        .load(types::I64, MemFlagsData::trusted(), ret_buf, 0))
 }
 
 /// Compile a `TagDiscriminant` instruction.
@@ -2182,7 +2196,7 @@ fn compile_tag_discriminant(
     values: &HashMap<ValueId, Value>,
 ) -> Result<Value, JitError> {
     let tag_val = lookup_value(values, value_id, ctx.func_name)?;
-    Ok(builder.ins().load(I32, MemFlags::trusted(), tag_val, 0))
+    Ok(builder.ins().load(I32, MemFlagsData::trusted(), tag_val, 0))
 }
 
 /// Compile a `TagGet` instruction.
@@ -2224,7 +2238,7 @@ fn compile_tag_get(
 
     Ok(builder.ins().load(
         storage_type(field_type, ctx.func_name)?,
-        MemFlags::trusted(),
+        MemFlagsData::trusted(),
         tag_val,
         offset,
     ))
@@ -2263,7 +2277,7 @@ fn compile_retain(
         };
         builder
             .ins()
-            .store(MemFlags::trusted(), val_i64, args_buf, 0);
+            .store(MemFlagsData::trusted(), val_i64, args_buf, 0);
 
         let ret_slot =
             builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 4, 0));
@@ -2299,7 +2313,7 @@ fn compile_release(
             let v = builder.ins().iconst(I32, chunk_val as i64);
             builder
                 .ins()
-                .store(MemFlags::trusted(), v, desc_ptr, (j * 4) as i32);
+                .store(MemFlagsData::trusted(), v, desc_ptr, (j * 4) as i32);
         }
 
         let args_slot =
@@ -2313,10 +2327,10 @@ fn compile_release(
         };
         builder
             .ins()
-            .store(MemFlags::trusted(), val_i64, args_buf, 0);
+            .store(MemFlagsData::trusted(), val_i64, args_buf, 0);
         builder
             .ins()
-            .store(MemFlags::trusted(), desc_ptr, args_buf, 8);
+            .store(MemFlagsData::trusted(), desc_ptr, args_buf, 8);
 
         let ret_slot =
             builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 4, 0));
@@ -2362,7 +2376,7 @@ fn compile_record_alloc(
         let val = lookup_value(values, *vid, ctx.func_name)?;
         builder
             .ins()
-            .store(MemFlags::trusted(), val, content_buf, offset);
+            .store(MemFlagsData::trusted(), val, content_buf, offset);
         offset += size;
     }
 
@@ -2372,11 +2386,11 @@ fn compile_record_alloc(
     let content_addr = builder.ins().stack_addr(types::I64, content_slot, 0);
     builder
         .ins()
-        .store(MemFlags::trusted(), content_addr, args_buf, 0);
+        .store(MemFlagsData::trusted(), content_addr, args_buf, 0);
     let byte_size_val = builder.ins().iconst(I32, total_size as i64);
     builder
         .ins()
-        .store(MemFlags::trusted(), byte_size_val, args_buf, 8);
+        .store(MemFlagsData::trusted(), byte_size_val, args_buf, 8);
 
     let ret_slot =
         builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 0));
@@ -2389,7 +2403,7 @@ fn compile_record_alloc(
 
     Ok(builder
         .ins()
-        .load(types::I64, MemFlags::trusted(), ret_buf, 0))
+        .load(types::I64, MemFlagsData::trusted(), ret_buf, 0))
 }
 
 /// Compile a `RecordGet` instruction.
@@ -2416,7 +2430,7 @@ fn compile_record_get(
 
     Ok(builder.ins().load(
         storage_type(field_type, ctx.func_name)?,
-        MemFlags::trusted(),
+        MemFlagsData::trusted(),
         record_val,
         offset,
     ))
@@ -2447,7 +2461,7 @@ fn compile_record_set(
 
     builder
         .ins()
-        .store(MemFlags::trusted(), value, record_val, offset);
+        .store(MemFlagsData::trusted(), value, record_val, offset);
     Ok(builder.ins().iconst(I32, 0))
 }
 
@@ -2476,14 +2490,14 @@ fn compile_array_alloc(
 
     builder
         .ins()
-        .store(MemFlags::trusted(), len_val, args_buf, 0);
+        .store(MemFlagsData::trusted(), len_val, args_buf, 0);
     let elem_size_val = builder.ins().iconst(I32, elem_size as i64);
     builder
         .ins()
-        .store(MemFlags::trusted(), elem_size_val, args_buf, 4);
+        .store(MemFlagsData::trusted(), elem_size_val, args_buf, 4);
     builder
         .ins()
-        .store(MemFlags::trusted(), init_widened, args_buf, 8);
+        .store(MemFlagsData::trusted(), init_widened, args_buf, 8);
 
     let ret_slot =
         builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 0));
@@ -2496,7 +2510,7 @@ fn compile_array_alloc(
 
     Ok(builder
         .ins()
-        .load(types::I64, MemFlags::trusted(), ret_buf, 0))
+        .load(types::I64, MemFlagsData::trusted(), ret_buf, 0))
 }
 
 /// Compile an `ArrayGet` instruction.
@@ -2533,7 +2547,7 @@ fn compile_array_get(
 
     Ok(builder.ins().load(
         storage_type(elem_ty, ctx.func_name)?,
-        MemFlags::trusted(),
+        MemFlagsData::trusted(),
         final_addr,
         0,
     ))
@@ -2552,7 +2566,7 @@ fn compile_array_len(
     let array_val = lookup_value(values, array_id, ctx.func_name)?;
     Ok(builder
         .ins()
-        .load(types::I64, MemFlags::trusted(), array_val, 0))
+        .load(types::I64, MemFlagsData::trusted(), array_val, 0))
 }
 
 /// Compile an `ArraySet` instruction.
@@ -2592,7 +2606,7 @@ fn compile_array_set(
 
     builder
         .ins()
-        .store(MemFlags::trusted(), value_val, final_addr, 0);
+        .store(MemFlagsData::trusted(), value_val, final_addr, 0);
 
     Ok(builder.ins().iconst(I32, 0))
 }
@@ -2625,14 +2639,14 @@ fn compile_array_concat(
 
     builder
         .ins()
-        .store(MemFlags::trusted(), left_val, args_buf, 0);
+        .store(MemFlagsData::trusted(), left_val, args_buf, 0);
     builder
         .ins()
-        .store(MemFlags::trusted(), right_val, args_buf, 8);
+        .store(MemFlagsData::trusted(), right_val, args_buf, 8);
     let elem_size_val = builder.ins().iconst(I32, elem_size as i64);
     builder
         .ins()
-        .store(MemFlags::trusted(), elem_size_val, args_buf, 16);
+        .store(MemFlagsData::trusted(), elem_size_val, args_buf, 16);
 
     let ret_slot =
         builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 0));
@@ -2645,7 +2659,7 @@ fn compile_array_concat(
 
     Ok(builder
         .ins()
-        .load(types::I64, MemFlags::trusted(), ret_buf, 0))
+        .load(types::I64, MemFlagsData::trusted(), ret_buf, 0))
 }
 
 fn compile_numeric_binary(
@@ -2891,13 +2905,13 @@ fn compile_record_cmp(
     for (_, field_ty) in &record_type.fields {
         let left_field = builder.ins().load(
             storage_type(field_ty, ctx.func_name)?,
-            MemFlags::trusted(),
+            MemFlagsData::trusted(),
             left_value,
             offset,
         );
         let right_field = builder.ins().load(
             storage_type(field_ty, ctx.func_name)?,
-            MemFlags::trusted(),
+            MemFlagsData::trusted(),
             right_value,
             offset,
         );
@@ -2916,8 +2930,12 @@ fn compile_tag_cmp(
     tag_type: &ir::TagType,
 ) -> Result<Value, JitError> {
     // Compare discriminants first.
-    let left_disc = builder.ins().load(I32, MemFlags::trusted(), left_value, 0);
-    let right_disc = builder.ins().load(I32, MemFlags::trusted(), right_value, 0);
+    let left_disc = builder
+        .ins()
+        .load(I32, MemFlagsData::trusted(), left_value, 0);
+    let right_disc = builder
+        .ins()
+        .load(I32, MemFlagsData::trusted(), right_value, 0);
     let disc_eq_b1 = builder.ins().icmp(IntCC::Equal, left_disc, right_disc);
     let disc_one = builder.ins().iconst(types::I8, 1);
     let disc_zero = builder.ins().iconst(types::I8, 0);
@@ -2942,13 +2960,13 @@ fn compile_tag_cmp(
         for field_ty in &variant.payload {
             let left_field = builder.ins().load(
                 storage_type(field_ty, ctx.func_name)?,
-                MemFlags::trusted(),
+                MemFlagsData::trusted(),
                 left_value,
                 offset,
             );
             let right_field = builder.ins().load(
                 storage_type(field_ty, ctx.func_name)?,
-                MemFlags::trusted(),
+                MemFlagsData::trusted(),
                 right_value,
                 offset,
             );
@@ -3025,13 +3043,13 @@ fn load_primitive_value(
     if matches!(ty, IrType::Bool) {
         let raw = builder
             .ins()
-            .load(types::I8, MemFlags::trusted(), args_ptr, offset);
+            .load(types::I8, MemFlagsData::trusted(), args_ptr, offset);
         return Ok(builder.ins().icmp_imm(IntCC::NotEqual, raw, 0));
     }
     let cl_type = storage_type(ty, func_name)?;
     Ok(builder
         .ins()
-        .load(cl_type, MemFlags::trusted(), args_ptr, offset))
+        .load(cl_type, MemFlagsData::trusted(), args_ptr, offset))
 }
 
 fn store_return_value(
@@ -3043,14 +3061,20 @@ fn store_return_value(
 ) -> Result<(), JitError> {
     if matches!(ret_type, IrType::Unit) {
         let zero = builder.ins().iconst(I32, 0);
-        builder.ins().store(MemFlags::trusted(), zero, ret_ptr, 0);
+        builder
+            .ins()
+            .store(MemFlagsData::trusted(), zero, ret_ptr, 0);
         return Ok(());
     }
     if matches!(ret_type, IrType::Bool) {
-        builder.ins().store(MemFlags::trusted(), value, ret_ptr, 0);
+        builder
+            .ins()
+            .store(MemFlagsData::trusted(), value, ret_ptr, 0);
         return Ok(());
     }
-    builder.ins().store(MemFlags::trusted(), value, ret_ptr, 0);
+    builder
+        .ins()
+        .store(MemFlagsData::trusted(), value, ret_ptr, 0);
     Ok(())
 }
 

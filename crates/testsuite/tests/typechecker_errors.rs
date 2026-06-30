@@ -26,7 +26,7 @@ fn typecheck_arity_mismatch_too_many_args() {
     let errors = result.expect_err("should fail with arity mismatch");
     let all_arity = errors
         .iter()
-        .all(|e| e.to_string().contains("arity") || e.to_string().contains("type mismatch"));
+        .all(|e| e.to_string().contains("arity") || e.to_string().contains("expects"));
     assert!(
         all_arity,
         "expected arity or type mismatch errors, got: {errors:?}"
