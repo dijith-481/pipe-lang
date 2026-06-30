@@ -2880,8 +2880,8 @@ fn ctor_ok() {
     match ty {
         MonoType::Tag { name, payload } => {
             assert_eq!(name.as_str(), "Result");
-            // payload order: [e, t] = [Err_type, Ok_type]
-            assert_eq!(payload[1], MonoType::Str); // Ok("hello") → Ok_type = Str at index 1
+            // payload order: [t, e] = [Ok_type, Err_type]
+            assert_eq!(payload[0], MonoType::Str); // Ok("hello") → Ok_type = Str at index 0
             assert_eq!(payload.len(), 2);
         }
         _ => panic!("expected Result<str, _>, got {ty:?}"),
@@ -2908,8 +2908,8 @@ fn ctor_err() {
     match ty {
         MonoType::Tag { name, payload } => {
             assert_eq!(name.as_str(), "Result");
-            // payload order: [e, t] = [Err_type, Ok_type]
-            assert_eq!(payload[0], MonoType::I32); // Err(42) → Err_type = I32 at index 0
+            // payload order: [t, e] = [Ok_type, Err_type]
+            assert_eq!(payload[1], MonoType::I32); // Err(42) → Err_type = I32 at index 1
             assert_eq!(payload.len(), 2);
         }
         _ => panic!("expected Result<_, i32>, got {ty:?}"),
@@ -3086,10 +3086,10 @@ fn pattern_match_result_ok() {
         span: Span::new(0, 31),
     });
 
-    // Bind x: Result<str, i32> — payload order [e, t] = [Err, Ok]
+    // Bind x: Result<str, i32> — payload order [t, e] = [Ok, Err]
     let res_str_i32 = MonoType::Tag {
         name: "Result".into(),
-        payload: Rc::from([MonoType::I32, MonoType::Str]),
+        payload: Rc::from([MonoType::Str, MonoType::I32]),
     };
     env.insert("x", PolyType::mono(res_str_i32));
 

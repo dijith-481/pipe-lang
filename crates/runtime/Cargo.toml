@@ -8,11 +8,11 @@ workspace = true
 
 [dependencies]
 ast = { version = "0.1.0", path = "../ast" }
-cranelift-codegen = "0.132.0"
-cranelift-frontend = "0.132.0"
-cranelift-jit = "0.132.0"
-cranelift-module = "0.132.0"
-cranelift-native = "0.132.0"
+cranelift-codegen = "0.133.0"
+cranelift-frontend = "0.133.0"
+cranelift-jit = "0.133.0"
+cranelift-module = "0.133.0"
+cranelift-native = "0.133.0"
 ir = { version = "0.1.0", path = "../ir" }
 libc = "0.2"
 thiserror = "2.0.18"
