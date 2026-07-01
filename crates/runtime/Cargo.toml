@@ -14,7 +14,6 @@ cranelift-jit = "0.133.0"
 cranelift-module = "0.133.0"
 cranelift-native = "0.133.0"
 ir = { version = "0.1.0", path = "../ir" }
-libc = "0.2"
 thiserror = "2.0.18"
 tracing = "0.1"
 typechecker = { version = "0.1.0", path = "../typechecker" }

@@ -11,6 +11,7 @@ pub use crate::error::RuntimeError;
 pub use crate::jit::{CompiledModule, JitError, compile_ir};
 pub use crate::value::{ClosureData, FuncPtr, JitArgType, RecordData, Value};
 
+use std::io::Write;
 use std::sync::Mutex;
 
 /// Global output capture buffer used by test infrastructure.
@@ -36,8 +37,6 @@ pub fn write_stdout(s: &str) {
     if let Some(buf) = guard.as_mut() {
         buf.extend_from_slice(s.as_bytes());
     } else {
-        unsafe {
-            libc::write(1, s.as_ptr() as *const libc::c_void, s.len() as _);
-        }
+        let _ = std::io::stdout().lock().write_all(s.as_bytes());
     }
 }

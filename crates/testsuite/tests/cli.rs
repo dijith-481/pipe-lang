@@ -9,7 +9,8 @@ use std::process::Command;
 
 fn pipe_lang_bin() -> Option<String> {
     std::env::var("CARGO_BIN_EXE_pipe-lang").ok().or_else(|| {
-        let p = workspace_root().join("target/debug/pipe-lang");
+        let exe_name = format!("pipe-lang{}", std::env::consts::EXE_SUFFIX);
+        let p = workspace_root().join("target/debug").join(&exe_name);
         if p.exists() {
             Some(p.to_string_lossy().to_string())
         } else {

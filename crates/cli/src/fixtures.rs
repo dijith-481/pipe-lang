@@ -128,6 +128,9 @@ pub fn run_fixture(fixture: &Fixture) -> RunResult {
         // The test binary is in target/debug/deps/; pipe-lang is in target/debug/
         let mut dir = me.parent().unwrap().parent().unwrap().to_path_buf();
         dir.push("pipe-lang");
+        if cfg!(windows) {
+            dir.set_extension("exe");
+        }
         if !dir.exists() {
             // Try CARGO_MANIFEST_DIR or fallback
             dir = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default())
@@ -136,8 +139,9 @@ pub fn run_fixture(fixture: &Fixture) -> RunResult {
                 .parent()
                 .unwrap()
                 .join("target")
-                .join("debug")
-                .join("pipe-lang");
+                .join("debug");
+            let exe_name = format!("pipe-lang{}", std::env::consts::EXE_SUFFIX);
+            dir.push(exe_name);
         }
         dir
     };
