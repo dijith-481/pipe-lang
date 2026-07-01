@@ -23,6 +23,126 @@ pipe-lang check example-programs/hello.pp
 pipe-lang compile example-programs/hello.pp --emit-ir
 ```
 
+## Editor Setup
+
+### Prerequisites
+- Node.js + npm (for the tree-sitter grammar)
+- `pipe-lang` binary on `$PATH` (for LSP and formatting)
+
+### 1. Build the grammar
+
+```bash
+cd tree-sitter-pipe-lang
+npm install
+npx tree-sitter build        # produces tree-sitter-pipe-lang/parser.so
+```
+
+### 2. Syntax highlighting, LSP, and formatting
+
+#### Neovim
+
+Add to your Neovim config (e.g. `~/.config/nvim/init.lua`):
+
+```lua
+-- Register grammar
+vim.filetype.add({ extension = { pp = "pipe" } })
+local parser_config = require("nvim-treesitter.parsers").get_parser_configs()
+parser_config.pipe = {
+  install_info = {
+    url = "/full/path/to/tree-sitter-pipe-lang",
+    files = { "src/parser.c" },
+    generate_requires_npm = true,
+  },
+  filetype = "pipe",
+}
+-- Register queries directory
+vim.treesitter.query.set_dir("pipe", "/full/path/to/tree-sitter-pipe-lang/queries")
+```
+
+Then install the parser via `:TSInstall pipe`.
+
+**LSP**
+```lua
+vim.api.nvim_create_autocmd("FileType", {
+  pattern = "pipe",
+  callback = function()
+    vim.lsp.start({ name = "pipe-lang", cmd = { "pipe-lang", "lsp" } })
+  end,
+})
+```
+
+**Formatter**
+```lua
+vim.api.nvim_create_autocmd("FileType", {
+  pattern = "pipe",
+  callback = function()
+    vim.bo.formatprg = "pipe-lang fmt"
+  end,
+})
+```
+
+#### Zed
+
+Add to `~/.config/zed/settings.json`:
+
+```json
+{
+  "languages": {
+    "PipeLang": {
+      "file_types": ["pp"],
+      "grammar": "pipe_lang",
+      "language_servers": ["pipe-lang"],
+      "formatter": {
+        "external": {
+          "command": "pipe-lang",
+          "arguments": ["fmt"]
+        }
+      }
+    }
+  },
+  "local_grammars": {
+    "pipe_lang": "/full/path/to/tree-sitter-pipe-lang"
+  },
+  "language_server": {
+    "pipe-lang": {
+      "command": "pipe-lang",
+      "args": ["lsp"]
+    }
+  }
+}
+```
+
+#### Helix
+
+Add to `~/.config/helix/languages.toml`:
+
+```toml
+[[grammar]]
+name = "pipe_lang"
+source = { path = "/full/path/to/tree-sitter-pipe-lang" }
+
+[[language]]
+name = "pipe_lang"
+scope = "source.pipe"
+file-types = ["pp"]
+grammar = "pipe_lang"
+language-server = { command = "pipe-lang", args = ["lsp"] }
+formatter = { command = "pipe-lang", args = ["fmt"] }
+```
+
+Then symlink the queries:
+```bash
+mkdir -p ~/.config/helix/runtime/queries/pipe_lang
+ln -s /full/path/to/tree-sitter-pipe-lang/queries/*.scm ~/.config/helix/runtime/queries/pipe_lang/
+```
+
+### 3. Rebuilding after grammar changes
+
+```bash
+cd tree-sitter-pipe-lang
+npx tree-sitter build
+```
+
 ## Example
 
 ```rust
@@ -86,6 +206,7 @@ crates/
   cli/              # CLI entry point
   pipe-lang-lsp/    # Language server (tower-lsp)
 example-programs/   # 22 example programs
+tree-sitter-pipe-lang/  # Editor grammar (syntax highlighting, folding)
 ```
 
 ## Status
