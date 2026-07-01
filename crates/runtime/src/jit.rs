@@ -135,8 +135,8 @@ fn get_global_isa() -> std::sync::Arc<dyn cranelift_codegen::isa::TargetIsa> {
                 .set("opt_level", "speed")
                 .expect("valid Cranelift flag");
             let flags = settings::Flags::new(flag_builder);
-            cranelift_codegen::isa::lookup_by_name("x86_64")
-                .expect("x86_64 ISA should be available")
+            cranelift_native::builder()
+                .expect("host ISA should be available")
                 .finish(flags)
                 .expect("Cranelift ISA should finish")
         })
@@ -3321,7 +3321,6 @@ fn decode_main_i32(ret_type: &IrType, ret_buf: &[u8; 16]) -> Result<i32, JitErro
 /// For `Str` the value is a pointer to length‑prefixed UTF‑8 bytes:
 /// bytes 0–3 store the length as `u32`, followed by the string content.
 /// External function called by `Println` JIT code (when emitted).
-/// Uses `libc::write` to respect `dup2` redirection for test capture.
 #[unsafe(no_mangle)]
 unsafe extern "C" fn __pipe_println(args: *const u8, ret: *mut u8) -> i32 {
     let raw = unsafe { std::ptr::read_unaligned(args as *const i64) };
